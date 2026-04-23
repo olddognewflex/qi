@@ -1,0 +1,2 @@
+- [ ] Compile qi binary
+- [ ] Fix Qi build #qi 📅 2026-04-30
