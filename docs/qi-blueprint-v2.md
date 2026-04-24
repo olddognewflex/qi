@@ -308,8 +308,8 @@ Phase 2:
 ## 🧭 Build Phases
 
 1. Core CLI (tasks, capture)
-2. Calendar
 3. Notes + search
+2. Calendar
 4. MCP
 5. Daemon
 6. AI

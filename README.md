@@ -116,7 +116,8 @@ task_file_path = "10-tasks/inbox.md"   # optional, relative to vault_path
 vault/
 ├── 00-inbox/       # qi capture writes here
 ├── 10-tasks/       # qi task add writes here by default
-│   └── inbox.md
+|    └── inbox.md |
+| --- |
 ├── 20-notes/
 ├── 30-daily/
 └── .qi/
@@ -136,14 +137,15 @@ Machine-local state (not in vault, not synced):
 
 ## Roadmap
 
-### Phase 3 — Calendar
-- `qi agenda` / `qi agenda week`
-- CalendarService + Google/Apple calendar sync
-
-### Phase 4 — Notes + search
+### Phase 3 — Notes + search
 - `qi note new "title"`, `qi note search "query"`
 - SQLite FTS5 index over the vault
 - `qi index rebuild`
+
+### Phase 4 — Calendar
+- `qi agenda` / `qi agenda week`
+- CalendarService + Google/Apple calendar sync
+
 
 ### Phase 5 — MCP server (`qi-mcp`)
 - Strict JSON schema tools for AI agents: `search_notes`, `get_note`, `add_note`, `search_tasks`, `add_task`, `get_agenda`, `capture`
@@ -176,3 +178,4 @@ Three binaries planned:
 - `cmd/qi` — stateless CLI (fast, no AI on hot path) ← **only this exists today**
 - `cmd/qid` — background daemon
 - `cmd/qi-mcp` — MCP server
+

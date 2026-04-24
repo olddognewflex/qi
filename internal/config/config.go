@@ -13,6 +13,7 @@ type Config struct {
 	VaultPath    string
 	TaskFilePath string
 	InboxPath    string
+	NotesPath    string
 }
 
 type tomlFile struct {
@@ -69,5 +70,6 @@ func LoadFrom(path string) (Config, error) {
 		VaultPath:    raw.VaultPath,
 		TaskFilePath: taskFilePath,
 		InboxPath:    filepath.Join(raw.VaultPath, "00-inbox"),
+		NotesPath:    filepath.Join(raw.VaultPath, "20-notes"),
 	}, nil
 }

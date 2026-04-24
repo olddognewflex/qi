@@ -22,6 +22,8 @@ func NewRootCommand() *cobra.Command {
 
 	root.AddCommand(newTaskCommand(cfg))
 	root.AddCommand(newCaptureCommand(cfg))
+	root.AddCommand(newNoteCommand(cfg))
+	root.AddCommand(newIndexCommand(cfg))
 	root.AddCommand(newConfigCommand())
 	return root
 }

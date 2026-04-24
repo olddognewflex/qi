@@ -113,8 +113,8 @@ Plugins live in `.git/hooks/<plugin>/`. Active plugins run on pre-commit, commit
 ## Build phases (implementation order)
 
 1. Core CLI: `qi task`, `qi capture`
-2. Calendar integration
 3. Notes + full-text search
+2. Calendar integration
 4. MCP server
 5. Daemon (`qid`)
 6. AI commands
