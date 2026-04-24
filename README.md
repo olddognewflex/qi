@@ -4,9 +4,9 @@ Go-first, local-first personal productivity CLI. Markdown is the source of truth
 
 ---
 
-## What's built (Phase 1)
+## What's built (Phases 1–2)
 
-**Core task management — fully functional.**
+**Phase 1 — Core task management — fully functional.**
 
 | Package | What it does |
 |---|---|
@@ -17,7 +17,16 @@ Go-first, local-first personal productivity CLI. Markdown is the source of truth
 | `internal/config` | TOML config loader (XDG-compliant path, env var overrides) |
 | `raycast/` | Shell scripts for Raycast integration (`task-add.sh`, `task-list.sh`) |
 
-**All core task operations have unit tests.**
+**Phase 2 — Capture — fully functional.**
+
+| Package | What it does |
+|---|---|
+| `internal/vault` | `WriteCapture` — writes timestamped `.md` file to `00-inbox/`, no locking, no races |
+| `internal/service` | `CaptureService` — thin wrapper over vault write |
+| `internal/commands` | `capture` command with `c` alias |
+| `internal/config` | `InboxPath` field — defaults to `{vault_path}/00-inbox` |
+
+**All operations have unit tests.**
 
 ---
 
@@ -39,6 +48,7 @@ EOF
 export QI_VAULT_PATH=/path/to/your/obsidian/vault
 
 # Run
+go run ./cmd/qi capture "Remember to fix the parser"
 go run ./cmd/qi task add "Fix the parser" --project qi --due 2026-05-01
 go run ./cmd/qi task list
 go run ./cmd/qi task done "fix"
@@ -55,9 +65,15 @@ qi task add "Buy milk"
 ## CLI reference
 
 ```
+qi capture <text>             # alias: qi c <text>
 qi task add <text> [--project <tag>] [--due YYYY-MM-DD]
 qi task list
-qi task done [fuzzy-text]     # interactive picker if multiple matches
+qi task done [fuzzy-text]
+```
+
+Capture writes a timestamped file to `00-inbox/`:
+```
+00-inbox/2026-04-23-225939.md
 ```
 
 Task format written to vault (Obsidian-compatible):
@@ -119,9 +135,6 @@ Machine-local state (not in vault, not synced):
 ---
 
 ## Roadmap
-
-### Phase 2 — Capture
-- `qi capture "text"` / `qi c "text"` → writes instantly to `00-inbox/`, no blocking
 
 ### Phase 3 — Calendar
 - `qi agenda` / `qi agenda week`
