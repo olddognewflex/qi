@@ -4,7 +4,7 @@ Go-first, local-first personal productivity CLI. Markdown is the source of truth
 
 ---
 
-## What's built (Phases 1–2)
+## What's built (Phases 1–4)
 
 **Phase 1 — Core task management — fully functional.**
 
@@ -25,6 +25,26 @@ Go-first, local-first personal productivity CLI. Markdown is the source of truth
 | `internal/service` | `CaptureService` — thin wrapper over vault write |
 | `internal/commands` | `capture` command with `c` alias |
 | `internal/config` | `InboxPath` field — defaults to `{vault_path}/00-inbox` |
+
+**Phase 3 — Notes + full-text search — fully functional.**
+
+| Package | What it does |
+|---|---|
+| `internal/domain` | `Note` struct |
+| `internal/vault` | `WriteNote`, `ReadNote`, `ListNotes`, `WalkVault` |
+| `internal/service` | `NoteService` — `AddNote`, `GetNote`, `ListNotes` |
+| `internal/index` | SQLite FTS5 index — `Open`, `Rebuild`, `Search` |
+| `internal/commands` | `note new`, `note search`, `note list`, `index rebuild` |
+
+**Phase 4 — Calendar — fully functional.**
+
+| Package | What it does |
+|---|---|
+| `internal/domain` | `Event` struct + `EventSourceLocal` const |
+| `internal/calendar` | `Provider` interface, `LocalProvider` (reads `30-daily/`), `ICSProvider` (fetches any `.ics` URL) |
+| `internal/service` | `AgendaService` — `Today()`, `Week()` — aggregates providers, sorted by start time |
+| `internal/commands` | `agenda`, `agenda today`, `agenda week` |
+| `internal/config` | `DailyPath`, `ICSCalendars []ICSCalendar` fields |
 
 **All operations have unit tests.**
 
@@ -69,6 +89,14 @@ qi capture <text>             # alias: qi c <text>
 qi task add <text> [--project <tag>] [--due YYYY-MM-DD]
 qi task list
 qi task done [fuzzy-text]
+
+qi note new "title" [--body "..."]
+qi note list
+qi note search "query"
+qi index rebuild
+
+qi agenda                     # today's events (local + any ICS calendars)
+qi agenda week
 ```
 
 Capture writes a timestamped file to `00-inbox/`:
@@ -97,6 +125,41 @@ task_file_path = "10-tasks/inbox.md"   # optional, relative to vault_path
 |---|---|
 | `QI_VAULT_PATH` | Override vault path |
 | `QI_TASK_FILE_PATH` | Override task file path |
+**Calendar setup:**
+
+Two calendar source types are supported — use either or both:
+
+**Option A — ICS feed** (no auth, calendar owner shares a secret URL):
+```toml
+[[ics_calendars]]
+name = "Client A"
+url  = "https://calendar.google.com/calendar/ical/abc%40gmail.com/private-XXXXX/basic.ics"
+```
+
+**Option B — CalDAV with App Password** (for Google Workspace accounts with App Passwords enabled):
+```toml
+[[caldav_calendars]]
+name     = "Client A"
+email    = "raymond@clientdomain.com"
+password = "xxxx xxxx xxxx xxxx"
+```
+
+To generate an App Password: Google Account → Security → 2-Step Verification → App passwords → name it "qi" → copy the 16-char password.
+
+⚠️ Passwords are stored in plaintext in `config.toml`. Set permissions: `chmod 600 ~/.config/qi/config.toml`.
+
+`qi agenda` fetches all configured calendars and merges results sorted by start time.
+
+**Local daily note events:**
+
+Events in `30-daily/YYYY-MM-DD.md` under a `## Schedule` heading:
+```markdown
+## Schedule
+- 09:00 Team standup
+- 09:30-10:30 Design review #qi
+- 14:00 Coffee #team
+```
+Format: `- HH:MM Title [#project]` or `- HH:MM-HH:MM Title [#project]`.
 
 ---
 
@@ -127,7 +190,7 @@ vault/
 Machine-local state (not in vault, not synced):
 ```
 ~/.local/share/qi/
-├── qi.db           # SQLite index (not yet built)
+├── qi.db           # SQLite index (FTS5 for notes)
 ├── cache/
 ├── logs/
 └── queue/
@@ -137,15 +200,8 @@ Machine-local state (not in vault, not synced):
 
 ## Roadmap
 
-### Phase 3 — Notes + search
-- `qi note new "title"`, `qi note search "query"`
-- SQLite FTS5 index over the vault
-- `qi index rebuild`
-
-### Phase 4 — Calendar
-- `qi agenda` / `qi agenda week`
-- CalendarService + Google/Apple calendar sync
-
+### ~~Phase 3 — Notes + search~~ ✓ Done
+### ~~Phase 4 — Calendar~~ ✓ Done
 
 ### Phase 5 — MCP server (`qi-mcp`)
 - Strict JSON schema tools for AI agents: `search_notes`, `get_note`, `add_note`, `search_tasks`, `add_task`, `get_agenda`, `capture`
