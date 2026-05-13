@@ -140,6 +140,26 @@ Start with phase 1. Don't scaffold AI/daemon layers until core CLI is stable.
 
 ---
 
+## Qi's role boundary
+
+Qi is not a general autonomous agent runner.
+
+**Qi may:**
+- Expose local tools
+- Execute explicit commands
+- Run deterministic skills
+- Propose AI-assisted actions
+- Require approval for mutations
+
+**Qi may not:**
+- Autonomously chain arbitrary tools
+- Silently mutate calendars, notes, tasks, or files
+- Hide tool execution
+- Invent new workflows without user intent
+- Become a second operating system made of vibes and JSON
+
+---
+
 ## What AI may NOT do
 
 - Silent vault writes
