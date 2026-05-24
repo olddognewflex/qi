@@ -2,8 +2,13 @@ package commands
 
 import (
 	"fmt"
+	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"qi/internal/config"
@@ -17,6 +22,22 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 	noteCmd := &cobra.Command{
 		Use:   "note",
 		Short: "Manage notes",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := os.MkdirAll(cfg.InboxPath, 0o755); err != nil {
+				return fmt.Errorf("create inbox dir: %w", err)
+			}
+			filename := fmt.Sprintf("untitled-%s.md", time.Now().Format("20060102-150405"))
+			full := filepath.Join(cfg.InboxPath, filename)
+			if err := os.WriteFile(full, []byte{}, 0o644); err != nil {
+				return fmt.Errorf("create note: %w", err)
+			}
+			vaultName := filepath.Base(cfg.VaultPath)
+			rel := "00-inbox/" + url.QueryEscape(filename)
+			uri := "obsidian://open?vault=" + url.QueryEscape(vaultName) +
+				"&file=" + rel
+			return openURL(uri)
+		},
 	}
 
 	newCmd := &cobra.Command{
@@ -85,4 +106,17 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 
 	noteCmd.AddCommand(newCmd, searchCmd, listCmd)
 	return noteCmd
+}
+
+func openURL(target string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", target)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+	return cmd.Start()
 }
