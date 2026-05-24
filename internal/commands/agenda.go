@@ -52,7 +52,7 @@ func newAgendaCommand(cfg config.Config) *cobra.Command {
 
 func buildAgendaService(cfg config.Config) service.AgendaService {
 	providers := []calendar.Provider{
-		calendar.LocalProvider{DailyDir: cfg.DailyPath},
+		calendar.LocalProvider{PathFor: cfg.DailyNotePath},
 	}
 
 	for _, cal := range cfg.ICSCalendars {

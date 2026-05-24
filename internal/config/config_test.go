@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"qi/internal/config"
 )
@@ -277,5 +278,95 @@ func TestConfigPath_DefaultFallback(t *testing.T) {
 	want := filepath.Join(home, ".config", "qi", "config.toml")
 	if got != want {
 		t.Errorf("ConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDailyNotePath_NestedFormat(t *testing.T) {
+	cfg := config.Config{
+		VaultPath:       "/tmp/vault",
+		DailyDirFormat:  "30-daily/YYYY/MMMM",
+		DailyFileFormat: "YYYY-MM-DD",
+	}
+	day := time.Date(2026, 5, 24, 0, 0, 0, 0, time.Local)
+	got := cfg.DailyNotePath(day)
+	want := "/tmp/vault/30-daily/2026/May/2026-05-24.md"
+	if got != want {
+		t.Errorf("DailyNotePath = %q, want %q", got, want)
+	}
+}
+
+func TestDailyNotePath_FlatDefault(t *testing.T) {
+	cfg := config.Config{
+		VaultPath:       "/tmp/vault",
+		DailyDirFormat:  "30-daily",
+		DailyFileFormat: "YYYY-MM-DD",
+	}
+	day := time.Date(2026, 5, 24, 0, 0, 0, 0, time.Local)
+	got := cfg.DailyNotePath(day)
+	want := "/tmp/vault/30-daily/2026-05-24.md"
+	if got != want {
+		t.Errorf("DailyNotePath = %q, want %q", got, want)
+	}
+}
+
+func TestDailyNotePath_ShortMonthToken(t *testing.T) {
+	// MMM (short month) must resolve independently of MMMM/MM.
+	cfg := config.Config{
+		VaultPath:       "/v",
+		DailyDirFormat:  "daily/MMM",
+		DailyFileFormat: "MM-DD",
+	}
+	day := time.Date(2026, 1, 5, 0, 0, 0, 0, time.Local)
+	got := cfg.DailyNotePath(day)
+	want := "/v/daily/Jan/01-05.md"
+	if got != want {
+		t.Errorf("DailyNotePath = %q, want %q", got, want)
+	}
+}
+
+func TestLoadFrom_DailyFormatsFromTOML(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+daily_dir_format = "30-daily/YYYY/MMMM"
+daily_file_format = "YYYY-MM-DD"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 5, 24, 0, 0, 0, 0, time.Local)
+	got := cfg.DailyNotePath(day)
+	want := "/tmp/vault/30-daily/2026/May/2026-05-24.md"
+	if got != want {
+		t.Errorf("DailyNotePath = %q, want %q", got, want)
+	}
+}
+
+func TestLoadFrom_DailyFormatDefaults(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DailyDirFormat != "30-daily" {
+		t.Errorf("DailyDirFormat = %q, want 30-daily", cfg.DailyDirFormat)
+	}
+	if cfg.DailyFileFormat != "YYYY-MM-DD" {
+		t.Errorf("DailyFileFormat = %q, want YYYY-MM-DD", cfg.DailyFileFormat)
+	}
+	day := time.Date(2026, 5, 24, 0, 0, 0, 0, time.Local)
+	want := "/tmp/vault/30-daily/2026-05-24.md"
+	if got := cfg.DailyNotePath(day); got != want {
+		t.Errorf("DailyNotePath = %q, want %q", got, want)
 	}
 }

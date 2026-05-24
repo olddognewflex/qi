@@ -109,7 +109,7 @@ func run() error {
 // daily-notes provider is wired by default; future stages can add ICS,
 // CalDAV, and Google providers here based on cfg.
 func buildAgendaProviders(cfg config.Config, log *slog.Logger) []calendar.Provider {
-	providers := []calendar.Provider{calendar.LocalProvider{DailyDir: cfg.DailyPath}}
+	providers := []calendar.Provider{calendar.LocalProvider{PathFor: cfg.DailyNotePath}}
 	_ = log
 	return providers
 }

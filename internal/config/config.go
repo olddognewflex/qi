@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -56,6 +58,8 @@ type Config struct {
 	InboxPath       string
 	NotesPath       string
 	DailyPath       string
+	DailyDirFormat  string
+	DailyFileFormat string
 	ICSCalendars    []ICSCalendar
 	CalDAVCalendars []CalDAVCalendar
 	GoogleOAuth     GoogleOAuth
@@ -106,6 +110,8 @@ type aiTOML struct {
 type tomlFile struct {
 	VaultPath       string          `toml:"vault_path"`
 	TaskFilePath    string          `toml:"task_file_path"`
+	DailyDirFormat  string          `toml:"daily_dir_format"`
+	DailyFileFormat string          `toml:"daily_file_format"`
 	ICSCalendars    []icsCalTOML    `toml:"ics_calendars"`
 	CalDAVCalendars []caldavCalTOML `toml:"caldav_calendars"`
 	GoogleOAuth     googleOAuthTOML `toml:"google_oauth"`
@@ -157,6 +163,15 @@ func LoadFrom(path string) (Config, error) {
 		taskFilePath = filepath.Join(raw.VaultPath, "10-tasks", "inbox.md")
 	case !filepath.IsAbs(taskFilePath):
 		taskFilePath = filepath.Join(raw.VaultPath, taskFilePath)
+	}
+
+	dailyDirFormat := raw.DailyDirFormat
+	if dailyDirFormat == "" {
+		dailyDirFormat = "30-daily"
+	}
+	dailyFileFormat := raw.DailyFileFormat
+	if dailyFileFormat == "" {
+		dailyFileFormat = "YYYY-MM-DD"
 	}
 
 	icsCalendars := make([]ICSCalendar, 0, len(raw.ICSCalendars))
@@ -229,6 +244,8 @@ func LoadFrom(path string) (Config, error) {
 		InboxPath:       filepath.Join(raw.VaultPath, "00-inbox"),
 		NotesPath:       filepath.Join(raw.VaultPath, "20-notes"),
 		DailyPath:       filepath.Join(raw.VaultPath, "30-daily"),
+		DailyDirFormat:  dailyDirFormat,
+		DailyFileFormat: dailyFileFormat,
 		ICSCalendars:    icsCalendars,
 		CalDAVCalendars: caldavCalendars,
 		GoogleOAuth: GoogleOAuth{
@@ -244,6 +261,41 @@ func LoadFrom(path string) (Config, error) {
 			OllamaModel: raw.AI.OllamaModel,
 		},
 	}, nil
+}
+
+var tokenRe = regexp.MustCompile(`YYYY|MMMM|MMM|MM|DD`)
+
+// resolveDateFormat substitutes Obsidian/moment date tokens with their values
+// for day, leaving literal text untouched. Only matched tokens are replaced —
+// it does NOT pass the format through time.Format, which would misinterpret
+// literal path text (e.g. the "3" in "30-daily") as Go layout components. The
+// regexp alternation is ordered longest-first so MMMM/MMM resolve before MM.
+func resolveDateFormat(format string, day time.Time) string {
+	return tokenRe.ReplaceAllStringFunc(format, func(tok string) string {
+		switch tok {
+		case "YYYY":
+			return day.Format("2006")
+		case "MMMM":
+			return day.Format("January")
+		case "MMM":
+			return day.Format("Jan")
+		case "MM":
+			return day.Format("01")
+		case "DD":
+			return day.Format("02")
+		}
+		return tok
+	})
+}
+
+// DailyNotePath resolves the absolute path to the daily note for day, using the
+// configured folder and filename formats (Obsidian date tokens).
+func (c Config) DailyNotePath(day time.Time) string {
+	return filepath.Join(
+		c.VaultPath,
+		resolveDateFormat(c.DailyDirFormat, day),
+		resolveDateFormat(c.DailyFileFormat, day)+".md",
+	)
 }
 
 func DataDir() string {
