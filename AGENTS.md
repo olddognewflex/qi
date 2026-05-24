@@ -1,85 +1,99 @@
 # AGENTS.md — qi
 
 ## Status
-**Pre-implementation.** No code exists. Only source of truth: `docs/qi-blueprint-v2.md`.
+**Implemented and evolving.** Core CLI, notes + FTS index, calendar, the `qid` daemon, the `qi-mcp` server, and the AI planner all exist. `docs/qi-blueprint-v2.md` is the original design intent; this file and `CLAUDE.md` describe what is actually built.
 
 ---
 
 ## What this is
-Go CLI productivity tool. Three binaries:
-- `qi` — stateless CLI (fast, no AI on hot path)
-- `qid` — background daemon (file watcher, sync, queue, index)
-- `qi-mcp` — MCP server (AI interface via strict schemas)
+Go CLI productivity tool over an Obsidian-compatible markdown vault. Three binaries:
+- `qi` — stateless CLI (fast, no AI on the hot path)
+- `qid` — background daemon: hosts the tool registry and serves a JSON-RPC 2.0 API over a unix-domain socket
+- `qi-mcp` — MCP server: re-publishes qid's tools to AI clients (e.g. Claude Desktop) over stdio
+
+`qi` works standalone. `qid` and `qi-mcp` are only needed for the tool/AI surface.
 
 ---
 
 ## Architectural rules
 
 1. Markdown files in the Obsidian vault are the canonical source of truth.
-2. Capture latency < 100ms.** `qi capture` must never call network, AI, or block. No exceptions.
-2. SQLite, when added, is a derived per-machine index only.
-3. Commands must stay thin. Business logic belongs in `internal/service`.
-4. Vault parsing and formatting belongs in `internal/vault`.
-5. Domain types belong in `internal/domain`.
-6. Cross-platform logic belongs behind interfaces in `internal/platform`.
+2. **Capture latency < 100ms.** `qi capture` must never call network, AI, or block. No exceptions.
+3. SQLite is a derived per-machine index only — fully rebuildable from markdown.
+4. Commands stay thin. Business logic belongs in `internal/service`.
+5. Vault parsing and formatting belongs in `internal/vault`.
+6. Domain types belong in `internal/domain`.
 7. AI features must be explicit and opt-in. No silent LLM usage in normal commands.
-8. Any AI-proposed mutation must require user confirmation before writing.
+8. Any AI-proposed mutation must require user confirmation before writing — enforced by the qid policy gate + approval queue, not by convention.
 
 ---
 
-## Planned directory structure
+## Directory structure
 
 ```
 qi/
 ├── cmd/
-|    ├── qi/          # CLI entrypoint |
-| --- |
-|    ├── qid/         # Daemon entrypoint |
-|    └── qi-mcp/      # MCP server entrypoint |
+│    ├── qi/          # CLI entrypoint
+│    ├── qid/         # Daemon entrypoint
+│    └── qi-mcp/      # MCP server entrypoint
 ├── internal/
-|    ├── commands/    # Thin command handlers — no logic here |
-| --- |
-|    ├── service/     # All business logic (TaskService, CaptureService, etc.) |
-|    ├── domain/      # Domain types (Task, Note, Event) |
-|    ├── vault/       # Markdown file read/write |
-|    ├── index/       # SQLite (FTS5 for notes) |
-|    ├── calendar/ |
-|    ├── llm/ |
-|    ├── platform/ |
-|    ├── queue/ |
-|    └── config/ |
-├── mcp/
-├── raycast/
-├── migrations/
+│    ├── commands/    # Thin Cobra handlers — no logic. `ai.go` = qid client
+│    ├── service/     # All business logic (TaskService, CaptureService, ...)
+│    ├── domain/      # Domain types (Task, Note, Event)
+│    ├── vault/       # Markdown read/write (Obsidian task-line format)
+│    ├── index/       # SQLite FTS5 note index (derived state)
+│    ├── calendar/    # Provider interface: Local / ICS / CalDAV / Google
+│    ├── tui/         # Bubble Tea pickers
+│    ├── config/      # TOML loader + env overrides
+│    ├── tools/       # qid tool registry (Local / MCP / Skill sources)
+│    │    └── builtin/ # Compiled-in local tools (capture, ...)
+│    ├── skills/      # Deterministic composed workflows (daily-review)
+│    ├── daemon/      # JSON-RPC 2.0 server + client (unix socket)
+│    ├── policy/      # allow / queue / refuse decisions per caller
+│    ├── approval/    # Approval queue + append-only JSONL audit log
+│    ├── mcp/         # qid → external MCP servers (inbound tools)
+│    ├── qimcp/       # qid → AI clients via MCP (outbound bridge)
+│    └── ai/          # LLM tool-use planner (Anthropic, Ollama)
 └── Makefile
 ```
 
-Commands are thin. All logic lives in service layer.
+Commands are thin. All logic lives in the service layer (CLI) or the tools/skills/policy layers (daemon).
+
+---
+
+## The daemon trust model
+
+Every tool call flows through one registry and one policy gate. The **caller identity** drives the decision:
+
+- `cli` — interactive human via `qi`; runs immediately.
+- read-only tools — run immediately regardless of caller.
+- `ai-planner:<id>` (the `qi ai run` planner) and `mcp:<id>` (an external AI client via `qi-mcp`) — any **mutating** call routes through the approval queue. A human approves or denies with `qi ai approve <id>` / `qi ai deny <id>`. Every transition is written to the append-only audit log.
+
+No code path may let a non-cli caller mutate state without passing through `internal/policy` + `internal/approval`.
 
 ---
 
 ## Storage paths
 
 ```
-vault/
-├── 00-inbox/       # capture always writes here
-├── 10-tasks/
+vault/                # canonical, Obsidian-compatible, may be synced
+├── 00-inbox/         # capture always writes here (timestamped files)
+├── 10-tasks/inbox.md
 ├── 20-notes/
-├── 30-daily/
-└── .qi/config.toml
+└── 30-daily/YYYY-MM-DD.md   # local calendar source
 
-~/.local/share/qi/  # machine-local
-├── qi.db
-├── cache/
-├── logs/
-└── queue/
+~/.local/share/qi/    # machine-local (XDG_DATA_HOME)
+└── qi.db             # SQLite FTS5 note index
+
+~/.local/state/qi/    # machine-local (XDG_RUNTIME_DIR → XDG_STATE_HOME → here)
+├── qid.sock          # daemon unix socket (0600)
+└── audit.log         # approval audit log (JSONL)
 
 ~/.config/qi/
-├── config.toml
-└── prompts/
+└── config.toml       # vault_path, calendars, [[mcp_servers]], [ai]
 ```
 
-Secrets → system keychain.
+Secrets (e.g. CalDAV passwords) → system keychain.
 
 ---
 
@@ -110,30 +124,16 @@ Plugins live in `.git/hooks/<plugin>/`. Active plugins run on pre-commit, commit
 
 ---
 
-## Build phases (implementation order)
+## MCP tools
 
-1. Core CLI: `qi task`, `qi capture`
-3. Notes + full-text search
-2. Calendar integration
-4. MCP server
-5. Daemon (`qid`)
-6. AI commands
-7. Mobile
-
-Start with phase 1. Don't scaffold AI/daemon layers until core CLI is stable.
-
----
-
-## MCP tools (planned)
-
-`search_notes`, `get_note`, `add_note`, `search_tasks`, `add_task`, `get_agenda`, `capture` — all require strict JSON schemas.
+qid exposes its registered tools to AI clients through `qi-mcp`. Tools come from three sources: compiled-in local Go (`internal/tools/builtin`), connected external MCP servers (namespaced `mcp.<serverID>.<toolName>`), and deterministic skills (`internal/skills`). Mutating tools surface to AI clients as approval-pending and are gated behind `qi ai approve`.
 
 ---
 
 ## Coding rules
 
 - Prefer small packages and small functions.
-- Add tests for parsers and service behavior.
+- Add tests for parsers and service behavior; vault round-trip tests are load-bearing.
 - Keep output predictable.
 - Preserve markdown compatibility with Obsidian task lines.
 - Avoid OS-specific behavior in the core packages.
@@ -165,4 +165,3 @@ Qi is not a general autonomous agent runner.
 - Silent vault writes
 - Auto task creation without confirmation
 - Any mutation without explicit user approval
-

@@ -9,7 +9,9 @@ make test                       # go test ./...
 make tidy                       # go mod tidy
 make run                        # go run ./cmd/qi
 go test ./internal/vault -run TestParseTaskLine   # single test
-go build -o bin/qi ./cmd/qi     # build binary (no `make build` target)
+go build -o bin/qi ./cmd/qi     # build CLI (no `make build` target)
+go build -o bin/qid ./cmd/qid   # build daemon
+go build -o bin/qi-mcp ./cmd/qi-mcp   # build MCP server
 ```
 
 Go 1.25+. Module path is `qi`; import internal packages as `qi/internal/...`.
@@ -18,22 +20,43 @@ Go 1.25+. Module path is `qi`; import internal packages as `qi/internal/...`.
 
 ## Architecture
 
+Three binaries:
+- `cmd/qi/main.go` — stateless CLI; calls `commands.NewRootCommand().Execute()`. Fast, no AI on the hot path.
+- `cmd/qid/main.go` — long-running daemon. Hosts the tool registry and serves a JSON-RPC 2.0 API over a unix-domain socket. Wires builtin tools, deterministic skills, external MCP servers, the policy gate, and the approval queue.
+- `cmd/qi-mcp/main.go` — MCP server (stdio subprocess of an AI client). Dials qid, fetches the live tool catalog, and re-publishes it to MCP clients (e.g. Claude Desktop).
+
+### CLI layer (`qi`)
+
 Strict layered Cobra CLI. Direction of dependency is one-way: `cmd → commands → service → {vault, index, calendar} → domain`.
 
-- `cmd/qi/main.go` — single entrypoint; calls `commands.NewRootCommand().Execute()`. `cmd/qid` (daemon) and `cmd/qi-mcp` (MCP server) are planned but not yet built.
-- `internal/commands/` — **thin** Cobra handlers. Wiring only: parse flags, call service, format output. No business logic. New subcommands register in `root.go`.
+- `internal/commands/` — **thin** Cobra handlers. Wiring only: parse flags, call service, format output. No business logic. New subcommands register in `root.go`. `ai.go` is the client side of qid: `qi ai tools list|call`, `qi ai run`, `qi ai approvals|approve|deny`.
 - `internal/service/` — all business logic. `TaskService`, `CaptureService`, `NoteService`, `AgendaService`. Services are plain structs constructed per-command from `config.Config`. Fuzzy matching, sorting, validation all live here.
 - `internal/domain/` — pure value types (`Task`, `Note`, `Event`). No I/O, no deps.
 - `internal/vault/` — markdown read/write. **Obsidian-compatible** task line format must be preserved: `- [ ] text #project 📅 YYYY-MM-DD`. See `ParseTaskLine`/`FormatTaskLine` in `tasks.go`; round-trip tests in `tasks_test.go` are load-bearing.
 - `internal/index/` — SQLite FTS5 index for notes via `modernc.org/sqlite` (pure-Go, no CGO). Lives at `$XDG_DATA_HOME/qi/qi.db` (or `~/.local/share/qi/qi.db`). **Derived state** — must be fully rebuildable from markdown via `index rebuild`. Never the source of truth.
-- `internal/calendar/` — `Provider` interface aggregates events into `AgendaService`. Three impls: `LocalProvider` (parses `## Schedule` block in `30-daily/YYYY-MM-DD.md`, format `- HH:MM[-HH:MM] Title [#tag]`), `ICSProvider` (HTTP fetch of `.ics`), `CalDAVProvider` (Google App Password). Add a provider → register it in `commands/agenda.go`.
-- `internal/config/` — TOML loader with env var overrides. Derives `InboxPath`, `NotesPath`, `DailyPath` from `VaultPath` (subdirs `00-inbox`, `20-notes`, `30-daily`). `TaskFilePath` defaults to `10-tasks/inbox.md` relative to vault.
+- `internal/calendar/` — `Provider` interface aggregates events into `AgendaService`. Four impls: `LocalProvider` (parses `## Schedule` block in `30-daily/YYYY-MM-DD.md`, format `- HH:MM[-HH:MM] Title [#tag]`), `ICSProvider` (HTTP fetch of `.ics`), `CalDAVProvider` (App Password), `GoogleProvider` (OAuth; token + keychain helpers in `google_auth.go`/`google_token.go`/`keychain.go`). Add a provider → register it in `commands/agenda.go`.
+- `internal/tui/` — Bubble Tea pickers for interactive CLI selection.
+- `internal/config/` — TOML loader with env var overrides. Derives `InboxPath`, `NotesPath`, `DailyPath` from `VaultPath` (subdirs `00-inbox`, `20-notes`, `30-daily`). `TaskFilePath` defaults to `10-tasks/inbox.md` relative to vault. Also parses `[[mcp_servers]]` (external MCP servers qid connects to) and the `[ai]` section (provider/model defaults for `qi ai run`).
+
+### Daemon layer (`qid` / `qi-mcp`)
+
+qid is the orchestration core. Every tool call — from the CLI, the AI planner, or an MCP client — flows through one registry and one policy gate. The **caller identity** drives the trust decision: `cli` callers and read-only tools run immediately; any non-cli caller mutating state routes through the approval queue.
+
+- `internal/tools/` — in-memory tool registry. Tools come from three sources: `SourceLocal` (compiled-in Go), `SourceMCP` (connected external MCP servers), `SourceSkill` (composed workflows). Derived state — rebuilt from code plus live MCP connections, never persisted. `Execute` dispatches local handlers directly and MCP tools through the manager.
+- `internal/tools/builtin/` — compiled-in `SourceLocal` tools (e.g. `capture`).
+- `internal/skills/` — deterministic composed workflows exposed as `SourceSkill` tools (e.g. `daily-review`). Chain existing services and read the vault; **never call an LLM, never write silently.** Read-only by default; mutating skills must set `Mutating: true` so policy gates them.
+- `internal/daemon/` — JSON-RPC 2.0 server. Newline-delimited JSON over a unix-domain socket (`server.go`, `wire.go`, `socket.go`). `internal/daemon/client/` is the Go client used by `qi ai` and `qi-mcp`; it carries the caller identity and detects approval-pending results via `IsPending`.
+- `internal/policy/` — decides allow / queue / refuse for each call. Deterministic and conservative: anything a non-cli caller wants to mutate routes through the approval queue. `DefaultDecider` is the wired default.
+- `internal/approval/` — in-memory queue of mutating calls policy did not auto-allow, plus an **append-only JSONL audit log** (the durable record). Every state transition (queued → approved/denied → executed/failed) is logged.
+- `internal/mcp/` — connects qid to external MCP servers listed in `config.MCPServers`, surfaces their tools under namespace `mcp.<serverID>.<toolName>`, and routes `Execute` calls back to the right client.
+- `internal/qimcp/` — the inverse bridge: re-publishes qid's tools to AI clients via MCP, forwarding each call back through the daemon client as `caller="mcp:<sessionID>"` so mutations hit the approval queue. Drives `cmd/qi-mcp`.
+- `internal/ai/` — LLM tool-use loop (`Planner`) against qid's catalog. Providers: Anthropic and Ollama. Executes proposed tool calls as `caller="ai-planner:<sessionID>"`; mutating calls surface as approval-pending results — the planner never bypasses qid's policy gate.
 
 ### Non-negotiable invariants
 
 1. **Markdown is canonical.** Vault files must remain readable/usable without `qi`. SQLite is a derived index; never store anything there that isn't in the markdown.
 2. **`qi capture` hot path <100ms.** No network, no AI, no blocking. `vault.WriteCapture` writes a timestamped `.md` to `00-inbox/` and returns.
-3. **AI is opt-in and confirmation-gated.** No silent LLM calls. Any AI-proposed mutation requires explicit user approval before writing to the vault.
+3. **AI is opt-in and confirmation-gated.** No silent LLM calls. Any AI-proposed mutation requires explicit user approval before writing to the vault. This is enforced structurally in qid: non-cli callers (`ai-planner:*`, `mcp:*`) can never mutate directly — `internal/policy` routes their mutations into `internal/approval`, where a human runs `qi ai approve <id>` (or `deny`). Don't add a code path that lets a non-cli caller bypass that gate.
 4. **Obsidian task-line compatibility.** Don't change `ParseTaskLine`/`FormatTaskLine` output format without verifying round-trip with existing vault files. Project tag becomes the first `#tag`; due date is `📅 YYYY-MM-DD`.
 
 ### Vault layout (writes target these paths)
@@ -46,7 +69,10 @@ vault/
 └── 30-daily/YYYY-MM-DD.md   # local calendar source
 ```
 
-Machine-local (never synced, not in vault): `~/.local/share/qi/qi.db`.
+Machine-local (never synced, not in vault):
+- `$XDG_DATA_HOME/qi/qi.db` (or `~/.local/share/qi/qi.db`) — SQLite note index.
+- `$XDG_RUNTIME_DIR/qi/qid.sock` → `$XDG_STATE_HOME/qi/qid.sock` → `~/.local/state/qi/qid.sock` — qid unix socket (first that resolves; 0600). `--socket` overrides on both qid and the clients.
+- `audit.log` next to the socket — append-only JSONL approval audit log.
 
 ## Git hooks
 
