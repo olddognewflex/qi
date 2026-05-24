@@ -37,3 +37,4 @@ go.work.sum
 # Project-specific
 qi.db
 ~/.local/share/qi/
+client_secret_*.json

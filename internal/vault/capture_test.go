@@ -9,8 +9,12 @@ import (
 
 func TestWriteCapture(t *testing.T) {
 	inbox := t.TempDir()
-	if err := WriteCapture(inbox, "Buy oat milk"); err != nil {
+	path, err := WriteCapture(inbox, "Buy oat milk")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if filepath.Dir(path) != inbox {
+		t.Fatalf("returned path %q not in inbox %q", path, inbox)
 	}
 
 	entries, err := os.ReadDir(inbox)
@@ -25,8 +29,11 @@ func TestWriteCapture(t *testing.T) {
 	if !strings.HasSuffix(name, ".md") {
 		t.Fatalf("expected .md suffix, got %q", name)
 	}
+	if filepath.Base(path) != name {
+		t.Fatalf("returned path basename %q != listed entry %q", filepath.Base(path), name)
+	}
 
-	data, err := os.ReadFile(filepath.Join(inbox, name))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,14 +48,14 @@ func TestWriteCapture(t *testing.T) {
 
 func TestWriteCapture_EmptyText(t *testing.T) {
 	inbox := t.TempDir()
-	if err := WriteCapture(inbox, "   "); err == nil {
+	if _, err := WriteCapture(inbox, "   "); err == nil {
 		t.Fatal("expected error for empty capture text")
 	}
 }
 
 func TestWriteCapture_Mkdir(t *testing.T) {
 	inbox := filepath.Join(t.TempDir(), "deep", "00-inbox")
-	if err := WriteCapture(inbox, "Nested inbox test"); err != nil {
+	if _, err := WriteCapture(inbox, "Nested inbox test"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if _, err := os.Stat(inbox); err != nil {

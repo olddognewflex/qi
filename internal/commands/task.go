@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"qi/internal/config"
 	"qi/internal/domain"
 	"qi/internal/service"
+	"qi/internal/tui"
 )
 
 func newTaskCommand(cfg config.Config) *cobra.Command {
@@ -69,7 +69,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 
 	doneCmd := &cobra.Command{
 		Use:   "done [fuzzy]",
-		Short: "Mark a task as done",
+		Short: "Mark task(s) as done",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tasks, err := svc.ListOpenTasks()
@@ -92,45 +92,58 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				return nil
 			}
 
-			reader := bufio.NewReader(os.Stdin)
-			var selected domain.Task
-
+			// Exact-one match with query keeps quick y/N flow.
 			if len(candidates) == 1 && query != "" {
-				selected = candidates[0]
+				selected := candidates[0]
+				reader := bufio.NewReader(os.Stdin)
 				fmt.Fprintf(os.Stdout, "Found:\n  %s\n\nMark as done? [y/N] ", taskDisplayLine(selected))
 				response, _ := reader.ReadString('\n')
 				if strings.ToLower(strings.TrimSpace(response)) != "y" {
 					fmt.Fprintln(os.Stdout, "Aborted.")
 					return nil
 				}
-			} else {
-				if query != "" {
-					fmt.Fprintf(os.Stdout, "Multiple tasks match %q:\n", query)
-				} else {
-					fmt.Fprintln(os.Stdout, "Open tasks:")
+				if err := svc.CompleteTask(selected); err != nil {
+					return err
 				}
-				for i, t := range candidates {
-					fmt.Fprintf(os.Stdout, "  %d. %s\n", i+1, taskDisplayLine(t))
-				}
-				fmt.Fprintf(os.Stdout, "\nSelect [1-%d]: ", len(candidates))
-				line, _ := reader.ReadString('\n')
-				n, convErr := strconv.Atoi(strings.TrimSpace(line))
-				if convErr != nil || n < 1 || n > len(candidates) {
-					return fmt.Errorf("invalid selection")
-				}
-				selected = candidates[n-1]
+				fmt.Fprintf(os.Stdout, "✓ Done: %s\n", selected.Text)
+				return nil
 			}
 
-			if err := svc.CompleteTask(selected); err != nil {
+			title := "Select tasks to complete"
+			if query != "" {
+				title = fmt.Sprintf("Tasks matching %q", query)
+			}
+			picked, err := tui.PickTasks(title, candidates)
+			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stdout, "✓ Done: %s\n", selected.Text)
+			if len(picked) == 0 {
+				fmt.Fprintln(os.Stdout, "Aborted.")
+				return nil
+			}
+
+			completed := completeTasks(svc, picked)
+			for _, t := range completed {
+				fmt.Fprintf(os.Stdout, "✓ Done: %s\n", t.Text)
+			}
 			return nil
 		},
 	}
 
 	taskCmd.AddCommand(addCmd, listCmd, doneCmd)
 	return taskCmd
+}
+
+func completeTasks(svc service.TaskService, tasks []domain.Task) []domain.Task {
+	done := make([]domain.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if err := svc.CompleteTask(t); err != nil {
+			fmt.Fprintf(os.Stderr, "skip %q: %v\n", t.Text, err)
+			continue
+		}
+		done = append(done, t)
+	}
+	return done
 }
 
 func taskDisplayLine(t domain.Task) string {
