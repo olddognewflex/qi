@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"qi/internal/calendar"
@@ -62,11 +63,30 @@ func buildAgendaService(cfg config.Config) service.AgendaService {
 	}
 
 	for _, cal := range cfg.CalDAVCalendars {
+		pw, err := resolveCalDAVPassword(cal)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skipping caldav %q: %v\n", cal.Name, err)
+			continue
+		}
 		providers = append(providers, calendar.CalDAVProvider{
 			CalName:  cal.Name,
-			Email:    cal.Email,
-			Password: cal.Password,
+			Endpoint: cal.Endpoint,
+			Username: cal.Username,
+			Password: pw,
+			Path:     cal.Path,
 		})
+	}
+
+	if cfg.GoogleOAuth.ClientID != "" && cfg.GoogleOAuth.ClientSecret != "" {
+		oauthCfg := calendar.GoogleOAuthConfig(cfg.GoogleOAuth.ClientID, cfg.GoogleOAuth.ClientSecret, "")
+		for _, cal := range cfg.GoogleCalendars {
+			providers = append(providers, calendar.GoogleProvider{
+				CalName:     cal.Name,
+				Account:     cal.Account,
+				CalendarID:  cal.CalendarID,
+				OAuthConfig: oauthCfg,
+			})
+		}
 	}
 
 	return service.AgendaService{Providers: providers}

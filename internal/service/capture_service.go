@@ -7,5 +7,6 @@ type CaptureService struct {
 }
 
 func (s CaptureService) Capture(text string) error {
-	return vault.WriteCapture(s.InboxPath, text)
+	_, err := vault.WriteCapture(s.InboxPath, text)
+	return err
 }

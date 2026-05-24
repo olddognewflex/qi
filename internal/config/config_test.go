@@ -142,6 +142,123 @@ func TestLoadFrom_MalformedTOML(t *testing.T) {
 	}
 }
 
+func TestLoadFrom_MCPServers(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[mcp_servers]]
+id = "github"
+command = "/usr/local/bin/mcp-github"
+args = ["--mode", "stdio"]
+env = { GITHUB_TOKEN = "abc123" }
+
+[[mcp_servers]]
+id = "obsidian"
+command = "/usr/local/bin/mcp-obsidian"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.MCPServers) != 2 {
+		t.Fatalf("got %d servers, want 2", len(cfg.MCPServers))
+	}
+	gh := cfg.MCPServers[0]
+	if gh.ID != "github" || gh.Command != "/usr/local/bin/mcp-github" {
+		t.Errorf("github server = %+v", gh)
+	}
+	if len(gh.Args) != 2 || gh.Args[0] != "--mode" {
+		t.Errorf("github args = %v", gh.Args)
+	}
+	if gh.Env["GITHUB_TOKEN"] != "abc123" {
+		t.Errorf("github env = %v", gh.Env)
+	}
+}
+
+func TestLoadFrom_MCPServersRejectDuplicateID(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[mcp_servers]]
+id = "dup"
+command = "/bin/true"
+
+[[mcp_servers]]
+id = "dup"
+command = "/bin/false"
+`)
+	if _, err := config.LoadFrom(cfgPath); err == nil {
+		t.Fatal("expected duplicate-id error")
+	}
+}
+
+func TestLoadFrom_MCPServersSkipIncomplete(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[mcp_servers]]
+id = ""
+command = "/bin/true"
+
+[[mcp_servers]]
+id = "ok"
+command = ""
+
+[[mcp_servers]]
+id = "good"
+command = "/bin/true"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].ID != "good" {
+		t.Fatalf("got %+v, want only \"good\"", cfg.MCPServers)
+	}
+}
+
+func TestLoadFrom_AISection(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[ai]
+provider = "ollama"
+model = "claude-sonnet-4-6"
+ollama_url = "http://localhost:11434"
+ollama_model = "qwen3:14b"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AI.Provider != "ollama" {
+		t.Errorf("provider = %q", cfg.AI.Provider)
+	}
+	if cfg.AI.OllamaModel != "qwen3:14b" {
+		t.Errorf("ollama_model = %q", cfg.AI.OllamaModel)
+	}
+	if cfg.AI.Model != "claude-sonnet-4-6" {
+		t.Errorf("model = %q", cfg.AI.Model)
+	}
+}
+
 func TestConfigPath_XDGEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 
