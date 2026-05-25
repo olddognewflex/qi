@@ -1,6 +1,8 @@
 package calendar
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +110,42 @@ Some notes here.
 	}
 	if events[2].Title != "One-on-one" || events[2].Project != "team" {
 		t.Errorf("events[2]=%+v unexpected", events[2])
+	}
+}
+
+// TestLocalProvider_NestedPath is a regression for the flat-path bug: the
+// provider must read ## Schedule from a nested, date-formatted daily-note path
+// (e.g. 30-daily/2026/May/2026-05-24.md), resolved via PathFor.
+func TestLocalProvider_NestedPath(t *testing.T) {
+	dir := t.TempDir()
+	day := time.Date(2026, 5, 24, 0, 0, 0, 0, time.Local)
+
+	pathFor := func(d time.Time) string {
+		return filepath.Join(dir, "30-daily", d.Format("2006"), d.Format("January"), d.Format("2006-01-02")+".md")
+	}
+
+	notePath := pathFor(day)
+	if err := os.MkdirAll(filepath.Dir(notePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	note := "# 2026-05-24\n\n## Schedule\n- 09:00 Standup\n- 10:00-11:00 Planning #qi\n"
+	if err := os.WriteFile(notePath, []byte(note), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := LocalProvider{PathFor: pathFor}
+	events, err := p.Events(day, day.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 (nested path not read?)", len(events))
+	}
+	if events[0].Title != "Standup" {
+		t.Errorf("events[0].Title = %q, want Standup", events[0].Title)
+	}
+	if events[1].Title != "Planning" || events[1].Project != "qi" {
+		t.Errorf("events[1] = %+v, want Planning/#qi", events[1])
 	}
 }
 

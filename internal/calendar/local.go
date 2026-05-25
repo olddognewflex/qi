@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -19,7 +18,9 @@ var (
 )
 
 type LocalProvider struct {
-	DailyDir string
+	// PathFor resolves the daily-note path for a given day (typically
+	// config.Config.DailyNotePath). Supports nested, date-formatted layouts.
+	PathFor func(time.Time) string
 }
 
 func (p LocalProvider) Name() string { return domain.EventSourceLocal }
@@ -39,7 +40,7 @@ func (p LocalProvider) Events(from, to time.Time) ([]domain.Event, error) {
 }
 
 func (p LocalProvider) eventsForDay(day time.Time) ([]domain.Event, error) {
-	path := filepath.Join(p.DailyDir, day.Format("2006-01-02")+".md")
+	path := p.PathFor(day)
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
