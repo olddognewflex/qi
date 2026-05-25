@@ -133,17 +133,21 @@ func AppendTask(path string, task domain.Task) error {
 		return err
 	}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open task file: %w", err)
-	}
-	defer f.Close()
+	// Locked: an unlocked O_APPEND would write to the current inode, which a
+	// concurrent UpdateTaskLine could rename away underneath us, losing the
+	// append. The shared lock serializes both mutators.
+	return withFileLock(path, func() error {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open task file: %w", err)
+		}
+		defer f.Close()
 
-	_, err = f.WriteString(line + "\n")
-	if err != nil {
-		return fmt.Errorf("append task: %w", err)
-	}
-	return nil
+		if _, err := f.WriteString(line + "\n"); err != nil {
+			return fmt.Errorf("append task: %w", err)
+		}
+		return nil
+	})
 }
 
 func UpdateTaskLine(path string, lineNo int, task domain.Task) error {
@@ -151,39 +155,45 @@ func UpdateTaskLine(path string, lineNo int, task domain.Task) error {
 		return fmt.Errorf("invalid line number: %d", lineNo)
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read task file: %w", err)
-	}
+	// The read-guard-write below must be atomic against other qi processes, or
+	// two concurrent updates to different lines would each rewrite the whole
+	// file from a stale snapshot and clobber each other's change. Hold the lock
+	// for the entire critical section, not just the write.
+	return withFileLock(path, func() error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read task file: %w", err)
+		}
 
-	lines := strings.Split(string(data), "\n")
-	idx := lineNo - 1
-	if idx >= len(lines) {
-		return fmt.Errorf("line %d out of range (file has %d lines)", lineNo, len(lines))
-	}
+		lines := strings.Split(string(data), "\n")
+		idx := lineNo - 1
+		if idx >= len(lines) {
+			return fmt.Errorf("line %d out of range (file has %d lines)", lineNo, len(lines))
+		}
 
-	// TOCTOU guard. The caller captured lineNo at ReadTasks time; the file may
-	// have changed since (another qi process, an Obsidian edit, a sync pull).
-	// Confirm the target line still parses to the same task before overwriting
-	// it, so we never flip the checkbox on the wrong line.
-	existing, ok, perr := ParseTaskLine(lines[idx])
-	if perr != nil {
-		return fmt.Errorf("verify line %d: %w", lineNo, perr)
-	}
-	if !ok {
-		return fmt.Errorf("line %d is no longer a task line; refusing to overwrite", lineNo)
-	}
-	if existing.Text != task.Text {
-		return fmt.Errorf("line %d changed since read (have %q, want %q); refusing to overwrite", lineNo, existing.Text, task.Text)
-	}
+		// TOCTOU guard. The caller captured lineNo at ReadTasks time; the file
+		// may have changed since (another qi process, an Obsidian edit, a sync
+		// pull). Confirm the target line still parses to the same task before
+		// overwriting it, so we never flip the checkbox on the wrong line.
+		existing, ok, perr := ParseTaskLine(lines[idx])
+		if perr != nil {
+			return fmt.Errorf("verify line %d: %w", lineNo, perr)
+		}
+		if !ok {
+			return fmt.Errorf("line %d is no longer a task line; refusing to overwrite", lineNo)
+		}
+		if existing.Text != task.Text {
+			return fmt.Errorf("line %d changed since read (have %q, want %q); refusing to overwrite", lineNo, existing.Text, task.Text)
+		}
 
-	newLine, err := FormatTaskLine(task)
-	if err != nil {
-		return err
-	}
+		newLine, err := FormatTaskLine(task)
+		if err != nil {
+			return err
+		}
 
-	lines[idx] = newLine
-	return writeFileAtomic(path, []byte(strings.Join(lines, "\n")), 0o644)
+		lines[idx] = newLine
+		return writeFileAtomic(path, []byte(strings.Join(lines, "\n")), 0o644)
+	})
 }
 
 func ReadTasks(path string) ([]domain.Task, error) {

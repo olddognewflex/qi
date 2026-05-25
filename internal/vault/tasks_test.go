@@ -1,9 +1,11 @@
 package vault
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,5 +128,55 @@ func TestUpdateTaskLine_RejectsDrift(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "- [ ] Task two\n" {
 		t.Fatalf("file mutated despite drift: %q", string(data))
+	}
+}
+
+func TestUpdateTaskLine_ConcurrentDistinctLinesNoLostUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.md")
+	const n = 16
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "- [ ] task-%02d\n", i)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := ReadTasks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != n {
+		t.Fatalf("seed read %d tasks, want %d", len(tasks), n)
+	}
+
+	// Complete every task concurrently, each targeting its own line. Without
+	// cross-process locking each goroutine rewrites the whole file from a stale
+	// snapshot and clobbers the others — only a fraction of completions
+	// survive. The lock makes each read-guard-write atomic so all n land.
+	var wg sync.WaitGroup
+	for _, tk := range tasks {
+		wg.Add(1)
+		go func(tk domain.Task) {
+			defer wg.Done()
+			done := tk
+			done.Completed = true
+			_ = UpdateTaskLine(tk.FilePath, tk.LineNumber, done)
+		}(tk)
+	}
+	wg.Wait()
+
+	got, err := ReadTasks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := 0
+	for _, tk := range got {
+		if tk.Completed {
+			completed++
+		}
+	}
+	if completed != n {
+		t.Fatalf("completed %d/%d tasks — lost updates under concurrency", completed, n)
 	}
 }

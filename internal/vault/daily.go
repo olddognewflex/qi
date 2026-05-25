@@ -174,12 +174,14 @@ func trimTrailingBlanks(lines []string) []string {
 }
 
 // writeLines joins lines with newlines and writes the file with a single
-// trailing newline at EOF.
+// trailing newline at EOF. The write is atomic (temp + fsync + rename) so a
+// crash mid-write can never truncate a daily note — every section rewrite
+// (ReplaceSection, AppendToSection) funnels through here.
 func writeLines(path string, lines []string) error {
 	lines = trimTrailingBlanks(lines)
 	content := strings.Join(lines, "\n")
 	if content != "" {
 		content += "\n"
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return writeFileAtomic(path, []byte(content), 0o644)
 }
