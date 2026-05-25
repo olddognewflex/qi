@@ -74,19 +74,35 @@ func FormatTaskLine(task domain.Task) (string, error) {
 
 	parts := []string{fmt.Sprintf("- [%s] %s", status, text)}
 
+	// ParseTaskLine does not strip inline #tags from Text, so a parsed task
+	// carries each tag in BOTH Text and Tags. Re-appending those would
+	// duplicate them on every rewrite and compound on each subsequent
+	// read/format cycle. Collect tags already inline in Text and skip them.
+	inline := make(map[string]struct{})
+	for _, m := range tagRe.FindAllStringSubmatch(text, -1) {
+		inline[m[1]] = struct{}{}
+	}
+
 	hasProjectTag := false
 	for _, tag := range task.Tags {
-		if strings.TrimSpace(tag) == "" {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
 			continue
 		}
-		parts = append(parts, "#"+tag)
 		if tag == task.Project {
 			hasProjectTag = true
 		}
+		if _, dup := inline[tag]; dup {
+			continue
+		}
+		parts = append(parts, "#"+tag)
+		inline[tag] = struct{}{}
 	}
 
 	if task.Project != "" && !hasProjectTag {
-		parts = append(parts, "#"+task.Project)
+		if _, dup := inline[task.Project]; !dup {
+			parts = append(parts, "#"+task.Project)
+		}
 	}
 
 	if task.Due != nil {
@@ -146,13 +162,28 @@ func UpdateTaskLine(path string, lineNo int, task domain.Task) error {
 		return fmt.Errorf("line %d out of range (file has %d lines)", lineNo, len(lines))
 	}
 
+	// TOCTOU guard. The caller captured lineNo at ReadTasks time; the file may
+	// have changed since (another qi process, an Obsidian edit, a sync pull).
+	// Confirm the target line still parses to the same task before overwriting
+	// it, so we never flip the checkbox on the wrong line.
+	existing, ok, perr := ParseTaskLine(lines[idx])
+	if perr != nil {
+		return fmt.Errorf("verify line %d: %w", lineNo, perr)
+	}
+	if !ok {
+		return fmt.Errorf("line %d is no longer a task line; refusing to overwrite", lineNo)
+	}
+	if existing.Text != task.Text {
+		return fmt.Errorf("line %d changed since read (have %q, want %q); refusing to overwrite", lineNo, existing.Text, task.Text)
+	}
+
 	newLine, err := FormatTaskLine(task)
 	if err != nil {
 		return err
 	}
 
 	lines[idx] = newLine
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	return writeFileAtomic(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
 func ReadTasks(path string) ([]domain.Task, error) {

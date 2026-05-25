@@ -207,6 +207,76 @@ func (q *Queue) List(filter Status) []Pending {
 	return out
 }
 
+// Restore rebuilds in-memory pending entries from a replayed audit log,
+// folding events by id. Any entry whose latest event is non-terminal —
+// enqueue (never decided) or approve (approved but no execute/fail recorded,
+// i.e. interrupted mid-execution) — is re-materialized as StatusPending so a
+// human must re-approve it after a restart. Terminal states (denied,
+// executed, failed) are left out; they need no runtime entry.
+//
+// It emits no new audit events: this reconstructs runtime state from the
+// durable record, it does not append to it. Call once on startup before
+// serving. Returns the number of entries restored.
+//
+// Trade-off: an entry approved-but-not-recorded is re-queued rather than
+// assumed done. For a confirm-gated tool, re-prompting the human (who sees
+// the tool and params) is safer than silently dropping a mutation that may
+// never have been applied. Exactly-once would require a pre-execute intent
+// record; this favors no-silent-loss over no-double-execute.
+func (q *Queue) Restore(entries []AuditEntry) int {
+	type acc struct {
+		enq    *AuditEntry
+		latest AuditEvent
+	}
+	byID := make(map[string]*acc)
+	order := make([]string, 0)
+	for i := range entries {
+		e := entries[i]
+		if e.ID == "" {
+			continue
+		}
+		a, ok := byID[e.ID]
+		if !ok {
+			a = &acc{}
+			byID[e.ID] = a
+			order = append(order, e.ID)
+		}
+		if e.Event == EventEnqueue {
+			cp := e
+			a.enq = &cp
+		}
+		a.latest = e.Event
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n := 0
+	for _, id := range order {
+		a := byID[id]
+		switch a.latest {
+		case EventDeny, EventExecute, EventFail:
+			continue // terminal — no runtime entry needed
+		}
+		if a.enq == nil {
+			continue // cannot reconstruct without the enqueue record
+		}
+		if _, exists := q.items[id]; exists {
+			continue
+		}
+		q.items[id] = &Pending{
+			ID:        id,
+			Caller:    a.enq.Caller,
+			ToolName:  a.enq.Tool,
+			Params:    a.enq.Params,
+			Status:    StatusPending,
+			Reason:    a.enq.Reason,
+			CreatedAt: a.enq.Time,
+		}
+		n++
+	}
+	return n
+}
+
 func (q *Queue) audited(e AuditEntry) {
 	if q.audit == nil {
 		return
