@@ -4,7 +4,9 @@
 package approval
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -73,6 +75,42 @@ func (a *Audit) Append(e AuditEntry) error {
 
 // Path returns the audit log location.
 func (a *Audit) Path() string { return a.path }
+
+// ReadAuditLog parses every entry in the JSONL audit log at path. A missing
+// file yields a nil slice (nothing has happened yet). A truncated final line
+// — the signature of a crash mid-write — is tolerated: parsing stops at the
+// first unreadable line and returns the entries read so far. Used on startup
+// to reconstruct queue state from the durable record.
+func ReadAuditLog(path string) ([]AuditEntry, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("audit open: %w", err)
+	}
+	defer f.Close()
+
+	var entries []AuditEntry
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var e AuditEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			// Truncated trailing line from an interrupted write; stop here.
+			break
+		}
+		entries = append(entries, e)
+	}
+	if err := sc.Err(); err != nil {
+		return entries, fmt.Errorf("audit scan: %w", err)
+	}
+	return entries, nil
+}
 
 // Close flushes and closes the underlying file.
 func (a *Audit) Close() error {

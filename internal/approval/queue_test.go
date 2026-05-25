@@ -224,3 +224,86 @@ func TestAuditFilePermissions(t *testing.T) {
 		t.Fatalf("perm = %v, want 0o600", info.Mode().Perm())
 	}
 }
+
+func TestQueueRestoreFromAudit(t *testing.T) {
+	q, path := mustQueue(t)
+
+	pendingID, err := q.Enqueue("ai-planner:s1", "capture", json.RawMessage(`{"text":"hi"}`), "needs approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedID, err := q.Enqueue("mcp:s2", "task.add", nil, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Deny(deniedID, "nope"); err != nil {
+		t.Fatal(err)
+	}
+	doneID, err := q.Enqueue("ai-planner:s3", "note.write", nil, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Approve(doneID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.RecordResult(doneID, json.RawMessage(`{"ok":true}`), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadAuditLog(path)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+
+	fresh := NewQueue(nil)
+	if n := fresh.Restore(entries); n != 1 {
+		t.Fatalf("restored %d entries, want 1", n)
+	}
+
+	got, ok := fresh.Get(pendingID)
+	if !ok {
+		t.Fatalf("pending entry %s not restored", pendingID)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("status = %s, want pending", got.Status)
+	}
+	if got.Caller != "ai-planner:s1" || got.ToolName != "capture" {
+		t.Fatalf("restored fields wrong: %+v", got)
+	}
+	if string(got.Params) != `{"text":"hi"}` {
+		t.Fatalf("params = %s, want original", got.Params)
+	}
+	if _, ok := fresh.Get(deniedID); ok {
+		t.Fatal("denied entry should not be restored")
+	}
+	if _, ok := fresh.Get(doneID); ok {
+		t.Fatal("executed entry should not be restored")
+	}
+}
+
+func TestQueueRestoreApprovedButNotExecuted(t *testing.T) {
+	// An entry approved but with no execute/fail recorded models a crash
+	// mid-execution. It must re-queue as pending (re-prompt the human) rather
+	// than vanish.
+	q, path := mustQueue(t)
+	id, err := q.Enqueue("ai-planner:s1", "capture", nil, "r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Approve(id); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadAuditLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewQueue(nil)
+	if n := fresh.Restore(entries); n != 1 {
+		t.Fatalf("restored %d, want 1 (approved-but-unexecuted must re-queue)", n)
+	}
+	got, _ := fresh.Get(id)
+	if got.Status != StatusPending {
+		t.Fatalf("status = %s, want pending", got.Status)
+	}
+}

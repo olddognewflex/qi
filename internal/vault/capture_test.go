@@ -62,3 +62,36 @@ func TestWriteCapture_Mkdir(t *testing.T) {
 		t.Fatalf("inbox dir not created: %v", err)
 	}
 }
+
+func TestWriteCapture_NoCollision(t *testing.T) {
+	inbox := t.TempDir()
+	p1, err := WriteCapture(inbox, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := WriteCapture(inbox, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1 == p2 {
+		t.Fatalf("two captures returned the same path %q", p1)
+	}
+	entries, err := os.ReadDir(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 capture files, got %d", len(entries))
+	}
+	// Both payloads must survive — second-granularity names would otherwise
+	// let the second capture overwrite the first.
+	for _, want := range []struct{ path, text string }{{p1, "first"}, {p2, "second"}} {
+		data, err := os.ReadFile(want.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), want.text) {
+			t.Fatalf("file %q missing %q", want.path, want.text)
+		}
+	}
+}
