@@ -29,10 +29,11 @@ const recentCapturesLimit = 5
 
 // dailyReviewOutput is the JSON shape returned by the skill.
 type dailyReviewOutput struct {
-	Date           string          `json:"date"`
-	Events         []dailyEvent    `json:"events"`
-	OpenTasks      []dailyTask     `json:"open_tasks"`
-	RecentCaptures []dailyCapture  `json:"recent_captures"`
+	Date             string         `json:"date"`
+	Events           []dailyEvent   `json:"events"`
+	OpenTasks        []dailyTask    `json:"open_tasks"`
+	RecentCaptures   []dailyCapture `json:"recent_captures"`
+	CalendarWarnings []string       `json:"calendar_warnings,omitempty"`
 }
 
 type dailyEvent struct {
@@ -72,9 +73,12 @@ func RegisterDailyReview(r *tools.Registry, tasks service.TaskService, agenda se
 			RecentCaptures: []dailyCapture{},
 		}
 
-		events, eventsErr := agenda.Today()
+		events, warnings, eventsErr := agenda.Today()
 		for _, e := range events {
 			out.Events = append(out.Events, formatEvent(e))
+		}
+		for _, w := range warnings {
+			out.CalendarWarnings = append(out.CalendarWarnings, w.Error())
 		}
 
 		openTasks, tasksErr := tasks.ListOpenTasks()

@@ -22,10 +22,11 @@ func newAgendaCommand(cfg config.Config) *cobra.Command {
 		Short: "Show today's events",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := buildAgendaService(cfg)
-			events, err := svc.Today()
+			events, warnings, err := svc.Today()
 			if err != nil {
 				return err
 			}
+			printAgendaWarnings(cmd, warnings)
 			printEvents(cmd, events, false)
 			return nil
 		},
@@ -36,10 +37,11 @@ func newAgendaCommand(cfg config.Config) *cobra.Command {
 		Short: "Show this week's events",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			svc := buildAgendaService(cfg)
-			events, err := svc.Week()
+			events, warnings, err := svc.Week()
 			if err != nil {
 				return err
 			}
+			printAgendaWarnings(cmd, warnings)
 			printEvents(cmd, events, true)
 			return nil
 		},
@@ -90,6 +92,14 @@ func buildAgendaService(cfg config.Config) service.AgendaService {
 	}
 
 	return service.AgendaService{Providers: providers}
+}
+
+// printAgendaWarnings reports providers that failed so a dead calendar (e.g. an
+// expired OAuth token) is visible instead of silently missing from the agenda.
+func printAgendaWarnings(cmd *cobra.Command, warnings []service.ProviderWarning) {
+	for _, w := range warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: calendar %s\n", w.Error())
+	}
 }
 
 func printEvents(cmd *cobra.Command, events []domain.Event, showDate bool) {

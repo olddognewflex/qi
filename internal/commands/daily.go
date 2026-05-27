@@ -64,10 +64,11 @@ func newDailyStartCommand(cfg config.Config) *cobra.Command {
 					"&file=" + url.QueryEscape(rel))
 			}
 
-			events, err := svc.Agenda.Today()
+			events, warnings, err := svc.Agenda.Today()
 			if err != nil {
 				return err
 			}
+			printAgendaWarnings(cmd, warnings)
 			rendered := svc.RenderAgenda(events)
 			if err := vault.ReplaceSection(path, "Agenda", rendered); err != nil {
 				return err
