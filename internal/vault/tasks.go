@@ -2,6 +2,8 @@ package vault
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +19,19 @@ var (
 	taskPrefixRe = regexp.MustCompile(`^\s*-\s\[( |x)\]\s+`)
 	dueRe        = regexp.MustCompile(`📅\s+(\d{4}-\d{2}-\d{2})`)
 	tagRe        = regexp.MustCompile(`#([A-Za-z0-9_\-\/]+)`)
+	idRe         = regexp.MustCompile(`\^(qi-[0-9a-f]{8})\s*$`)
+	anyBlockRe   = regexp.MustCompile(`\^[A-Za-z0-9_-]+\s*$`)
 )
+
+// MintID returns a new unique task ID of the form "qi-" + 8 lowercase hex chars.
+// Uses crypto/rand so IDs are unpredictable and collisions are negligible.
+func MintID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("vault.MintID: crypto/rand unavailable: " + err.Error())
+	}
+	return "qi-" + hex.EncodeToString(b[:])
+}
 
 func ParseTaskLine(line string) (domain.Task, bool, error) {
 	trimmed := strings.TrimSpace(line)
@@ -30,6 +44,14 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 
 	completed := strings.HasPrefix(trimmed, "- [x]")
 	content := taskPrefixRe.ReplaceAllString(trimmed, "")
+
+	// Extract trailing qi block-ref ID before any other parsing so it never
+	// leaks into Text or Tags. A foreign ^ref (non-qi format) is left untouched.
+	var taskID string
+	if m := idRe.FindStringSubmatch(content); len(m) == 2 {
+		taskID = m[1]
+		content = strings.TrimSpace(idRe.ReplaceAllString(content, ""))
+	}
 
 	var due *time.Time
 	if m := dueRe.FindStringSubmatch(content); len(m) == 2 {
@@ -53,6 +75,7 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 	content = strings.TrimSpace(content)
 
 	return domain.Task{
+		ID:        taskID,
 		Text:      content,
 		Project:   project,
 		Tags:      tags,
@@ -107,6 +130,21 @@ func FormatTaskLine(task domain.Task) (string, error) {
 
 	if task.Due != nil {
 		parts = append(parts, "📅 "+task.Due.Format("2006-01-02"))
+	}
+
+	// Append qi block-ref ID as the very last token when the task carries one.
+	// Obsidian allows exactly ONE block ref per block. If the text already ends
+	// with any ^ref (foreign ref — not a qi id), refuse to append a second one.
+	if task.ID != "" {
+		joined := strings.Join(parts, " ")
+		if anyBlockRe.MatchString(joined) && !idRe.MatchString(joined) {
+			// Foreign block ref present — refuse to manage, emit without id.
+			return joined, nil
+		}
+		// Strip any existing qi id from the joined line before appending, so
+		// re-formatting an already-formatted line never doubles the id.
+		joined = strings.TrimSpace(idRe.ReplaceAllString(joined, ""))
+		return joined + " ^" + task.ID, nil
 	}
 
 	return strings.Join(parts, " "), nil
@@ -175,6 +213,10 @@ func UpdateTaskLine(path string, lineNo int, task domain.Task) error {
 		// may have changed since (another qi process, an Obsidian edit, a sync
 		// pull). Confirm the target line still parses to the same task before
 		// overwriting it, so we never flip the checkbox on the wrong line.
+		//
+		// When task.ID is set, match by ID — this lets a renamed task still be
+		// updated correctly (the ID is stable even when the text changes).
+		// When task.ID is empty, fall back to the legacy Text-match behaviour.
 		existing, ok, perr := ParseTaskLine(lines[idx])
 		if perr != nil {
 			return fmt.Errorf("verify line %d: %w", lineNo, perr)
@@ -182,8 +224,14 @@ func UpdateTaskLine(path string, lineNo int, task domain.Task) error {
 		if !ok {
 			return fmt.Errorf("line %d is no longer a task line; refusing to overwrite", lineNo)
 		}
-		if existing.Text != task.Text {
-			return fmt.Errorf("line %d changed since read (have %q, want %q); refusing to overwrite", lineNo, existing.Text, task.Text)
+		if task.ID != "" {
+			if existing.ID != task.ID {
+				return fmt.Errorf("line %d ID changed since read (have %q, want %q); refusing to overwrite", lineNo, existing.ID, task.ID)
+			}
+		} else {
+			if existing.Text != task.Text {
+				return fmt.Errorf("line %d changed since read (have %q, want %q); refusing to overwrite", lineNo, existing.Text, task.Text)
+			}
 		}
 
 		newLine, err := FormatTaskLine(task)
