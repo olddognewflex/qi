@@ -104,6 +104,7 @@ qi capture <text>             # alias: qi c <text>
 qi task add <text> [--project <tag>] [--due YYYY-MM-DD]
 qi task list
 qi task done [fuzzy-text]
+qi sync [--dry-run]            # reconcile tasks with project vaults (see Cross-vault sync)
 
 qi note new "title" [--body "..."]
 qi note list
@@ -178,7 +179,17 @@ provider     = "anthropic"          # or "ollama"
 model        = "claude-sonnet-4-6"  # used when provider=anthropic
 ollama_url   = "http://localhost:11434"
 ollama_model = "qwen3:14b"
+
+# --- Project vaults (cross-vault task sync) ---
+
+[[project_vault]]
+project = "acme"                    # required; matches a task's first #tag
+path    = "/Users/you/Vaults/Acme"  # required; project vault root
+# file  = "10-tasks/acme.md"        # optional; default 10-tasks/<project>.md,
+                                    #   relative to path, "/" in project flattened to "-"
 ```
+
+Each `[[project_vault]]` maps one project tag to one Obsidian vault. Validation rejects an empty `project` or `path`, a duplicate `project`, or two vaults resolving to the same file.
 
 | Env var | Purpose |
 |---|---|
@@ -242,6 +253,34 @@ The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`,
 
 ---
 
+## Cross-vault task sync
+
+`qi sync` reconciles project tasks between the main qi vault and per-project Obsidian
+vaults, so the same task is editable in both places and the main vault keeps the full
+picture. Configure projects under `[[project_vault]]` (see Configuration).
+
+- **Per-project files.** A tagged task lives in `10-tasks/<project>.md` (untagged →
+  `inbox.md`). `qi task list` / `done` aggregate across all of them.
+- **Stable IDs.** Each task line carries an Obsidian block ref, e.g.
+  `- [ ] Ship it #acme 📅 2026-05-27 ^qi-a1b2c3d4`. It is append-only and ignorable —
+  Obsidian, Tasks, and Dataview treat the line normally. A line with no `^qi-` ID added
+  inside a project vault is treated as new and gets an ID minted on the next sync.
+- **Bidirectional 3-way merge.** Adds, edits, completions, and deletes flow both ways.
+  A genuine two-sided edit of the same task is never clobbered — both lines are kept and
+  one is tagged `#sync-conflict` for you to resolve by hand.
+- **Safe against Obsidian Sync.** Writes are atomic and guarded against a sync rewrite
+  landing mid-reconcile; a sync that detects a concurrent change aborts and retries rather
+  than losing data. The merge ancestor lives in the SQLite index — derived, rebuildable,
+  never canonical.
+
+`qi sync --dry-run` prints the plan without writing. Run sync on one always-on machine;
+each vault syncs independently through Obsidian Sync, with qi as the only bridge between them.
+
+> Markdown stays canonical: projection files are real editable task lists, and `qi` never
+> needs to be running for the vaults to work.
+
+---
+
 ## Architecture principles
 
 - **Markdown is canonical.** If `qi` disappears, your vault still works with grep and your editor.
@@ -258,10 +297,14 @@ The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`,
 vault/
 ├── 00-inbox/       # qi capture writes here
 ├── 10-tasks/
-│   └── inbox.md
+│   ├── inbox.md    # untagged tasks
+│   └── <project>.md  # per-project tasks (one file per #tag)
 ├── 20-notes/
 └── 30-daily/       # local agenda source
 ```
+
+Configured project vaults receive a projection file (default `10-tasks/<project>.md` in
+that vault), reconciled by `qi sync`. See Cross-vault task sync.
 
 Machine-local state (never in vault, never synced):
 ```
@@ -306,8 +349,10 @@ go build -o /tmp/mcpdriver  ./internal/qimcp/testdata/mcpdriver
 - `qi-mcp` MCP server bridge
 - `skill.daily-review`
 - AI planner with provider abstraction (Anthropic + Ollama)
+- Cross-vault task sync (`qi sync`, `[[project_vault]]`)
 
 ### Next
+- Cross-vault sync via `qid` fsnotify watch (near-real-time, replaces manual `qi sync`)
 - More skills (`skill.weekly-plan`, `skill.process-inbox`)
 - Streaming planner output (`Messages.NewStreaming`)
 - Conversation-history caching (second cache breakpoint mid-loop)

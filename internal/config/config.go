@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -42,6 +43,12 @@ type MCPServer struct {
 	Env     map[string]string
 }
 
+type ProjectVault struct {
+	Project string
+	Path    string
+	File    string
+}
+
 // AIConfig selects the LLM provider and per-provider defaults used by
 // `qi ai run`. The provider string is matched case-insensitively against
 // ai.ProviderAnthropic / ai.ProviderOllama.
@@ -66,6 +73,7 @@ type Config struct {
 	GoogleCalendars []GoogleCalendar
 	MCPServers      []MCPServer
 	AI              AIConfig
+	ProjectVaults   []ProjectVault
 }
 
 type icsCalTOML struct {
@@ -107,17 +115,24 @@ type aiTOML struct {
 	OllamaModel string `toml:"ollama_model"`
 }
 
+type projectVaultTOML struct {
+	Project string `toml:"project"`
+	Path    string `toml:"path"`
+	File    string `toml:"file"`
+}
+
 type tomlFile struct {
-	VaultPath       string          `toml:"vault_path"`
-	TaskFilePath    string          `toml:"task_file_path"`
-	DailyDirFormat  string          `toml:"daily_dir_format"`
-	DailyFileFormat string          `toml:"daily_file_format"`
-	ICSCalendars    []icsCalTOML    `toml:"ics_calendars"`
-	CalDAVCalendars []caldavCalTOML `toml:"caldav_calendars"`
-	GoogleOAuth     googleOAuthTOML `toml:"google_oauth"`
-	GoogleCalendars []googleCalTOML `toml:"google_calendars"`
-	MCPServers      []mcpServerTOML `toml:"mcp_servers"`
-	AI              aiTOML          `toml:"ai"`
+	VaultPath       string             `toml:"vault_path"`
+	TaskFilePath    string             `toml:"task_file_path"`
+	DailyDirFormat  string             `toml:"daily_dir_format"`
+	DailyFileFormat string             `toml:"daily_file_format"`
+	ICSCalendars    []icsCalTOML       `toml:"ics_calendars"`
+	CalDAVCalendars []caldavCalTOML    `toml:"caldav_calendars"`
+	GoogleOAuth     googleOAuthTOML    `toml:"google_oauth"`
+	GoogleCalendars []googleCalTOML    `toml:"google_calendars"`
+	MCPServers      []mcpServerTOML    `toml:"mcp_servers"`
+	AI              aiTOML             `toml:"ai"`
+	ProjectVaults   []projectVaultTOML `toml:"project_vault"`
 }
 
 func ConfigPath() string {
@@ -238,6 +253,42 @@ func LoadFrom(path string) (Config, error) {
 		})
 	}
 
+	projectVaults := make([]ProjectVault, 0, len(raw.ProjectVaults))
+	seenProjects := make(map[string]struct{}, len(raw.ProjectVaults))
+	seenFiles := make(map[string]struct{}, len(raw.ProjectVaults))
+	for _, pv := range raw.ProjectVaults {
+		if pv.Project == "" {
+			return Config{}, fmt.Errorf("project_vault: project is required")
+		}
+		if pv.Path == "" {
+			return Config{}, fmt.Errorf("project_vault: path is required for project %q", pv.Project)
+		}
+		if _, dup := seenProjects[pv.Project]; dup {
+			return Config{}, fmt.Errorf("project_vault: duplicate project %q", pv.Project)
+		}
+		seenProjects[pv.Project] = struct{}{}
+
+		file := pv.File
+		if file == "" {
+			flatName := strings.ReplaceAll(pv.Project, "/", "-")
+			file = filepath.Join("10-tasks", flatName+".md")
+		}
+		if !filepath.IsAbs(file) {
+			file = filepath.Join(pv.Path, file)
+		}
+
+		if _, dup := seenFiles[file]; dup {
+			return Config{}, fmt.Errorf("project_vault: duplicate resolved file path %q", file)
+		}
+		seenFiles[file] = struct{}{}
+
+		projectVaults = append(projectVaults, ProjectVault{
+			Project: pv.Project,
+			Path:    pv.Path,
+			File:    file,
+		})
+	}
+
 	return Config{
 		VaultPath:       raw.VaultPath,
 		TaskFilePath:    taskFilePath,
@@ -260,6 +311,7 @@ func LoadFrom(path string) (Config, error) {
 			OllamaURL:   raw.AI.OllamaURL,
 			OllamaModel: raw.AI.OllamaModel,
 		},
+		ProjectVaults: projectVaults,
 	}, nil
 }
 

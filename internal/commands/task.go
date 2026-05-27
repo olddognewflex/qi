@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +16,10 @@ import (
 )
 
 func newTaskCommand(cfg config.Config) *cobra.Command {
-	svc := service.TaskService{TaskFilePath: cfg.TaskFilePath}
+	svc := service.TaskService{
+		TaskFilePath: cfg.TaskFilePath,
+		TasksDir:     filepath.Dir(cfg.TaskFilePath),
+	}
 
 	taskCmd := &cobra.Command{
 		Use:   "task",

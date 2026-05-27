@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 	"qi/internal/domain"
@@ -46,15 +47,104 @@ func Open() (*Indexer, error) {
 }
 
 func initSchema(db *sql.DB) error {
-	_, err := db.Exec(`
+	if _, err := db.Exec(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS notes USING fts5(
 			title,
 			body,
 			path UNINDEXED,
 			tokenize='porter'
 		);
+	`); err != nil {
+		return err
+	}
+	// task_sync_state is the 3-way-merge ancestor for cross-vault task sync.
+	// DERIVED state (invariant #4): fully rebuildable by re-seeding from the
+	// canonical markdown task lines, never the source of truth.
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS task_sync_state (
+			id        TEXT PRIMARY KEY,
+			project   TEXT NOT NULL,
+			base_line TEXT NOT NULL,
+			synced_at TEXT NOT NULL
+		);
 	`)
 	return err
+}
+
+// SyncBase is one row of the task_sync_state ancestor table: the canonical
+// FormatTaskLine output (base_line) and owning project at the last successful
+// sync. synced_at is not surfaced here — it is bookkeeping written on commit.
+type SyncBase struct {
+	ID       string
+	Project  string
+	BaseLine string
+}
+
+// LoadSyncState returns the current sync ancestor keyed by task id.
+func (idx *Indexer) LoadSyncState() (map[string]SyncBase, error) {
+	rows, err := idx.db.Query("SELECT id, project, base_line FROM task_sync_state")
+	if err != nil {
+		return nil, fmt.Errorf("query sync state: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]SyncBase)
+	for rows.Next() {
+		var b SyncBase
+		if err := rows.Scan(&b.ID, &b.Project, &b.BaseLine); err != nil {
+			return nil, fmt.Errorf("scan sync state: %w", err)
+		}
+		out[b.ID] = b
+	}
+	return out, rows.Err()
+}
+
+// CommitSyncState applies the given upserts and deletes to task_sync_state in a
+// single transaction. It is the LAST step of a reconcile: committing only after
+// all file writes succeed means a crash mid-write leaves base stale and the next
+// run self-heals (invariant #4 / partial-write recovery).
+func (idx *Indexer) CommitSyncState(upserts []SyncBase, deletes []string) error {
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if len(upserts) > 0 {
+		now := time.Now().UTC().Format(time.RFC3339)
+		stmt, err := tx.Prepare(`
+			INSERT INTO task_sync_state(id, project, base_line, synced_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				project   = excluded.project,
+				base_line = excluded.base_line,
+				synced_at = excluded.synced_at
+		`)
+		if err != nil {
+			return fmt.Errorf("prepare upsert: %w", err)
+		}
+		defer stmt.Close()
+		for _, u := range upserts {
+			if _, err := stmt.Exec(u.ID, u.Project, u.BaseLine, now); err != nil {
+				return fmt.Errorf("upsert sync state %s: %w", u.ID, err)
+			}
+		}
+	}
+
+	if len(deletes) > 0 {
+		del, err := tx.Prepare("DELETE FROM task_sync_state WHERE id = ?")
+		if err != nil {
+			return fmt.Errorf("prepare delete: %w", err)
+		}
+		defer del.Close()
+		for _, id := range deletes {
+			if _, err := del.Exec(id); err != nil {
+				return fmt.Errorf("delete sync state %s: %w", id, err)
+			}
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (idx *Indexer) Close() error {

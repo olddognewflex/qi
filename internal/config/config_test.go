@@ -347,6 +347,185 @@ daily_file_format = "YYYY-MM-DD"
 	}
 }
 
+func TestLoadFrom_ProjectVaultExplicitFile(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "foo"
+path = "/Users/you/Vaults/foo"
+file = "10-tasks/foo.md"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ProjectVaults) != 1 {
+		t.Fatalf("got %d project vaults, want 1", len(cfg.ProjectVaults))
+	}
+	pv := cfg.ProjectVaults[0]
+	if pv.Project != "foo" {
+		t.Errorf("Project = %q, want foo", pv.Project)
+	}
+	if pv.Path != "/Users/you/Vaults/foo" {
+		t.Errorf("Path = %q", pv.Path)
+	}
+	if pv.File != "/Users/you/Vaults/foo/10-tasks/foo.md" {
+		t.Errorf("File = %q, want /Users/you/Vaults/foo/10-tasks/foo.md", pv.File)
+	}
+}
+
+func TestLoadFrom_ProjectVaultDefaultFile(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "foo"
+path = "/Users/you/Vaults/foo"
+
+[[project_vault]]
+project = "work/clientA"
+path = "/Users/you/Vaults/work"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ProjectVaults) != 2 {
+		t.Fatalf("got %d project vaults, want 2", len(cfg.ProjectVaults))
+	}
+	// Simple project: default file = 10-tasks/foo.md
+	simple := cfg.ProjectVaults[0]
+	if simple.File != "/Users/you/Vaults/foo/10-tasks/foo.md" {
+		t.Errorf("simple File = %q, want /Users/you/Vaults/foo/10-tasks/foo.md", simple.File)
+	}
+	// Nested tag: / flattened to - in filename; project preserved verbatim
+	nested := cfg.ProjectVaults[1]
+	if nested.Project != "work/clientA" {
+		t.Errorf("nested Project = %q, want work/clientA", nested.Project)
+	}
+	if nested.File != "/Users/you/Vaults/work/10-tasks/work-clientA.md" {
+		t.Errorf("nested File = %q, want /Users/you/Vaults/work/10-tasks/work-clientA.md", nested.File)
+	}
+}
+
+func TestLoadFrom_ProjectVaultRelativeFileResolved(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "bar"
+path = "/Users/you/Vaults/bar"
+file = "tasks/bar-tasks.md"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pv := cfg.ProjectVaults[0]
+	want := "/Users/you/Vaults/bar/tasks/bar-tasks.md"
+	if pv.File != want {
+		t.Errorf("File = %q, want %q", pv.File, want)
+	}
+}
+
+func TestLoadFrom_ProjectVaultDuplicateProjectError(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "foo"
+path = "/Users/you/Vaults/foo"
+
+[[project_vault]]
+project = "foo"
+path = "/Users/you/Vaults/foo2"
+`)
+
+	if _, err := config.LoadFrom(cfgPath); err == nil {
+		t.Fatal("expected duplicate project error, got nil")
+	}
+}
+
+func TestLoadFrom_ProjectVaultDuplicateFileError(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "alpha"
+path = "/Users/you/Vaults/shared"
+file = "10-tasks/tasks.md"
+
+[[project_vault]]
+project = "beta"
+path = "/Users/you/Vaults/shared"
+file = "10-tasks/tasks.md"
+`)
+
+	if _, err := config.LoadFrom(cfgPath); err == nil {
+		t.Fatal("expected duplicate resolved file error, got nil")
+	}
+}
+
+func TestLoadFrom_ProjectVaultMissingProject(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = ""
+path = "/Users/you/Vaults/foo"
+`)
+
+	if _, err := config.LoadFrom(cfgPath); err == nil {
+		t.Fatal("expected error for missing project, got nil")
+	}
+}
+
+func TestLoadFrom_ProjectVaultMissingPath(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "foo"
+path = ""
+`)
+
+	if _, err := config.LoadFrom(cfgPath); err == nil {
+		t.Fatal("expected error for missing path, got nil")
+	}
+}
+
 func TestLoadFrom_DailyFormatDefaults(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
