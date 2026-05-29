@@ -51,6 +51,7 @@ type ClientConfig struct {
 	Name      string
 	VaultPath string        // Obsidian notes vault for all the client's projects
 	DevRoot   string        // root dev folder; relative project dev_path resolves under it
+	TaskFile  string        // optional client-level projection task file (absolute, resolved)
 	Launch    *LaunchConfig // client default harness; nil = inherit global [launch]
 }
 
@@ -63,6 +64,11 @@ type ProjectConfig struct {
 	DevPath   string // optional working dir for `qi launch harness`; empty = don't chdir
 	File      string
 	Launch    *LaunchConfig // project-level override; nil = inherit client/global
+
+	// synthetic marks the client-level projection (from [[client]] task_file)
+	// that is flattened into Projects for sync routing. It is excluded from
+	// ProjectByName so it never shadows client-name launch resolution.
+	synthetic bool
 }
 
 // LaunchConfig describes the external AI harness/tool launched by
@@ -160,6 +166,7 @@ type clientTOML struct {
 	Name      string        `toml:"name"`
 	VaultPath string        `toml:"vault_path"`
 	DevRoot   string        `toml:"dev_root"`
+	TaskFile  string        `toml:"task_file"` // optional client-level projection file
 	Launch    *launchTOML   `toml:"launch"`
 	Projects  []projectTOML `toml:"project"`
 }
@@ -314,10 +321,39 @@ func LoadFrom(path string) (Config, error) {
 		}
 		seenClients[cl.Name] = struct{}{}
 
+		// Optional client-level projection: a [[client]] with task_file becomes a
+		// sync target tagged by the client name (a synthetic project), so
+		// client-wide tasks (`qi task add --client`) route to it.
+		var clientTaskFile string
+		if cl.TaskFile != "" {
+			clientTaskFile = cl.TaskFile
+			if !filepath.IsAbs(clientTaskFile) {
+				clientTaskFile = filepath.Join(cl.VaultPath, clientTaskFile)
+			}
+			if _, dup := seenProjects[cl.Name]; dup {
+				return Config{}, fmt.Errorf("client %q: task_file project tag collides with a project named %q", cl.Name, cl.Name)
+			}
+			seenProjects[cl.Name] = struct{}{}
+			if _, dup := seenFiles[clientTaskFile]; dup {
+				return Config{}, fmt.Errorf("client %q: task_file resolves to duplicate path %q", cl.Name, clientTaskFile)
+			}
+			seenFiles[clientTaskFile] = struct{}{}
+
+			projects = append(projects, ProjectConfig{
+				Project:   cl.Name,
+				Client:    cl.Name,
+				VaultPath: cl.VaultPath,
+				File:      clientTaskFile,
+				Launch:    launchFromTOML(cl.Launch),
+				synthetic: true,
+			})
+		}
+
 		clients = append(clients, ClientConfig{
 			Name:      cl.Name,
 			VaultPath: cl.VaultPath,
 			DevRoot:   cl.DevRoot,
+			TaskFile:  clientTaskFile,
 			Launch:    launchFromTOML(cl.Launch),
 		})
 
@@ -409,18 +445,47 @@ func launchFromTOML(l *launchTOML) *LaunchConfig {
 	return &LaunchConfig{Harness: l.Harness, Args: l.Args, Detach: l.Detach}
 }
 
-// ProjectByName returns the configured project with the given name. The second
-// return is false when no project matches (including when name is "").
+// ProjectByName returns the configured project with the given name. Synthetic
+// client-level projections are skipped so they never shadow client-name launch
+// resolution. The second return is false when no project matches (including when
+// name is "").
 func (c Config) ProjectByName(name string) (ProjectConfig, bool) {
 	if name == "" {
 		return ProjectConfig{}, false
 	}
 	for _, p := range c.Projects {
+		if p.synthetic {
+			continue
+		}
 		if p.Project == name {
 			return p, true
 		}
 	}
 	return ProjectConfig{}, false
+}
+
+// NoteVaultFor resolves the vault whose notes directory a new note belongs in.
+// client and project are mutually exclusive flag values; an empty pair resolves
+// to the main vault. Unknown names error.
+func (c Config) NoteVaultFor(client, project string) (vaultPath string, err error) {
+	switch {
+	case client != "" && project != "":
+		return "", errors.New("note: --client and --project are mutually exclusive")
+	case client != "":
+		cl, ok := c.ClientByName(client)
+		if !ok {
+			return "", fmt.Errorf("note: unknown client %q", client)
+		}
+		return cl.VaultPath, nil
+	case project != "":
+		p, ok := c.ProjectByName(project)
+		if !ok {
+			return "", fmt.Errorf("note: unknown project %q", project)
+		}
+		return p.VaultPath, nil
+	default:
+		return c.VaultPath, nil
+	}
 }
 
 // ClientByName returns the configured client with the given name. The second

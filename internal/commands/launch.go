@@ -20,6 +20,7 @@ func newLaunchCommand(cfg config.Config) *cobra.Command {
 
 func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 	var project string
+	var client string
 
 	cmd := &cobra.Command{
 		Use:     "harness [-- harness-args...]",
@@ -35,7 +36,19 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 			"Extra args after -- are passed through to the harness.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tgt, err := cfg.ResolveLaunchTarget(project)
+			// --client is sugar for resolving a client by name; it is validated
+			// as a client and is mutually exclusive with --project.
+			target := project
+			if client != "" {
+				if project != "" {
+					return fmt.Errorf("--client and --project are mutually exclusive")
+				}
+				if _, ok := cfg.ClientByName(client); !ok {
+					return fmt.Errorf("unknown client %q", client)
+				}
+				target = client
+			}
+			tgt, err := cfg.ResolveLaunchTarget(target)
 			if err != nil {
 				return err
 			}
@@ -48,6 +61,7 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&project, "project", "", "project or client to resolve the harness for (defaults to $WORK_CONTEXT)")
+	cmd.Flags().StringVar(&client, "client", "", "client to resolve the harness for (validated; cwd = client dev_root)")
 	return cmd
 }
 

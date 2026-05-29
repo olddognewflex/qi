@@ -186,6 +186,7 @@ ollama_model = "qwen3:14b"
 name       = "Acme"                       # required; matched by --project / $WORK_CONTEXT
 vault_path = "/Users/you/Vaults/Acme"     # required; Obsidian notes vault (-> QI_VAULT_PATH)
 dev_root   = "/Users/you/Development/Acme" # optional; root for relative project dev_path
+task_file  = "10-tasks/_acme.md"          # optional; client-wide tasks (qi task add --client Acme)
   [client.launch]                         # optional; default harness for the client's projects
   harness = "claude"
 
@@ -202,6 +203,8 @@ dev_root   = "/Users/you/Development/Acme" # optional; root for relative project
 ```
 
 A `[[client]]` is one Obsidian vault + one dev root shared by its `[[client.project]]` entries. `vault_path` is exported as `QI_VAULT_PATH`; a project's `dev_path` (absolute, or relative to `dev_root`) is the working directory `qi launch harness` runs in. `qi launch harness` resolves its target — `--project`, else `$WORK_CONTEXT` — **project-first, then client**: a project match uses the project's `dev_path`; a client match uses the client's `dev_root`; no match runs the global `[launch]` harness in the current directory. Harness precedence: `[client.project.launch]` > `[client.launch]` > `[launch]` > `$AI_HARNESS` > `$AI_EDITOR`. Validation rejects a missing client `name`/`vault_path`, a missing project tag, duplicate client names, duplicate project tags, two projects resolving to the same file, or a relative `dev_path` with no `dev_root`.
+
+A client may also set `task_file` to become a sync target for client-wide tasks: `qi task add --client Acme "…"` tags the task `#Acme` and routes it to that file (the client name becomes a project tag, so it must not collide with a `[[client.project]]`). `--client` / `--project` also route notes — `qi note new --client Acme "…"` writes into that vault's `20-notes/` instead of the main vault (such notes aren't in the `qi note search` index, which only covers the main vault), and `qi launch harness --client Acme` is shorthand for resolving the client.
 
 | Env var | Purpose |
 |---|---|
