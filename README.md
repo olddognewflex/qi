@@ -187,6 +187,7 @@ name       = "Acme"                       # required; matched by --project / $WO
 vault_path = "/Users/you/Vaults/Acme"     # required; Obsidian notes vault (-> QI_VAULT_PATH)
 dev_root   = "/Users/you/Development/Acme" # optional; root for relative project dev_path
 task_file  = "10-tasks/_acme.md"          # optional; client-wide tasks (qi task add --client Acme)
+notes_path = "00-inbox"                   # optional; dir for qi note new --client (default 00-inbox)
   [client.launch]                         # optional; default harness for the client's projects
   harness = "claude"
 
@@ -195,8 +196,10 @@ task_file  = "10-tasks/_acme.md"          # optional; client-wide tasks (qi task
 
   [[client.project]]
   project  = "widget"
-  dev_path = "widget-svc"                 # cwd for `qi launch harness`; relative -> under dev_root
-  task_file = "10-projects/Widget/tasks.md" # optional; default 10-tasks/<project>.md under vault
+  path      = "10-projects/Widget"        # optional; base subdir; relative task_file/notes_path resolve under it
+  dev_path  = "widget-svc"                # cwd for `qi launch harness`; relative -> under dev_root
+  task_file = "tasks.md"                  # optional; default 10-tasks/<project>.md (under path when set)
+  notes_path = "notes"                    # optional; default 00-inbox (under path; inherits client when unset)
     [client.project.launch]               # optional; overrides the client harness
     harness = "aider"
     args    = ["--model", "sonnet"]
@@ -204,7 +207,9 @@ task_file  = "10-tasks/_acme.md"          # optional; client-wide tasks (qi task
 
 A `[[client]]` is one Obsidian vault + one dev root shared by its `[[client.project]]` entries. `vault_path` is exported as `QI_VAULT_PATH`; a project's `dev_path` (absolute, or relative to `dev_root`) is the working directory `qi launch harness` runs in. `qi launch harness` resolves its target — `--project`, else `$WORK_CONTEXT` — **project-first, then client**: a project match uses the project's `dev_path`; a client match uses the client's `dev_root`; no match runs the global `[launch]` harness in the current directory. Harness precedence: `[client.project.launch]` > `[client.launch]` > `[launch]` > `$AI_HARNESS` > `$AI_EDITOR`. Validation rejects a missing client `name`/`vault_path`, a missing project tag, duplicate client names, duplicate project tags, two projects resolving to the same file, or a relative `dev_path` with no `dev_root`.
 
-A client may also set `task_file` to become a sync target for client-wide tasks: `qi task add --client Acme "…"` tags the task `#Acme` and routes it to that file (the client name becomes a project tag, so it must not collide with a `[[client.project]]`). `--client` / `--project` also route notes — `qi note new --client Acme "…"` writes into that vault's `20-notes/` instead of the main vault (such notes aren't in the `qi note search` index, which only covers the main vault), and `qi launch harness --client Acme` is shorthand for resolving the client.
+A client may also set `task_file` to become a sync target for client-wide tasks: `qi task add --client Acme "…"` tags the task `#Acme` and routes it to that file (the client name becomes a project tag, so it must not collide with a `[[client.project]]`). `--client` / `--project` also route notes — `qi note new --client Acme "…"` writes into that vault's configured notes dir (`notes_path`, default `00-inbox`) instead of the main vault (such notes aren't in the `qi note search` index, which only covers the main vault), and `qi launch harness --client Acme` is shorthand for resolving the client.
+
+A project's optional `path` is a base subdirectory within the vault: relative `task_file` and `notes_path` — and their defaults (`10-tasks/<project>.md`, `00-inbox`) — resolve under `vault_path + path`, so a project that keeps its docs in one folder need not repeat that prefix. Absolute `task_file`/`notes_path` ignore `path`. A project's `notes_path` inherits the client's when unset (default `00-inbox`).
 
 | Env var | Purpose |
 |---|---|
