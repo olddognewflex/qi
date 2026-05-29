@@ -91,7 +91,7 @@ func reconcileOnce(cfg config.Config, idx Indexer, tasksDir string, dryRun bool)
 	if err != nil {
 		return Report{}, false, err
 	}
-	projFiles, err := gatherProjectionFiles(cfg.ProjectVaults)
+	projFiles, err := gatherProjectionFiles(cfg.Projects)
 	if err != nil {
 		return Report{}, false, err
 	}
@@ -105,7 +105,7 @@ func reconcileOnce(cfg config.Config, idx Indexer, tasksDir string, dryRun bool)
 
 	// proj: id->task, project forced to the owning vault; id-less lines minted.
 	proj := make(map[string]domain.Task)
-	for _, pv := range cfg.ProjectVaults {
+	for _, pv := range cfg.Projects {
 		fs := projFiles[pv.File]
 		for _, t := range fs.tasks {
 			if t.ID == "" {
@@ -121,8 +121,8 @@ func reconcileOnce(cfg config.Config, idx Indexer, tasksDir string, dryRun bool)
 		return Report{}, false, fmt.Errorf("load sync state: %w", err)
 	}
 
-	syncedProjects := make(map[string]struct{}, len(cfg.ProjectVaults))
-	for _, pv := range cfg.ProjectVaults {
+	syncedProjects := make(map[string]struct{}, len(cfg.Projects))
+	for _, pv := range cfg.Projects {
 		syncedProjects[pv.Project] = struct{}{}
 	}
 
@@ -290,7 +290,7 @@ func gatherCanonFiles(tasksDir string) (map[string]fileState, error) {
 }
 
 // gatherProjectionFiles reads each configured project vault's projection file.
-func gatherProjectionFiles(vaults []config.ProjectVault) (map[string]fileState, error) {
+func gatherProjectionFiles(vaults []config.ProjectConfig) (map[string]fileState, error) {
 	out := make(map[string]fileState)
 	for _, pv := range vaults {
 		if isSyncConflict(filepath.Base(pv.File)) {
@@ -338,7 +338,7 @@ func readTasksIfExists(path string) ([]domain.Task, error) {
 
 // renderTargets maps the plan's per-project task sets onto absolute file paths.
 // Canon files: <tasksDir>/<flatten(project)>.md. Projection files: the
-// configured project_vault file for that project.
+// configured project file for that project.
 func renderTargets(
 	cfg config.Config,
 	tasksDir string,
@@ -354,8 +354,8 @@ func renderTargets(
 		canonByPath[path] = append(canonByPath[path], tasks...)
 	}
 
-	projFileFor := make(map[string]string, len(cfg.ProjectVaults))
-	for _, pv := range cfg.ProjectVaults {
+	projFileFor := make(map[string]string, len(cfg.Projects))
+	for _, pv := range cfg.Projects {
 		projFileFor[pv.Project] = pv.File
 	}
 	for project, tasks := range plan.ProjByProject {

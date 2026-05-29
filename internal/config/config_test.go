@@ -347,7 +347,7 @@ daily_file_format = "YYYY-MM-DD"
 	}
 }
 
-func TestLoadFrom_ProjectVaultExplicitFile(t *testing.T) {
+func TestLoadFrom_ProjectExplicitFile(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -355,9 +355,9 @@ func TestLoadFrom_ProjectVaultExplicitFile(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "foo"
-path = "/Users/you/Vaults/foo"
+vault_path = "/Users/you/Vaults/foo"
 file = "10-tasks/foo.md"
 `)
 
@@ -365,22 +365,22 @@ file = "10-tasks/foo.md"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.ProjectVaults) != 1 {
-		t.Fatalf("got %d project vaults, want 1", len(cfg.ProjectVaults))
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("got %d project vaults, want 1", len(cfg.Projects))
 	}
-	pv := cfg.ProjectVaults[0]
+	pv := cfg.Projects[0]
 	if pv.Project != "foo" {
 		t.Errorf("Project = %q, want foo", pv.Project)
 	}
-	if pv.Path != "/Users/you/Vaults/foo" {
-		t.Errorf("Path = %q", pv.Path)
+	if pv.VaultPath != "/Users/you/Vaults/foo" {
+		t.Errorf("Path = %q", pv.VaultPath)
 	}
 	if pv.File != "/Users/you/Vaults/foo/10-tasks/foo.md" {
 		t.Errorf("File = %q, want /Users/you/Vaults/foo/10-tasks/foo.md", pv.File)
 	}
 }
 
-func TestLoadFrom_ProjectVaultDefaultFile(t *testing.T) {
+func TestLoadFrom_ProjectDefaultFile(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -388,29 +388,29 @@ func TestLoadFrom_ProjectVaultDefaultFile(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "foo"
-path = "/Users/you/Vaults/foo"
+vault_path = "/Users/you/Vaults/foo"
 
-[[project_vault]]
+[[project]]
 project = "work/clientA"
-path = "/Users/you/Vaults/work"
+vault_path = "/Users/you/Vaults/work"
 `)
 
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.ProjectVaults) != 2 {
-		t.Fatalf("got %d project vaults, want 2", len(cfg.ProjectVaults))
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("got %d project vaults, want 2", len(cfg.Projects))
 	}
 	// Simple project: default file = 10-tasks/foo.md
-	simple := cfg.ProjectVaults[0]
+	simple := cfg.Projects[0]
 	if simple.File != "/Users/you/Vaults/foo/10-tasks/foo.md" {
 		t.Errorf("simple File = %q, want /Users/you/Vaults/foo/10-tasks/foo.md", simple.File)
 	}
 	// Nested tag: / flattened to - in filename; project preserved verbatim
-	nested := cfg.ProjectVaults[1]
+	nested := cfg.Projects[1]
 	if nested.Project != "work/clientA" {
 		t.Errorf("nested Project = %q, want work/clientA", nested.Project)
 	}
@@ -419,7 +419,7 @@ path = "/Users/you/Vaults/work"
 	}
 }
 
-func TestLoadFrom_ProjectVaultRelativeFileResolved(t *testing.T) {
+func TestLoadFrom_ProjectRelativeFileResolved(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -427,9 +427,9 @@ func TestLoadFrom_ProjectVaultRelativeFileResolved(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "bar"
-path = "/Users/you/Vaults/bar"
+vault_path = "/Users/you/Vaults/bar"
 file = "tasks/bar-tasks.md"
 `)
 
@@ -437,14 +437,14 @@ file = "tasks/bar-tasks.md"
 	if err != nil {
 		t.Fatal(err)
 	}
-	pv := cfg.ProjectVaults[0]
+	pv := cfg.Projects[0]
 	want := "/Users/you/Vaults/bar/tasks/bar-tasks.md"
 	if pv.File != want {
 		t.Errorf("File = %q, want %q", pv.File, want)
 	}
 }
 
-func TestLoadFrom_ProjectVaultDuplicateProjectError(t *testing.T) {
+func TestLoadFrom_ProjectDuplicateProjectError(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -452,13 +452,13 @@ func TestLoadFrom_ProjectVaultDuplicateProjectError(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "foo"
-path = "/Users/you/Vaults/foo"
+vault_path = "/Users/you/Vaults/foo"
 
-[[project_vault]]
+[[project]]
 project = "foo"
-path = "/Users/you/Vaults/foo2"
+vault_path = "/Users/you/Vaults/foo2"
 `)
 
 	if _, err := config.LoadFrom(cfgPath); err == nil {
@@ -466,7 +466,7 @@ path = "/Users/you/Vaults/foo2"
 	}
 }
 
-func TestLoadFrom_ProjectVaultDuplicateFileError(t *testing.T) {
+func TestLoadFrom_ProjectDuplicateFileError(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -474,14 +474,14 @@ func TestLoadFrom_ProjectVaultDuplicateFileError(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "alpha"
-path = "/Users/you/Vaults/shared"
+vault_path = "/Users/you/Vaults/shared"
 file = "10-tasks/tasks.md"
 
-[[project_vault]]
+[[project]]
 project = "beta"
-path = "/Users/you/Vaults/shared"
+vault_path = "/Users/you/Vaults/shared"
 file = "10-tasks/tasks.md"
 `)
 
@@ -490,7 +490,7 @@ file = "10-tasks/tasks.md"
 	}
 }
 
-func TestLoadFrom_ProjectVaultMissingProject(t *testing.T) {
+func TestLoadFrom_ProjectMissingProject(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -498,9 +498,9 @@ func TestLoadFrom_ProjectVaultMissingProject(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = ""
-path = "/Users/you/Vaults/foo"
+vault_path = "/Users/you/Vaults/foo"
 `)
 
 	if _, err := config.LoadFrom(cfgPath); err == nil {
@@ -508,7 +508,7 @@ path = "/Users/you/Vaults/foo"
 	}
 }
 
-func TestLoadFrom_ProjectVaultMissingPath(t *testing.T) {
+func TestLoadFrom_ProjectMissingPath(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -516,9 +516,9 @@ func TestLoadFrom_ProjectVaultMissingPath(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "foo"
-path = ""
+vault_path = ""
 `)
 
 	if _, err := config.LoadFrom(cfgPath); err == nil {
@@ -563,17 +563,17 @@ vault_path = "/tmp/vault"
 harness = "claude"
 args = ["--global"]
 
-[[project_vault]]
+[[project]]
 project = "acme"
-path = "/tmp/acme"
-  [project_vault.launch]
+vault_path = "/tmp/acme"
+  [project.launch]
   harness = "aider"
   args = ["--model", "sonnet"]
   detach = false
 
-[[project_vault]]
+[[project]]
 project = "beta"
-path = "/tmp/beta"
+vault_path = "/tmp/beta"
 `)
 
 	cfg, err := config.LoadFrom(cfgPath)
@@ -690,9 +690,9 @@ func TestEffectiveProject(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project_vault]]
+[[project]]
 project = "acme"
-path = "/tmp/acme"
+vault_path = "/tmp/acme"
 `)
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {

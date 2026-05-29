@@ -17,12 +17,12 @@ func newSyncCommand(cfg config.Config) *cobra.Command {
 		Use:   "sync",
 		Short: "Reconcile tasks between the main vault and project vaults",
 		Long: "Run a global bidirectional reconcile between the main vault's per-project task " +
-			"files and each configured project_vault projection file. Use --dry-run to preview " +
+			"files and each configured project projection file. Use --dry-run to preview " +
 			"the plan without writing anything.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			if len(cfg.ProjectVaults) == 0 {
-				fmt.Fprintln(out, "No project_vault entries configured; nothing to sync.")
+			if len(cfg.Projects) == 0 {
+				fmt.Fprintln(out, "No project entries configured; nothing to sync.")
 				return nil
 			}
 

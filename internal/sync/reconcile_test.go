@@ -35,20 +35,20 @@ func newHarness(t *testing.T, projects ...string) *harness {
 	if len(projects) == 0 {
 		projects = []string{"foo"}
 	}
-	var pvs []config.ProjectVault
+	var pvs []config.ProjectConfig
 	for _, p := range projects {
 		vaultDir := t.TempDir()
 		pf := filepath.Join(vaultDir, "10-tasks", p+".md")
 		if err := os.MkdirAll(filepath.Dir(pf), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		pvs = append(pvs, config.ProjectVault{Project: p, Path: vaultDir, File: pf})
+		pvs = append(pvs, config.ProjectConfig{Project: p, VaultPath: vaultDir, File: pf})
 	}
 
 	cfg := config.Config{
 		VaultPath:     mainVault,
 		TaskFilePath:  filepath.Join(tasksDir, "inbox.md"),
-		ProjectVaults: pvs,
+		Projects: pvs,
 	}
 
 	idx, err := index.Open()
@@ -68,7 +68,7 @@ func newHarness(t *testing.T, projects ...string) *harness {
 }
 
 func (h *harness) projFileFor(project string) string {
-	for _, pv := range h.cfg.ProjectVaults {
+	for _, pv := range h.cfg.Projects {
 		if pv.Project == project {
 			return pv.File
 		}
