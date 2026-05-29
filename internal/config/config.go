@@ -47,6 +47,16 @@ type ProjectVault struct {
 	Project string
 	Path    string
 	File    string
+	Launch  *LaunchConfig // nil = inherit the global [launch] block
+}
+
+// LaunchConfig describes the external AI harness/tool launched by
+// `qi launch harness`. Resolved per-project (see Config.ResolveLaunch) with the
+// global [launch] block and $AI_HARNESS/$AI_EDITOR as fallbacks.
+type LaunchConfig struct {
+	Harness string   // executable resolved via PATH
+	Args    []string // prepended before any pass-through args
+	Detach  bool      // true for GUI apps (spawn + return); false replaces qi (TUI)
 }
 
 // AIConfig selects the LLM provider and per-provider defaults used by
@@ -74,6 +84,7 @@ type Config struct {
 	MCPServers      []MCPServer
 	AI              AIConfig
 	ProjectVaults   []ProjectVault
+	Launch          LaunchConfig
 }
 
 type icsCalTOML struct {
@@ -115,10 +126,17 @@ type aiTOML struct {
 	OllamaModel string `toml:"ollama_model"`
 }
 
+type launchTOML struct {
+	Harness string   `toml:"harness"`
+	Args    []string `toml:"args"`
+	Detach  bool     `toml:"detach"`
+}
+
 type projectVaultTOML struct {
-	Project string `toml:"project"`
-	Path    string `toml:"path"`
-	File    string `toml:"file"`
+	Project string      `toml:"project"`
+	Path    string      `toml:"path"`
+	File    string      `toml:"file"`
+	Launch  *launchTOML `toml:"launch"`
 }
 
 type tomlFile struct {
@@ -133,6 +151,7 @@ type tomlFile struct {
 	MCPServers      []mcpServerTOML    `toml:"mcp_servers"`
 	AI              aiTOML             `toml:"ai"`
 	ProjectVaults   []projectVaultTOML `toml:"project_vault"`
+	Launch          launchTOML         `toml:"launch"`
 }
 
 func ConfigPath() string {
@@ -282,10 +301,20 @@ func LoadFrom(path string) (Config, error) {
 		}
 		seenFiles[file] = struct{}{}
 
+		var launch *LaunchConfig
+		if pv.Launch != nil && pv.Launch.Harness != "" {
+			launch = &LaunchConfig{
+				Harness: pv.Launch.Harness,
+				Args:    pv.Launch.Args,
+				Detach:  pv.Launch.Detach,
+			}
+		}
+
 		projectVaults = append(projectVaults, ProjectVault{
 			Project: pv.Project,
 			Path:    pv.Path,
 			File:    file,
+			Launch:  launch,
 		})
 	}
 
@@ -312,7 +341,66 @@ func LoadFrom(path string) (Config, error) {
 			OllamaModel: raw.AI.OllamaModel,
 		},
 		ProjectVaults: projectVaults,
+		Launch: LaunchConfig{
+			Harness: raw.Launch.Harness,
+			Args:    raw.Launch.Args,
+			Detach:  raw.Launch.Detach,
+		},
 	}, nil
+}
+
+// EffectiveProject determines which project_vault a launch should resolve
+// against. An explicit flag wins verbatim (so a typo surfaces as an error in
+// ResolveLaunch rather than silently falling through). When flag is empty it
+// falls back to $WORK_CONTEXT, but only if that names a configured project —
+// $WORK_CONTEXT is a general-purpose env var that may not map to any vault, so
+// an unmatched value is treated as "no project" rather than an error.
+func (c Config) EffectiveProject(flag string) string {
+	if flag != "" {
+		return flag
+	}
+	wc := os.Getenv("WORK_CONTEXT")
+	if wc == "" {
+		return ""
+	}
+	for _, pv := range c.ProjectVaults {
+		if pv.Project == wc {
+			return wc
+		}
+	}
+	return ""
+}
+
+// ResolveLaunch picks the harness config for project. Resolution order:
+// per-project [project_vault.launch] > global [launch] > $AI_HARNESS/$AI_EDITOR.
+// project may be "" to skip the per-project lookup. Returns an error when no
+// harness is configured at any level.
+func (c Config) ResolveLaunch(project string) (LaunchConfig, error) {
+	if project != "" {
+		found := false
+		for _, pv := range c.ProjectVaults {
+			if pv.Project != project {
+				continue
+			}
+			found = true
+			if pv.Launch != nil && pv.Launch.Harness != "" {
+				return *pv.Launch, nil
+			}
+		}
+		if !found {
+			return LaunchConfig{}, fmt.Errorf("launch: unknown project %q", project)
+		}
+	}
+	if c.Launch.Harness != "" {
+		return c.Launch, nil
+	}
+	if h := os.Getenv("AI_HARNESS"); h != "" {
+		return LaunchConfig{Harness: h}, nil
+	}
+	if h := os.Getenv("AI_EDITOR"); h != "" {
+		return LaunchConfig{Harness: h}, nil
+	}
+	return LaunchConfig{}, errors.New("launch: no harness configured (set [launch] harness in config.toml or $AI_HARNESS)")
 }
 
 var tokenRe = regexp.MustCompile(`YYYY|MMMM|MMM|MM|DD`)
