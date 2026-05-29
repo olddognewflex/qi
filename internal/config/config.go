@@ -43,11 +43,11 @@ type MCPServer struct {
 	Env     map[string]string
 }
 
-type ProjectVault struct {
-	Project string
-	Path    string
-	File    string
-	Launch  *LaunchConfig // nil = inherit the global [launch] block
+type ProjectConfig struct {
+	Project   string
+	VaultPath string
+	File      string
+	Launch    *LaunchConfig // nil = inherit the global [launch] block
 }
 
 // LaunchConfig describes the external AI harness/tool launched by
@@ -83,7 +83,7 @@ type Config struct {
 	GoogleCalendars []GoogleCalendar
 	MCPServers      []MCPServer
 	AI              AIConfig
-	ProjectVaults   []ProjectVault
+	Projects        []ProjectConfig
 	Launch          LaunchConfig
 }
 
@@ -132,11 +132,11 @@ type launchTOML struct {
 	Detach  bool     `toml:"detach"`
 }
 
-type projectVaultTOML struct {
-	Project string      `toml:"project"`
-	Path    string      `toml:"path"`
-	File    string      `toml:"file"`
-	Launch  *launchTOML `toml:"launch"`
+type projectTOML struct {
+	Project   string      `toml:"project"`
+	VaultPath string      `toml:"vault_path"`
+	File      string      `toml:"file"`
+	Launch    *launchTOML `toml:"launch"`
 }
 
 type tomlFile struct {
@@ -149,9 +149,9 @@ type tomlFile struct {
 	GoogleOAuth     googleOAuthTOML    `toml:"google_oauth"`
 	GoogleCalendars []googleCalTOML    `toml:"google_calendars"`
 	MCPServers      []mcpServerTOML    `toml:"mcp_servers"`
-	AI              aiTOML             `toml:"ai"`
-	ProjectVaults   []projectVaultTOML `toml:"project_vault"`
-	Launch          launchTOML         `toml:"launch"`
+	AI              aiTOML        `toml:"ai"`
+	Projects        []projectTOML `toml:"project"`
+	Launch          launchTOML    `toml:"launch"`
 }
 
 func ConfigPath() string {
@@ -272,49 +272,49 @@ func LoadFrom(path string) (Config, error) {
 		})
 	}
 
-	projectVaults := make([]ProjectVault, 0, len(raw.ProjectVaults))
-	seenProjects := make(map[string]struct{}, len(raw.ProjectVaults))
-	seenFiles := make(map[string]struct{}, len(raw.ProjectVaults))
-	for _, pv := range raw.ProjectVaults {
-		if pv.Project == "" {
-			return Config{}, fmt.Errorf("project_vault: project is required")
+	projects := make([]ProjectConfig, 0, len(raw.Projects))
+	seenProjects := make(map[string]struct{}, len(raw.Projects))
+	seenFiles := make(map[string]struct{}, len(raw.Projects))
+	for _, p := range raw.Projects {
+		if p.Project == "" {
+			return Config{}, fmt.Errorf("project: project is required")
 		}
-		if pv.Path == "" {
-			return Config{}, fmt.Errorf("project_vault: path is required for project %q", pv.Project)
+		if p.VaultPath == "" {
+			return Config{}, fmt.Errorf("project: vault_path is required for project %q", p.Project)
 		}
-		if _, dup := seenProjects[pv.Project]; dup {
-			return Config{}, fmt.Errorf("project_vault: duplicate project %q", pv.Project)
+		if _, dup := seenProjects[p.Project]; dup {
+			return Config{}, fmt.Errorf("project: duplicate project %q", p.Project)
 		}
-		seenProjects[pv.Project] = struct{}{}
+		seenProjects[p.Project] = struct{}{}
 
-		file := pv.File
+		file := p.File
 		if file == "" {
-			flatName := strings.ReplaceAll(pv.Project, "/", "-")
+			flatName := strings.ReplaceAll(p.Project, "/", "-")
 			file = filepath.Join("10-tasks", flatName+".md")
 		}
 		if !filepath.IsAbs(file) {
-			file = filepath.Join(pv.Path, file)
+			file = filepath.Join(p.VaultPath, file)
 		}
 
 		if _, dup := seenFiles[file]; dup {
-			return Config{}, fmt.Errorf("project_vault: duplicate resolved file path %q", file)
+			return Config{}, fmt.Errorf("project: duplicate resolved file path %q", file)
 		}
 		seenFiles[file] = struct{}{}
 
 		var launch *LaunchConfig
-		if pv.Launch != nil && pv.Launch.Harness != "" {
+		if p.Launch != nil && p.Launch.Harness != "" {
 			launch = &LaunchConfig{
-				Harness: pv.Launch.Harness,
-				Args:    pv.Launch.Args,
-				Detach:  pv.Launch.Detach,
+				Harness: p.Launch.Harness,
+				Args:    p.Launch.Args,
+				Detach:  p.Launch.Detach,
 			}
 		}
 
-		projectVaults = append(projectVaults, ProjectVault{
-			Project: pv.Project,
-			Path:    pv.Path,
-			File:    file,
-			Launch:  launch,
+		projects = append(projects, ProjectConfig{
+			Project:   p.Project,
+			VaultPath: p.VaultPath,
+			File:      file,
+			Launch:    launch,
 		})
 	}
 
@@ -340,7 +340,7 @@ func LoadFrom(path string) (Config, error) {
 			OllamaURL:   raw.AI.OllamaURL,
 			OllamaModel: raw.AI.OllamaModel,
 		},
-		ProjectVaults: projectVaults,
+		Projects: projects,
 		Launch: LaunchConfig{
 			Harness: raw.Launch.Harness,
 			Args:    raw.Launch.Args,
@@ -349,11 +349,11 @@ func LoadFrom(path string) (Config, error) {
 	}, nil
 }
 
-// EffectiveProject determines which project_vault a launch should resolve
+// EffectiveProject determines which [[project]] a launch should resolve
 // against. An explicit flag wins verbatim (so a typo surfaces as an error in
 // ResolveLaunch rather than silently falling through). When flag is empty it
 // falls back to $WORK_CONTEXT, but only if that names a configured project —
-// $WORK_CONTEXT is a general-purpose env var that may not map to any vault, so
+// $WORK_CONTEXT is a general-purpose env var that may not map to any project, so
 // an unmatched value is treated as "no project" rather than an error.
 func (c Config) EffectiveProject(flag string) string {
 	if flag != "" {
@@ -363,8 +363,8 @@ func (c Config) EffectiveProject(flag string) string {
 	if wc == "" {
 		return ""
 	}
-	for _, pv := range c.ProjectVaults {
-		if pv.Project == wc {
+	for _, p := range c.Projects {
+		if p.Project == wc {
 			return wc
 		}
 	}
@@ -372,19 +372,19 @@ func (c Config) EffectiveProject(flag string) string {
 }
 
 // ResolveLaunch picks the harness config for project. Resolution order:
-// per-project [project_vault.launch] > global [launch] > $AI_HARNESS/$AI_EDITOR.
+// per-project [project.launch] > global [launch] > $AI_HARNESS/$AI_EDITOR.
 // project may be "" to skip the per-project lookup. Returns an error when no
 // harness is configured at any level.
 func (c Config) ResolveLaunch(project string) (LaunchConfig, error) {
 	if project != "" {
 		found := false
-		for _, pv := range c.ProjectVaults {
-			if pv.Project != project {
+		for _, p := range c.Projects {
+			if p.Project != project {
 				continue
 			}
 			found = true
-			if pv.Launch != nil && pv.Launch.Harness != "" {
-				return *pv.Launch, nil
+			if p.Launch != nil && p.Launch.Harness != "" {
+				return *p.Launch, nil
 			}
 		}
 		if !found {

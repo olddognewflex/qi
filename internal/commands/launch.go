@@ -26,7 +26,7 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 		Aliases: []string{"ai"},
 		Short:   "Launch the configured AI harness for this project",
 		Long: "Resolve and launch the AI harness. Resolution order:\n" +
-			"  --project <name> [project_vault.launch] > [launch] > $AI_HARNESS > $AI_EDITOR\n" +
+			"  --project <name> [project.launch] > [launch] > $AI_HARNESS > $AI_EDITOR\n" +
 			"The harness runs with cwd set to the vault and QI_VAULT_PATH exported.\n" +
 			"Extra args after -- are passed through to the harness.",
 		Args: cobra.ArbitraryArgs,
@@ -44,7 +44,7 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 			return runHarness(cmd, cfg, lc, args)
 		},
 	}
-	cmd.Flags().StringVar(&project, "project", "", "project_vault to resolve the harness for (defaults to $WORK_CONTEXT)")
+	cmd.Flags().StringVar(&project, "project", "", "project to resolve the harness for (defaults to $WORK_CONTEXT)")
 	return cmd
 }
 

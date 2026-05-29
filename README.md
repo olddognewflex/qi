@@ -180,16 +180,19 @@ model        = "claude-sonnet-4-6"  # used when provider=anthropic
 ollama_url   = "http://localhost:11434"
 ollama_model = "qwen3:14b"
 
-# --- Project vaults (cross-vault task sync) ---
+# --- Projects (cross-vault task sync + per-project launch) ---
 
-[[project_vault]]
-project = "acme"                    # required; matches a task's first #tag
-path    = "/Users/you/Vaults/Acme"  # required; project vault root
-# file  = "10-tasks/acme.md"        # optional; default 10-tasks/<project>.md,
-                                    #   relative to path, "/" in project flattened to "-"
+[[project]]
+project    = "acme"                    # required; matches a task's first #tag
+vault_path = "/Users/you/Vaults/Acme"  # required; project vault root
+# file     = "10-tasks/acme.md"        # optional; default 10-tasks/<project>.md,
+                                       #   relative to vault_path, "/" in project flattened to "-"
+  [project.launch]                     # optional; per-project AI harness override
+  harness = "aider"
+  args    = ["--model", "sonnet"]
 ```
 
-Each `[[project_vault]]` maps one project tag to one Obsidian vault. Validation rejects an empty `project` or `path`, a duplicate `project`, or two vaults resolving to the same file.
+Each `[[project]]` maps one project tag to one Obsidian vault. Validation rejects an empty `project` or `vault_path`, a duplicate `project`, or two vaults resolving to the same file.
 
 | Env var | Purpose |
 |---|---|
@@ -257,7 +260,7 @@ The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`,
 
 `qi sync` reconciles project tasks between the main qi vault and per-project Obsidian
 vaults, so the same task is editable in both places and the main vault keeps the full
-picture. Configure projects under `[[project_vault]]` (see Configuration).
+picture. Configure projects under `[[project]]` (see Configuration).
 
 - **Per-project files.** A tagged task lives in `10-tasks/<project>.md` (untagged →
   `inbox.md`). `qi task list` / `done` aggregate across all of them.
@@ -349,7 +352,7 @@ go build -o /tmp/mcpdriver  ./internal/qimcp/testdata/mcpdriver
 - `qi-mcp` MCP server bridge
 - `skill.daily-review`
 - AI planner with provider abstraction (Anthropic + Ollama)
-- Cross-vault task sync (`qi sync`, `[[project_vault]]`)
+- Cross-vault task sync (`qi sync`, `[[project]]`)
 
 ### Next
 - Cross-vault sync via `qid` fsnotify watch (near-real-time, replaces manual `qi sync`)

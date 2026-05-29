@@ -90,7 +90,7 @@ func tagged(t domain.Task) domain.Task {
 //     already been forced to the owning vault's project by the caller, and any
 //     id-less projection line has already been assigned a freshly minted id.
 //   - base:  id -> ancestor {project, baseLine} from the last sync.
-//   - syncedProjects: the set of projects that have a configured project_vault.
+//   - syncedProjects: the set of projects that have a configured project.
 //     Only these are ever projected; tasks of other projects stay in canon.
 //
 // It returns a Plan with the full desired task set for every touched project's
