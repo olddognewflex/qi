@@ -152,7 +152,7 @@ type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
 	DevPath   string      `toml:"dev_path"`   // absolute, or relative to client dev_root
-	File      string      `toml:"file"`
+	File      string      `toml:"task_file"`  // projection task file; default 10-tasks/<project>.md
 	Launch    *launchTOML `toml:"launch"`
 }
 
