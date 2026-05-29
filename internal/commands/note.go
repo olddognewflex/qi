@@ -40,22 +40,37 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 		},
 	}
 
+	var newProject string
+	var newClient string
 	newCmd := &cobra.Command{
 		Use:   "new <title>",
 		Short: "Create a new note",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body, _ := cmd.Flags().GetString("body")
-			note, err := noteSvc.AddNote(args[0], body)
+
+			// --client/--project route the note into that vault's 20-notes/;
+			// default is the main vault.
+			vaultPath, err := cfg.NoteVaultFor(newClient, newProject)
 			if err != nil {
 				return err
 			}
-			rel, _ := filepath.Rel(cfg.VaultPath, note.Path)
+			svc := service.NoteService{NotesDir: filepath.Join(vaultPath, "20-notes")}
+			note, err := svc.AddNote(args[0], body)
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(vaultPath, note.Path)
+			if err != nil {
+				rel = note.Path
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", rel)
 			return nil
 		},
 	}
 	newCmd.Flags().StringP("body", "b", "", "initial note body")
+	newCmd.Flags().StringVarP(&newProject, "project", "p", "", "write into the project vault's notes")
+	newCmd.Flags().StringVarP(&newClient, "client", "c", "", "write into the client vault's notes")
 
 	searchCmd := &cobra.Command{
 		Use:   "search <query>",

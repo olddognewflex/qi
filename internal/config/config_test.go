@@ -813,3 +813,131 @@ func TestProjectAndClientByName(t *testing.T) {
 		t.Error("ClientByName(ghost) = true")
 	}
 }
+
+func TestLoadFrom_ClientTaskFile(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[client]]
+name = "CC"
+vault_path = "/vaults/cc"
+dev_root = "/dev/cc"
+task_file = "10-tasks/_client.md"
+  [client.launch]
+  harness = "agent"
+
+  [[client.project]]
+  project = "BHQ"
+  dev_path = "builder-hq"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Client retains its resolved task_file.
+	cl, ok := cfg.ClientByName("CC")
+	if !ok {
+		t.Fatal("CC client not found")
+	}
+	if cl.TaskFile != "/vaults/cc/10-tasks/_client.md" {
+		t.Errorf("CC.TaskFile = %q", cl.TaskFile)
+	}
+
+	// A synthetic project tagged by the client name is flattened in for sync.
+	var synth *config.ProjectConfig
+	for i := range cfg.Projects {
+		if cfg.Projects[i].Project == "CC" {
+			synth = &cfg.Projects[i]
+		}
+	}
+	if synth == nil {
+		t.Fatal("no synthetic CC project in Projects")
+	}
+	if synth.File != "/vaults/cc/10-tasks/_client.md" || synth.VaultPath != "/vaults/cc" {
+		t.Errorf("synthetic CC = %+v", *synth)
+	}
+
+	// ProjectByName must NOT surface the synthetic project (so it can't shadow
+	// client-name launch resolution).
+	if _, ok := cfg.ProjectByName("CC"); ok {
+		t.Error("ProjectByName(CC) returned the synthetic projection; want skipped")
+	}
+
+	// Launch by client name still resolves to the client (dev_root), not the
+	// synthetic project (which would give current dir).
+	tgt, err := cfg.ResolveLaunchTarget("CC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.WorkDir != "/dev/cc" {
+		t.Errorf("ResolveLaunchTarget(CC).WorkDir = %q, want client dev_root", tgt.WorkDir)
+	}
+}
+
+func TestLoadFrom_ClientTaskFileTagCollision(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	// Client task_file tag "CC" collides with a project also named "CC".
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+[[client]]
+name = "CC"
+vault_path = "/vaults/cc"
+task_file = "10-tasks/_client.md"
+  [[client.project]]
+  project = "CC"
+`)
+	if _, err := config.LoadFrom(cfgPath); err == nil {
+		t.Error("expected tag-collision error, got nil")
+	}
+}
+
+func TestNoteVaultFor(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/main"
+[[client]]
+name = "CC"
+vault_path = "/vaults/cc"
+dev_root = "/dev/cc"
+  [[client.project]]
+  project = "BHQ"
+  dev_path = "builder-hq"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if v, _ := cfg.NoteVaultFor("", ""); v != "/tmp/main" {
+		t.Errorf("default note vault = %q, want main", v)
+	}
+	if v, _ := cfg.NoteVaultFor("CC", ""); v != "/vaults/cc" {
+		t.Errorf("client note vault = %q, want /vaults/cc", v)
+	}
+	if v, _ := cfg.NoteVaultFor("", "BHQ"); v != "/vaults/cc" {
+		t.Errorf("project note vault = %q, want project vault", v)
+	}
+	if _, err := cfg.NoteVaultFor("CC", "BHQ"); err == nil {
+		t.Error("both client+project should error")
+	}
+	if _, err := cfg.NoteVaultFor("ghost", ""); err == nil {
+		t.Error("unknown client should error")
+	}
+	if _, err := cfg.NoteVaultFor("", "ghost"); err == nil {
+		t.Error("unknown project should error")
+	}
+}

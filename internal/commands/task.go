@@ -27,6 +27,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	}
 
 	var project string
+	var client string
 	var due string
 
 	addCmd := &cobra.Command{
@@ -42,14 +43,30 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				}
 				parsedDue = &t
 			}
+
+			// --client tags the task with a configured client name (validated),
+			// routing it to that client's task_file via sync. Mutually exclusive
+			// with the free-form --project tag.
+			tag := project
+			if client != "" {
+				if project != "" {
+					return fmt.Errorf("--client and --project are mutually exclusive")
+				}
+				if _, ok := cfg.ClientByName(client); !ok {
+					return fmt.Errorf("unknown client %q", client)
+				}
+				tag = client
+			}
+
 			return svc.AddTask(service.AddTaskInput{
 				Text:    args[0],
-				Project: project,
+				Project: tag,
 				Due:     parsedDue,
 			})
 		},
 	}
 	addCmd.Flags().StringVarP(&project, "project", "p", "", "project tag")
+	addCmd.Flags().StringVarP(&client, "client", "c", "", "client name (routes to the client's task_file)")
 	addCmd.Flags().StringVarP(&due, "due", "d", "", "due date (YYYY-MM-DD)")
 
 	listCmd := &cobra.Command{
