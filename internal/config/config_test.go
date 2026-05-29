@@ -347,7 +347,7 @@ daily_file_format = "YYYY-MM-DD"
 	}
 }
 
-func TestLoadFrom_ProjectExplicitFile(t *testing.T) {
+func TestLoadFrom_ClientProjectFiles(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -355,32 +355,69 @@ func TestLoadFrom_ProjectExplicitFile(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project]]
-project = "foo"
-vault_path = "/Users/you/Vaults/foo"
-file = "10-tasks/foo.md"
+[[client]]
+name = "Consular Capital"
+vault_path = "/Users/you/Vaults/CC"
+dev_root = "/Users/you/Development/CC"
+
+  [[client.project]]
+  project = "CC"
+
+  [[client.project]]
+  project = "BHQ"
+  dev_path = "builder-hq"
+  file = "10-projects/BuilderHQ/tasks.md"
+
+  [[client.project]]
+  project = "work/clientA"
 `)
 
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Projects) != 1 {
-		t.Fatalf("got %d project vaults, want 1", len(cfg.Projects))
+	if len(cfg.Clients) != 1 {
+		t.Fatalf("got %d clients, want 1", len(cfg.Clients))
 	}
-	pv := cfg.Projects[0]
-	if pv.Project != "foo" {
-		t.Errorf("Project = %q, want foo", pv.Project)
+	if len(cfg.Projects) != 3 {
+		t.Fatalf("got %d projects, want 3", len(cfg.Projects))
 	}
-	if pv.VaultPath != "/Users/you/Vaults/foo" {
-		t.Errorf("Path = %q", pv.VaultPath)
+
+	// CC: inherits client vault, default file under it, no dev_path.
+	cc, ok := cfg.ProjectByName("CC")
+	if !ok {
+		t.Fatal("CC not found")
 	}
-	if pv.File != "/Users/you/Vaults/foo/10-tasks/foo.md" {
-		t.Errorf("File = %q, want /Users/you/Vaults/foo/10-tasks/foo.md", pv.File)
+	if cc.Client != "Consular Capital" {
+		t.Errorf("CC.Client = %q", cc.Client)
+	}
+	if cc.VaultPath != "/Users/you/Vaults/CC" {
+		t.Errorf("CC.VaultPath = %q (want client vault)", cc.VaultPath)
+	}
+	if cc.File != "/Users/you/Vaults/CC/10-tasks/CC.md" {
+		t.Errorf("CC.File = %q", cc.File)
+	}
+	if cc.DevPath != "" {
+		t.Errorf("CC.DevPath = %q, want empty", cc.DevPath)
+	}
+
+	// BHQ: relative dev_path resolves under client dev_root; explicit file under vault.
+	bhq, _ := cfg.ProjectByName("BHQ")
+	if bhq.DevPath != "/Users/you/Development/CC/builder-hq" {
+		t.Errorf("BHQ.DevPath = %q (want resolved under dev_root)", bhq.DevPath)
+	}
+	if bhq.File != "/Users/you/Vaults/CC/10-projects/BuilderHQ/tasks.md" {
+		t.Errorf("BHQ.File = %q", bhq.File)
+	}
+
+	// Nested tag: "/" flattened to "-" in default filename.
+	wc, _ := cfg.ProjectByName("work/clientA")
+	if wc.File != "/Users/you/Vaults/CC/10-tasks/work-clientA.md" {
+		t.Errorf("work/clientA File = %q", wc.File)
 	}
 }
 
-func TestLoadFrom_ProjectDefaultFile(t *testing.T) {
+func TestLoadFrom_ProjectVaultOverride(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
 	dir := t.TempDir()
@@ -388,141 +425,126 @@ func TestLoadFrom_ProjectDefaultFile(t *testing.T) {
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
 
-[[project]]
-project = "foo"
-vault_path = "/Users/you/Vaults/foo"
+[[client]]
+name = "acme"
+vault_path = "/Users/you/Vaults/acme"
 
-[[project]]
-project = "work/clientA"
-vault_path = "/Users/you/Vaults/work"
+  [[client.project]]
+  project = "special"
+  vault_path = "/Users/you/Vaults/special"
 `)
-
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Projects) != 2 {
-		t.Fatalf("got %d project vaults, want 2", len(cfg.Projects))
+	p, _ := cfg.ProjectByName("special")
+	if p.VaultPath != "/Users/you/Vaults/special" {
+		t.Errorf("VaultPath = %q, want project override", p.VaultPath)
 	}
-	// Simple project: default file = 10-tasks/foo.md
-	simple := cfg.Projects[0]
-	if simple.File != "/Users/you/Vaults/foo/10-tasks/foo.md" {
-		t.Errorf("simple File = %q, want /Users/you/Vaults/foo/10-tasks/foo.md", simple.File)
-	}
-	// Nested tag: / flattened to - in filename; project preserved verbatim
-	nested := cfg.Projects[1]
-	if nested.Project != "work/clientA" {
-		t.Errorf("nested Project = %q, want work/clientA", nested.Project)
-	}
-	if nested.File != "/Users/you/Vaults/work/10-tasks/work-clientA.md" {
-		t.Errorf("nested File = %q, want /Users/you/Vaults/work/10-tasks/work-clientA.md", nested.File)
+	if p.File != "/Users/you/Vaults/special/10-tasks/special.md" {
+		t.Errorf("File = %q (want under override vault)", p.File)
 	}
 }
 
-func TestLoadFrom_ProjectRelativeFileResolved(t *testing.T) {
+func TestLoadFrom_ClientValidation(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
 	t.Setenv("QI_TASK_FILE_PATH", "")
+	cases := map[string]string{
+		"missing client name": `
+vault_path = "/tmp/vault"
+[[client]]
+vault_path = "/v"
+`,
+		"missing client vault_path": `
+vault_path = "/tmp/vault"
+[[client]]
+name = "c"
+`,
+		"missing project tag": `
+vault_path = "/tmp/vault"
+[[client]]
+name = "c"
+vault_path = "/v"
+  [[client.project]]
+  project = ""
+`,
+		"duplicate client name": `
+vault_path = "/tmp/vault"
+[[client]]
+name = "c"
+vault_path = "/v"
+[[client]]
+name = "c"
+vault_path = "/v2"
+`,
+		"duplicate project across clients": `
+vault_path = "/tmp/vault"
+[[client]]
+name = "c1"
+vault_path = "/v1"
+  [[client.project]]
+  project = "dup"
+[[client]]
+name = "c2"
+vault_path = "/v2"
+  [[client.project]]
+  project = "dup"
+`,
+		"duplicate resolved file": `
+vault_path = "/tmp/vault"
+[[client]]
+name = "c"
+vault_path = "/shared"
+  [[client.project]]
+  project = "a"
+  file = "10-tasks/t.md"
+  [[client.project]]
+  project = "b"
+  file = "10-tasks/t.md"
+`,
+		"relative dev_path without dev_root": `
+vault_path = "/tmp/vault"
+[[client]]
+name = "c"
+vault_path = "/v"
+  [[client.project]]
+  project = "p"
+  dev_path = "sub"
+`,
+	}
+	for name, toml := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "config.toml")
+			writeTOML(t, cfgPath, toml)
+			if _, err := config.LoadFrom(cfgPath); err == nil {
+				t.Errorf("%s: expected error, got nil", name)
+			}
+		})
+	}
+}
+
+func TestLoadFrom_DevPathAbsolute(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 	writeTOML(t, cfgPath, `
 vault_path = "/tmp/vault"
-
-[[project]]
-project = "bar"
-vault_path = "/Users/you/Vaults/bar"
-file = "tasks/bar-tasks.md"
+[[client]]
+name = "c"
+vault_path = "/v"
+dev_root = "/dev/c"
+  [[client.project]]
+  project = "abs"
+  dev_path = "/elsewhere/abs"
 `)
-
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pv := cfg.Projects[0]
-	want := "/Users/you/Vaults/bar/tasks/bar-tasks.md"
-	if pv.File != want {
-		t.Errorf("File = %q, want %q", pv.File, want)
-	}
-}
-
-func TestLoadFrom_ProjectDuplicateProjectError(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("QI_TASK_FILE_PATH", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-
-[[project]]
-project = "foo"
-vault_path = "/Users/you/Vaults/foo"
-
-[[project]]
-project = "foo"
-vault_path = "/Users/you/Vaults/foo2"
-`)
-
-	if _, err := config.LoadFrom(cfgPath); err == nil {
-		t.Fatal("expected duplicate project error, got nil")
-	}
-}
-
-func TestLoadFrom_ProjectDuplicateFileError(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("QI_TASK_FILE_PATH", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-
-[[project]]
-project = "alpha"
-vault_path = "/Users/you/Vaults/shared"
-file = "10-tasks/tasks.md"
-
-[[project]]
-project = "beta"
-vault_path = "/Users/you/Vaults/shared"
-file = "10-tasks/tasks.md"
-`)
-
-	if _, err := config.LoadFrom(cfgPath); err == nil {
-		t.Fatal("expected duplicate resolved file error, got nil")
-	}
-}
-
-func TestLoadFrom_ProjectMissingProject(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("QI_TASK_FILE_PATH", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-
-[[project]]
-project = ""
-vault_path = "/Users/you/Vaults/foo"
-`)
-
-	if _, err := config.LoadFrom(cfgPath); err == nil {
-		t.Fatal("expected error for missing project, got nil")
-	}
-}
-
-func TestLoadFrom_ProjectMissingPath(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("QI_TASK_FILE_PATH", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-
-[[project]]
-project = "foo"
-vault_path = ""
-`)
-
-	if _, err := config.LoadFrom(cfgPath); err == nil {
-		t.Fatal("expected error for missing path, got nil")
+	p, _ := cfg.ProjectByName("abs")
+	if p.DevPath != "/elsewhere/abs" {
+		t.Errorf("DevPath = %q, want absolute kept as-is", p.DevPath)
 	}
 }
 
@@ -550,223 +572,244 @@ func TestLoadFrom_DailyFormatDefaults(t *testing.T) {
 	}
 }
 
-func TestResolveLaunch_PerProjectOverridesGlobal(t *testing.T) {
+// launchTestConfig builds a config exercising all four harness tiers.
+func launchTestConfig(t *testing.T) config.Config {
+	t.Helper()
 	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("AI_HARNESS", "")
-	t.Setenv("AI_EDITOR", "")
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
+vault_path = "/tmp/mainvault"
 
 [launch]
 harness = "claude"
 args = ["--global"]
 
-[[project]]
-project = "acme"
-vault_path = "/tmp/acme"
-  [project.launch]
-  harness = "aider"
-  args = ["--model", "sonnet"]
-  detach = false
+[[client]]
+name = "CC"
+vault_path = "/vaults/cc"
+dev_root = "/dev/cc"
+  [client.launch]
+  harness = "agent"
 
-[[project]]
-project = "beta"
-vault_path = "/tmp/beta"
-`)
+  [[client.project]]
+  project = "BHQ"
+  dev_path = "builder-hq"
 
-	cfg, err := config.LoadFrom(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+  [[client.project]]
+  project = "OVERRIDE"
+  dev_path = "ovr"
+    [client.project.launch]
+    harness = "aider"
 
-	// Per-project override wins.
-	lc, err := cfg.ResolveLaunch("acme")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lc.Harness != "aider" || len(lc.Args) != 2 || lc.Args[0] != "--model" {
-		t.Errorf("acme launch = %+v, want aider --model sonnet", lc)
-	}
+[[client]]
+name = "Solo"
+vault_path = "/vaults/solo"
+dev_root = "/dev/solo"
 
-	// Project without its own launch falls back to global.
-	lc, err = cfg.ResolveLaunch("beta")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lc.Harness != "claude" || len(lc.Args) != 1 || lc.Args[0] != "--global" {
-		t.Errorf("beta launch = %+v, want global claude", lc)
-	}
-
-	// No project selects global.
-	lc, err = cfg.ResolveLaunch("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lc.Harness != "claude" {
-		t.Errorf("default launch = %+v, want global claude", lc)
-	}
-}
-
-func TestResolveLaunch_EnvFallback(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
-
-	cfg, err := config.LoadFrom(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("AI_EDITOR", "")
-	t.Setenv("AI_HARNESS", "cursor")
-	lc, err := cfg.ResolveLaunch("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lc.Harness != "cursor" {
-		t.Errorf("env fallback = %q, want cursor", lc.Harness)
-	}
-
-	// AI_HARNESS takes precedence over AI_EDITOR.
-	t.Setenv("AI_EDITOR", "code")
-	lc, _ = cfg.ResolveLaunch("")
-	if lc.Harness != "cursor" {
-		t.Errorf("precedence = %q, want cursor (AI_HARNESS over AI_EDITOR)", lc.Harness)
-	}
-
-	// AI_EDITOR used when AI_HARNESS empty.
-	t.Setenv("AI_HARNESS", "")
-	lc, _ = cfg.ResolveLaunch("")
-	if lc.Harness != "code" {
-		t.Errorf("AI_EDITOR fallback = %q, want code", lc.Harness)
-	}
-}
-
-func TestResolveLaunch_NoneConfigured(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("AI_HARNESS", "")
-	t.Setenv("AI_EDITOR", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
-
-	cfg, err := config.LoadFrom(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cfg.ResolveLaunch(""); err == nil {
-		t.Error("expected error when no harness configured, got nil")
-	}
-}
-
-func TestResolveLaunch_UnknownProject(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	t.Setenv("AI_HARNESS", "")
-	t.Setenv("AI_EDITOR", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-[launch]
-harness = "claude"
-`)
-
-	cfg, err := config.LoadFrom(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cfg.ResolveLaunch("nonexistent"); err == nil {
-		t.Error("expected error for unknown project, got nil")
-	}
-}
-
-func TestEffectiveProject(t *testing.T) {
-	t.Setenv("QI_VAULT_PATH", "")
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-
-[[project]]
-project = "acme"
-vault_path = "/tmp/acme"
+  [[client.project]]
+  project = "SOLO1"
 `)
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return cfg
+}
 
-	// Explicit flag wins verbatim, even if unmatched (typo surfaces later).
-	t.Setenv("WORK_CONTEXT", "acme")
-	if got := cfg.EffectiveProject("ghost"); got != "ghost" {
-		t.Errorf("flag override = %q, want ghost", got)
-	}
-
-	// Empty flag + matching WORK_CONTEXT → that project.
-	if got := cfg.EffectiveProject(""); got != "acme" {
-		t.Errorf("env match = %q, want acme", got)
-	}
-
-	// Empty flag + WORK_CONTEXT with no matching vault → "" (lenient).
-	t.Setenv("WORK_CONTEXT", "unmapped-client")
-	if got := cfg.EffectiveProject(""); got != "" {
-		t.Errorf("unmatched env = %q, want empty", got)
-	}
-
-	// No flag, no env → "".
+func TestResolveLaunchTarget_ProjectInheritsClient(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
 	t.Setenv("WORK_CONTEXT", "")
-	if got := cfg.EffectiveProject(""); got != "" {
-		t.Errorf("no selection = %q, want empty", got)
+	cfg := launchTestConfig(t)
+
+	// BHQ: no project launch -> inherits client "agent"; cwd = project dev_path.
+	tgt, err := cfg.ResolveLaunchTarget("BHQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.Harness.Harness != "agent" {
+		t.Errorf("BHQ harness = %q, want agent (client default)", tgt.Harness.Harness)
+	}
+	if tgt.VaultPath != "/vaults/cc" {
+		t.Errorf("BHQ vault = %q, want client vault", tgt.VaultPath)
+	}
+	if tgt.WorkDir != "/dev/cc/builder-hq" {
+		t.Errorf("BHQ workdir = %q, want resolved dev_path", tgt.WorkDir)
 	}
 }
 
-func TestLoadFrom_ProjectDevPath(t *testing.T) {
+func TestResolveLaunchTarget_ProjectOverridesClient(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	cfg := launchTestConfig(t)
+
+	tgt, err := cfg.ResolveLaunchTarget("OVERRIDE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.Harness.Harness != "aider" {
+		t.Errorf("OVERRIDE harness = %q, want aider (project override)", tgt.Harness.Harness)
+	}
+}
+
+func TestResolveLaunchTarget_ClientMatchUsesDevRoot(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	cfg := launchTestConfig(t)
+
+	// Client name (not a project) -> client harness + dev_root as cwd.
+	tgt, err := cfg.ResolveLaunchTarget("CC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.Harness.Harness != "agent" {
+		t.Errorf("CC harness = %q, want agent", tgt.Harness.Harness)
+	}
+	if tgt.VaultPath != "/vaults/cc" {
+		t.Errorf("CC vault = %q", tgt.VaultPath)
+	}
+	if tgt.WorkDir != "/dev/cc" {
+		t.Errorf("CC workdir = %q, want client dev_root", tgt.WorkDir)
+	}
+}
+
+func TestResolveLaunchTarget_ClientFallsToGlobalHarness(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	cfg := launchTestConfig(t)
+
+	// Solo client has no [client.launch] -> global "claude".
+	tgt, err := cfg.ResolveLaunchTarget("Solo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.Harness.Harness != "claude" {
+		t.Errorf("Solo harness = %q, want global claude", tgt.Harness.Harness)
+	}
+	if tgt.WorkDir != "/dev/solo" {
+		t.Errorf("Solo workdir = %q, want /dev/solo", tgt.WorkDir)
+	}
+}
+
+func TestResolveLaunchTarget_NoTargetUsesGlobal(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	cfg := launchTestConfig(t)
+
+	tgt, err := cfg.ResolveLaunchTarget("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tgt.Harness.Harness != "claude" || len(tgt.Harness.Args) != 1 {
+		t.Errorf("no-target harness = %+v, want global claude --global", tgt.Harness)
+	}
+	if tgt.VaultPath != "/tmp/mainvault" {
+		t.Errorf("no-target vault = %q, want global vault", tgt.VaultPath)
+	}
+	if tgt.WorkDir != "" {
+		t.Errorf("no-target workdir = %q, want empty (current dir)", tgt.WorkDir)
+	}
+}
+
+func TestResolveLaunchTarget_WorkContext(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	cfg := launchTestConfig(t)
+
+	// $WORK_CONTEXT matches a project -> FromEnv true, project resolution.
+	t.Setenv("WORK_CONTEXT", "BHQ")
+	tgt, err := cfg.ResolveLaunchTarget("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tgt.FromEnv || tgt.WorkDir != "/dev/cc/builder-hq" {
+		t.Errorf("WORK_CONTEXT=BHQ -> %+v, want FromEnv project resolution", tgt)
+	}
+
+	// Explicit flag beats $WORK_CONTEXT and is not marked FromEnv.
+	tgt, _ = cfg.ResolveLaunchTarget("CC")
+	if tgt.FromEnv || tgt.WorkDir != "/dev/cc" {
+		t.Errorf("flag CC over env BHQ -> %+v, want client CC, not FromEnv", tgt)
+	}
+
+	// Unmatched $WORK_CONTEXT is lenient -> global default, no error.
+	t.Setenv("WORK_CONTEXT", "unmapped")
+	tgt, err = cfg.ResolveLaunchTarget("")
+	if err != nil {
+		t.Fatalf("unmatched WORK_CONTEXT should be lenient, got %v", err)
+	}
+	if tgt.Harness.Harness != "claude" || tgt.Label != "" {
+		t.Errorf("unmatched env -> %+v, want silent global", tgt)
+	}
+}
+
+func TestResolveLaunchTarget_UnknownFlagErrors(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	cfg := launchTestConfig(t)
+
+	if _, err := cfg.ResolveLaunchTarget("ghost"); err == nil {
+		t.Error("explicit unknown target should error")
+	}
+}
+
+func TestResolveLaunchTarget_EnvHarnessFallback(t *testing.T) {
 	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("WORK_CONTEXT", "")
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	writeTOML(t, cfgPath, `
-vault_path = "/tmp/vault"
-
-[[project]]
-project = "bhq"
-vault_path = "/tmp/notes"
-dev_path = "/tmp/code/bhq"
-
-[[project]]
-project = "nodev"
-vault_path = "/tmp/notes"
-`)
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	pc, ok := cfg.ProjectByName("bhq")
-	if !ok {
-		t.Fatal("bhq not found")
+	// No [launch], no client -> $AI_HARNESS, then $AI_EDITOR.
+	t.Setenv("AI_EDITOR", "code")
+	t.Setenv("AI_HARNESS", "cursor")
+	tgt, err := cfg.ResolveLaunchTarget("")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if pc.DevPath != "/tmp/code/bhq" {
-		t.Errorf("DevPath = %q, want /tmp/code/bhq", pc.DevPath)
-	}
-	if pc.VaultPath != "/tmp/notes" {
-		t.Errorf("VaultPath = %q, want /tmp/notes", pc.VaultPath)
-	}
-
-	pc, ok = cfg.ProjectByName("nodev")
-	if !ok {
-		t.Fatal("nodev not found")
-	}
-	if pc.DevPath != "" {
-		t.Errorf("DevPath = %q, want empty", pc.DevPath)
+	if tgt.Harness.Harness != "cursor" {
+		t.Errorf("harness = %q, want cursor ($AI_HARNESS over $AI_EDITOR)", tgt.Harness.Harness)
 	}
 
-	if _, ok := cfg.ProjectByName("ghost"); ok {
-		t.Error("ProjectByName(ghost) = true, want false")
+	t.Setenv("AI_HARNESS", "")
+	tgt, _ = cfg.ResolveLaunchTarget("")
+	if tgt.Harness.Harness != "code" {
+		t.Errorf("harness = %q, want code ($AI_EDITOR)", tgt.Harness.Harness)
+	}
+
+	// Nothing configured anywhere -> error.
+	t.Setenv("AI_EDITOR", "")
+	if _, err := cfg.ResolveLaunchTarget(""); err == nil {
+		t.Error("expected error when no harness configured anywhere")
+	}
+}
+
+func TestProjectAndClientByName(t *testing.T) {
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	cfg := launchTestConfig(t)
+
+	if _, ok := cfg.ProjectByName("BHQ"); !ok {
+		t.Error("ProjectByName(BHQ) = false")
 	}
 	if _, ok := cfg.ProjectByName(""); ok {
-		t.Error("ProjectByName(\"\") = true, want false")
+		t.Error("ProjectByName(\"\") = true")
+	}
+	if _, ok := cfg.ClientByName("CC"); !ok {
+		t.Error("ClientByName(CC) = false")
+	}
+	if _, ok := cfg.ClientByName("ghost"); ok {
+		t.Error("ClientByName(ghost) = true")
 	}
 }

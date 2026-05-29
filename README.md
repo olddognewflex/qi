@@ -180,20 +180,28 @@ model        = "claude-sonnet-4-6"  # used when provider=anthropic
 ollama_url   = "http://localhost:11434"
 ollama_model = "qwen3:14b"
 
-# --- Projects (cross-vault task sync + per-project launch) ---
+# --- Clients & projects (cross-vault task sync + launch) ---
 
-[[project]]
-project    = "acme"                    # required; matches a task's first #tag
-vault_path = "/Users/you/Vaults/Acme"  # required; Obsidian notes vault (-> QI_VAULT_PATH)
-# dev_path = "/Users/you/Code/acme"    # optional; cwd for `qi launch harness` (else current dir)
-# file     = "10-tasks/acme.md"        # optional; default 10-tasks/<project>.md,
-                                       #   relative to vault_path, "/" in project flattened to "-"
-  [project.launch]                     # optional; per-project AI harness override
-  harness = "aider"
-  args    = ["--model", "sonnet"]
+[[client]]
+name       = "Acme"                       # required; matched by --project / $WORK_CONTEXT
+vault_path = "/Users/you/Vaults/Acme"     # required; Obsidian notes vault (-> QI_VAULT_PATH)
+dev_root   = "/Users/you/Development/Acme" # optional; root for relative project dev_path
+  [client.launch]                         # optional; default harness for the client's projects
+  harness = "claude"
+
+  [[client.project]]
+  project = "acme"                        # required; matches a task's first #tag
+
+  [[client.project]]
+  project  = "widget"
+  dev_path = "widget-svc"                 # cwd for `qi launch harness`; relative -> under dev_root
+  file     = "10-projects/Widget/tasks.md" # optional; default 10-tasks/<project>.md under vault
+    [client.project.launch]               # optional; overrides the client harness
+    harness = "aider"
+    args    = ["--model", "sonnet"]
 ```
 
-Each `[[project]]` maps one project tag to one Obsidian vault. `vault_path` is the notes vault (exported as `QI_VAULT_PATH`); the optional `dev_path` is the working directory `qi launch harness` runs the harness in (when unset, the current directory is kept). Validation rejects an empty `project` or `vault_path`, a duplicate `project`, or two vaults resolving to the same file.
+A `[[client]]` is one Obsidian vault + one dev root shared by its `[[client.project]]` entries. `vault_path` is exported as `QI_VAULT_PATH`; a project's `dev_path` (absolute, or relative to `dev_root`) is the working directory `qi launch harness` runs in. `qi launch harness` resolves its target — `--project`, else `$WORK_CONTEXT` — **project-first, then client**: a project match uses the project's `dev_path`; a client match uses the client's `dev_root`; no match runs the global `[launch]` harness in the current directory. Harness precedence: `[client.project.launch]` > `[client.launch]` > `[launch]` > `$AI_HARNESS` > `$AI_EDITOR`. Validation rejects a missing client `name`/`vault_path`, a missing project tag, duplicate client names, duplicate project tags, two projects resolving to the same file, or a relative `dev_path` with no `dev_root`.
 
 | Env var | Purpose |
 |---|---|
@@ -261,7 +269,7 @@ The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`,
 
 `qi sync` reconciles project tasks between the main qi vault and per-project Obsidian
 vaults, so the same task is editable in both places and the main vault keeps the full
-picture. Configure projects under `[[project]]` (see Configuration).
+picture. Configure clients and their projects under `[[client]]` (see Configuration).
 
 - **Per-project files.** A tagged task lives in `10-tasks/<project>.md` (untagged →
   `inbox.md`). `qi task list` / `done` aggregate across all of them.
@@ -353,7 +361,7 @@ go build -o /tmp/mcpdriver  ./internal/qimcp/testdata/mcpdriver
 - `qi-mcp` MCP server bridge
 - `skill.daily-review`
 - AI planner with provider abstraction (Anthropic + Ollama)
-- Cross-vault task sync (`qi sync`, `[[project]]`)
+- Cross-vault task sync (`qi sync`, `[[client]]` / `[[client.project]]`)
 
 ### Next
 - Cross-vault sync via `qid` fsnotify watch (near-real-time, replaces manual `qi sync`)

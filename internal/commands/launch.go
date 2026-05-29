@@ -25,38 +25,29 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 		Use:     "harness [-- harness-args...]",
 		Aliases: []string{"ai"},
 		Short:   "Launch the configured AI harness for this project",
-		Long: "Resolve and launch the AI harness. Resolution order:\n" +
-			"  --project <name> [project.launch] > [launch] > $AI_HARNESS > $AI_EDITOR\n" +
-			"QI_VAULT_PATH is exported (the project's vault_path, else the global vault).\n" +
-			"The harness runs in the project's dev_path if set, otherwise the current dir.\n" +
+		Long: "Resolve and launch the AI harness. The target (--project, else\n" +
+			"$WORK_CONTEXT) is matched project-first, then client:\n" +
+			"  project → harness [project.launch] > [client.launch] > [launch] > env;\n" +
+			"            cwd = project dev_path\n" +
+			"  client  → harness [client.launch] > [launch] > env; cwd = client dev_root\n" +
+			"  neither → global [launch] > env; cwd = current dir\n" +
+			"QI_VAULT_PATH is exported (the matched vault, else the global vault).\n" +
 			"Extra args after -- are passed through to the harness.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			effective := cfg.EffectiveProject(project)
-			lc, err := cfg.ResolveLaunch(effective)
+			tgt, err := cfg.ResolveLaunchTarget(project)
 			if err != nil {
 				return err
 			}
-			if project == "" && effective != "" {
-				// effective came from $WORK_CONTEXT — note it so the resolved
-				// harness isn't a surprise (especially before an exec handoff).
-				fmt.Fprintf(cmd.ErrOrStderr(), "qi: using project %q (from $WORK_CONTEXT)\n", effective)
+			if tgt.FromEnv && tgt.Label != "" {
+				// Matched from $WORK_CONTEXT — note it so the resolved harness
+				// isn't a surprise (especially before an exec handoff).
+				fmt.Fprintf(cmd.ErrOrStderr(), "qi: using %s (from $WORK_CONTEXT)\n", tgt.Label)
 			}
-
-			// QI_VAULT_PATH points at the notes vault; the harness runs in the
-			// project's dev_path (code), or stays in the current dir if unset.
-			vaultPath := cfg.VaultPath
-			workDir := ""
-			if pc, ok := cfg.ProjectByName(effective); ok {
-				if pc.VaultPath != "" {
-					vaultPath = pc.VaultPath
-				}
-				workDir = pc.DevPath
-			}
-			return runHarness(cmd, lc, vaultPath, workDir, args)
+			return runHarness(cmd, tgt.Harness, tgt.VaultPath, tgt.WorkDir, args)
 		},
 	}
-	cmd.Flags().StringVar(&project, "project", "", "project to resolve the harness for (defaults to $WORK_CONTEXT)")
+	cmd.Flags().StringVar(&project, "project", "", "project or client to resolve the harness for (defaults to $WORK_CONTEXT)")
 	return cmd
 }
 
