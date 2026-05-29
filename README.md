@@ -184,7 +184,8 @@ ollama_model = "qwen3:14b"
 
 [[project]]
 project    = "acme"                    # required; matches a task's first #tag
-vault_path = "/Users/you/Vaults/Acme"  # required; project vault root
+vault_path = "/Users/you/Vaults/Acme"  # required; Obsidian notes vault (-> QI_VAULT_PATH)
+# dev_path = "/Users/you/Code/acme"    # optional; cwd for `qi launch harness` (else current dir)
 # file     = "10-tasks/acme.md"        # optional; default 10-tasks/<project>.md,
                                        #   relative to vault_path, "/" in project flattened to "-"
   [project.launch]                     # optional; per-project AI harness override
@@ -192,7 +193,7 @@ vault_path = "/Users/you/Vaults/Acme"  # required; project vault root
   args    = ["--model", "sonnet"]
 ```
 
-Each `[[project]]` maps one project tag to one Obsidian vault. Validation rejects an empty `project` or `vault_path`, a duplicate `project`, or two vaults resolving to the same file.
+Each `[[project]]` maps one project tag to one Obsidian vault. `vault_path` is the notes vault (exported as `QI_VAULT_PATH`); the optional `dev_path` is the working directory `qi launch harness` runs the harness in (when unset, the current directory is kept). Validation rejects an empty `project` or `vault_path`, a duplicate `project`, or two vaults resolving to the same file.
 
 | Env var | Purpose |
 |---|---|

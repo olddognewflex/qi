@@ -46,6 +46,7 @@ type MCPServer struct {
 type ProjectConfig struct {
 	Project   string
 	VaultPath string
+	DevPath   string // optional working dir for `qi launch harness`; empty = don't chdir
 	File      string
 	Launch    *LaunchConfig // nil = inherit the global [launch] block
 }
@@ -135,6 +136,7 @@ type launchTOML struct {
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"`
+	DevPath   string      `toml:"dev_path"`
 	File      string      `toml:"file"`
 	Launch    *launchTOML `toml:"launch"`
 }
@@ -313,6 +315,7 @@ func LoadFrom(path string) (Config, error) {
 		projects = append(projects, ProjectConfig{
 			Project:   p.Project,
 			VaultPath: p.VaultPath,
+			DevPath:   p.DevPath,
 			File:      file,
 			Launch:    launch,
 		})
@@ -369,6 +372,20 @@ func (c Config) EffectiveProject(flag string) string {
 		}
 	}
 	return ""
+}
+
+// ProjectByName returns the configured project with the given name. The second
+// return is false when no project matches (including when name is "").
+func (c Config) ProjectByName(name string) (ProjectConfig, bool) {
+	if name == "" {
+		return ProjectConfig{}, false
+	}
+	for _, p := range c.Projects {
+		if p.Project == name {
+			return p, true
+		}
+	}
+	return ProjectConfig{}, false
 }
 
 // ResolveLaunch picks the harness config for project. Resolution order:
