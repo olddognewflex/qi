@@ -195,7 +195,7 @@ dev_root   = "/Users/you/Development/Acme" # optional; root for relative project
   [[client.project]]
   project  = "widget"
   dev_path = "widget-svc"                 # cwd for `qi launch harness`; relative -> under dev_root
-  file     = "10-projects/Widget/tasks.md" # optional; default 10-tasks/<project>.md under vault
+  task_file = "10-projects/Widget/tasks.md" # optional; default 10-tasks/<project>.md under vault
     [client.project.launch]               # optional; overrides the client harness
     harness = "aider"
     args    = ["--model", "sonnet"]

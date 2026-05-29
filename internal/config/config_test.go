@@ -366,7 +366,7 @@ dev_root = "/Users/you/Development/CC"
   [[client.project]]
   project = "BHQ"
   dev_path = "builder-hq"
-  file = "10-projects/BuilderHQ/tasks.md"
+  task_file = "10-projects/BuilderHQ/tasks.md"
 
   [[client.project]]
   project = "work/clientA"
@@ -497,10 +497,10 @@ name = "c"
 vault_path = "/shared"
   [[client.project]]
   project = "a"
-  file = "10-tasks/t.md"
+  task_file = "10-tasks/t.md"
   [[client.project]]
   project = "b"
-  file = "10-tasks/t.md"
+  task_file = "10-tasks/t.md"
 `,
 		"relative dev_path without dev_root": `
 vault_path = "/tmp/vault"
