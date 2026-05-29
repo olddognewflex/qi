@@ -50,6 +50,7 @@ type MCPServer struct {
 type ClientConfig struct {
 	Name      string
 	VaultPath string        // Obsidian notes vault for all the client's projects
+	NotesPath string        // resolved dir for `qi note new --client`; default <vault>/00-inbox
 	DevRoot   string        // root dev folder; relative project dev_path resolves under it
 	TaskFile  string        // optional client-level projection task file (absolute, resolved)
 	Launch    *LaunchConfig // client default harness; nil = inherit global [launch]
@@ -61,6 +62,7 @@ type ProjectConfig struct {
 	Project   string
 	Client    string // owning client name (for harness inheritance)
 	VaultPath string
+	NotesPath string // resolved dir for `qi note new --project`; default <vault>/00-inbox
 	DevPath   string // optional working dir for `qi launch harness`; empty = don't chdir
 	File      string
 	Launch    *LaunchConfig // project-level override; nil = inherit client/global
@@ -157,6 +159,7 @@ type launchTOML struct {
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
+	NotesPath string      `toml:"notes_path"` // optional; note dir, default 00-inbox (inherits client)
 	DevPath   string      `toml:"dev_path"`   // absolute, or relative to client dev_root
 	File      string      `toml:"task_file"`  // projection task file; default 10-tasks/<project>.md
 	Launch    *launchTOML `toml:"launch"`
@@ -165,6 +168,7 @@ type projectTOML struct {
 type clientTOML struct {
 	Name      string        `toml:"name"`
 	VaultPath string        `toml:"vault_path"`
+	NotesPath string        `toml:"notes_path"` // optional; note dir, default 00-inbox
 	DevRoot   string        `toml:"dev_root"`
 	TaskFile  string        `toml:"task_file"` // optional client-level projection file
 	Launch    *launchTOML   `toml:"launch"`
@@ -321,6 +325,8 @@ func LoadFrom(path string) (Config, error) {
 		}
 		seenClients[cl.Name] = struct{}{}
 
+		clientNotes := resolveNotesPath(cl.VaultPath, cl.NotesPath)
+
 		// Optional client-level projection: a [[client]] with task_file becomes a
 		// sync target tagged by the client name (a synthetic project), so
 		// client-wide tasks (`qi task add --client`) route to it.
@@ -343,6 +349,7 @@ func LoadFrom(path string) (Config, error) {
 				Project:   cl.Name,
 				Client:    cl.Name,
 				VaultPath: cl.VaultPath,
+				NotesPath: clientNotes,
 				File:      clientTaskFile,
 				Launch:    launchFromTOML(cl.Launch),
 				synthetic: true,
@@ -352,6 +359,7 @@ func LoadFrom(path string) (Config, error) {
 		clients = append(clients, ClientConfig{
 			Name:      cl.Name,
 			VaultPath: cl.VaultPath,
+			NotesPath: clientNotes,
 			DevRoot:   cl.DevRoot,
 			TaskFile:  clientTaskFile,
 			Launch:    launchFromTOML(cl.Launch),
@@ -396,6 +404,7 @@ func LoadFrom(path string) (Config, error) {
 				Project:   p.Project,
 				Client:    cl.Name,
 				VaultPath: vaultPath,
+				NotesPath: resolveNotesPath(vaultPath, p.NotesPath, cl.NotesPath),
 				DevPath:   devPath,
 				File:      file,
 				Launch:    launchFromTOML(p.Launch),
@@ -435,6 +444,23 @@ func LoadFrom(path string) (Config, error) {
 	}, nil
 }
 
+// resolveNotesPath picks the first non-empty candidate (e.g. project then client
+// notes_path), defaulting to "00-inbox", and resolves it absolute against
+// vaultPath when relative.
+func resolveNotesPath(vaultPath string, candidates ...string) string {
+	dir := "00-inbox"
+	for _, c := range candidates {
+		if c != "" {
+			dir = c
+			break
+		}
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(vaultPath, dir)
+	}
+	return dir
+}
+
 // launchFromTOML converts an optional [launch] table into a *LaunchConfig,
 // returning nil when absent or harness-less so callers fall through to the next
 // resolution tier.
@@ -464,27 +490,28 @@ func (c Config) ProjectByName(name string) (ProjectConfig, bool) {
 	return ProjectConfig{}, false
 }
 
-// NoteVaultFor resolves the vault whose notes directory a new note belongs in.
+// NoteVaultFor resolves where a new note belongs: the vault root (for display)
+// and the notes directory to write into (the vault's configured notes_path).
 // client and project are mutually exclusive flag values; an empty pair resolves
 // to the main vault. Unknown names error.
-func (c Config) NoteVaultFor(client, project string) (vaultPath string, err error) {
+func (c Config) NoteVaultFor(client, project string) (vaultPath, notesDir string, err error) {
 	switch {
 	case client != "" && project != "":
-		return "", errors.New("note: --client and --project are mutually exclusive")
+		return "", "", errors.New("note: --client and --project are mutually exclusive")
 	case client != "":
 		cl, ok := c.ClientByName(client)
 		if !ok {
-			return "", fmt.Errorf("note: unknown client %q", client)
+			return "", "", fmt.Errorf("note: unknown client %q", client)
 		}
-		return cl.VaultPath, nil
+		return cl.VaultPath, cl.NotesPath, nil
 	case project != "":
 		p, ok := c.ProjectByName(project)
 		if !ok {
-			return "", fmt.Errorf("note: unknown project %q", project)
+			return "", "", fmt.Errorf("note: unknown project %q", project)
 		}
-		return p.VaultPath, nil
+		return p.VaultPath, p.NotesPath, nil
 	default:
-		return c.VaultPath, nil
+		return c.VaultPath, c.NotesPath, nil
 	}
 }
 

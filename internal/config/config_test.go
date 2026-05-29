@@ -916,28 +916,46 @@ dev_root = "/dev/cc"
   [[client.project]]
   project = "BHQ"
   dev_path = "builder-hq"
+[[client]]
+name = "DD"
+vault_path = "/vaults/dd"
+notes_path = "notes"
+  [[client.project]]
+  project = "ZZ"
+  notes_path = "10-zz"
+  [[client.project]]
+  project = "YY"
 `)
 	cfg, err := config.LoadFrom(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if v, _ := cfg.NoteVaultFor("", ""); v != "/tmp/main" {
-		t.Errorf("default note vault = %q, want main", v)
+	if v, d, _ := cfg.NoteVaultFor("", ""); v != "/tmp/main" || d != "/tmp/main/20-notes" {
+		t.Errorf("default note vault = %q, dir = %q, want main + 20-notes", v, d)
 	}
-	if v, _ := cfg.NoteVaultFor("CC", ""); v != "/vaults/cc" {
-		t.Errorf("client note vault = %q, want /vaults/cc", v)
+	if v, d, _ := cfg.NoteVaultFor("CC", ""); v != "/vaults/cc" || d != "/vaults/cc/00-inbox" {
+		t.Errorf("client note vault = %q, dir = %q, want /vaults/cc + default 00-inbox", v, d)
 	}
-	if v, _ := cfg.NoteVaultFor("", "BHQ"); v != "/vaults/cc" {
-		t.Errorf("project note vault = %q, want project vault", v)
+	if v, d, _ := cfg.NoteVaultFor("", "BHQ"); v != "/vaults/cc" || d != "/vaults/cc/00-inbox" {
+		t.Errorf("project note vault = %q, dir = %q, want project vault + default 00-inbox", v, d)
 	}
-	if _, err := cfg.NoteVaultFor("CC", "BHQ"); err == nil {
+	if _, d, _ := cfg.NoteVaultFor("DD", ""); d != "/vaults/dd/notes" {
+		t.Errorf("client notes_path dir = %q, want /vaults/dd/notes", d)
+	}
+	if _, d, _ := cfg.NoteVaultFor("", "ZZ"); d != "/vaults/dd/10-zz" {
+		t.Errorf("project notes_path dir = %q, want /vaults/dd/10-zz", d)
+	}
+	if _, d, _ := cfg.NoteVaultFor("", "YY"); d != "/vaults/dd/notes" {
+		t.Errorf("project should inherit client notes_path, got %q, want /vaults/dd/notes", d)
+	}
+	if _, _, err := cfg.NoteVaultFor("CC", "BHQ"); err == nil {
 		t.Error("both client+project should error")
 	}
-	if _, err := cfg.NoteVaultFor("ghost", ""); err == nil {
+	if _, _, err := cfg.NoteVaultFor("ghost", ""); err == nil {
 		t.Error("unknown client should error")
 	}
-	if _, err := cfg.NoteVaultFor("", "ghost"); err == nil {
+	if _, _, err := cfg.NoteVaultFor("", "ghost"); err == nil {
 		t.Error("unknown project should error")
 	}
 }

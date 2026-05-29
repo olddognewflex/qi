@@ -49,13 +49,13 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body, _ := cmd.Flags().GetString("body")
 
-			// --client/--project route the note into that vault's 20-notes/;
-			// default is the main vault.
-			vaultPath, err := cfg.NoteVaultFor(newClient, newProject)
+			// --client/--project route the note into that vault's configured
+			// notes dir (notes_path, default 00-inbox); default is the main vault.
+			vaultPath, notesDir, err := cfg.NoteVaultFor(newClient, newProject)
 			if err != nil {
 				return err
 			}
-			svc := service.NoteService{NotesDir: filepath.Join(vaultPath, "20-notes")}
+			svc := service.NoteService{NotesDir: notesDir}
 			note, err := svc.AddNote(args[0], body)
 			if err != nil {
 				return err
