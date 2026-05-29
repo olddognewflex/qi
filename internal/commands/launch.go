@@ -27,7 +27,8 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 		Short:   "Launch the configured AI harness for this project",
 		Long: "Resolve and launch the AI harness. Resolution order:\n" +
 			"  --project <name> [project.launch] > [launch] > $AI_HARNESS > $AI_EDITOR\n" +
-			"The harness runs with cwd set to the vault and QI_VAULT_PATH exported.\n" +
+			"QI_VAULT_PATH is exported (the project's vault_path, else the global vault).\n" +
+			"The harness runs in the project's dev_path if set, otherwise the current dir.\n" +
 			"Extra args after -- are passed through to the harness.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -41,18 +42,30 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 				// harness isn't a surprise (especially before an exec handoff).
 				fmt.Fprintf(cmd.ErrOrStderr(), "qi: using project %q (from $WORK_CONTEXT)\n", effective)
 			}
-			return runHarness(cmd, cfg, lc, args)
+
+			// QI_VAULT_PATH points at the notes vault; the harness runs in the
+			// project's dev_path (code), or stays in the current dir if unset.
+			vaultPath := cfg.VaultPath
+			workDir := ""
+			if pc, ok := cfg.ProjectByName(effective); ok {
+				if pc.VaultPath != "" {
+					vaultPath = pc.VaultPath
+				}
+				workDir = pc.DevPath
+			}
+			return runHarness(cmd, lc, vaultPath, workDir, args)
 		},
 	}
 	cmd.Flags().StringVar(&project, "project", "", "project to resolve the harness for (defaults to $WORK_CONTEXT)")
 	return cmd
 }
 
-// runHarness launches lc.Harness in the vault directory with QI_VAULT_PATH set.
-// passthrough args follow lc.Args. Detached harnesses (GUI apps) are spawned and
-// control returns to the caller; non-detached harnesses (TUI apps) replace the
-// qi process entirely for a clean handoff.
-func runHarness(cmd *cobra.Command, cfg config.Config, lc config.LaunchConfig, passthrough []string) error {
+// runHarness launches lc.Harness with QI_VAULT_PATH=vaultPath exported. workDir
+// is the harness's working directory; when empty the current dir is inherited
+// (no chdir). passthrough args follow lc.Args. Detached harnesses (GUI apps) are
+// spawned and control returns to the caller; non-detached harnesses (TUI apps)
+// replace the qi process entirely for a clean handoff.
+func runHarness(cmd *cobra.Command, lc config.LaunchConfig, vaultPath, workDir string, passthrough []string) error {
 	bin, err := exec.LookPath(lc.Harness)
 	if err != nil {
 		return fmt.Errorf("launch: harness %q not found in PATH: %w", lc.Harness, err)
@@ -62,11 +75,11 @@ func runHarness(cmd *cobra.Command, cfg config.Config, lc config.LaunchConfig, p
 	argv = append(argv, lc.Args...)
 	argv = append(argv, passthrough...)
 
-	env := append(os.Environ(), "QI_VAULT_PATH="+cfg.VaultPath)
+	env := append(os.Environ(), "QI_VAULT_PATH="+vaultPath)
 
 	if lc.Detach {
 		c := exec.Command(bin, argv...)
-		c.Dir = cfg.VaultPath
+		c.Dir = workDir // empty = inherit current dir
 		c.Env = env
 		if err := c.Start(); err != nil {
 			return fmt.Errorf("launch: starting %q: %w", lc.Harness, err)
@@ -75,5 +88,5 @@ func runHarness(cmd *cobra.Command, cfg config.Config, lc config.LaunchConfig, p
 		return c.Process.Release()
 	}
 
-	return execReplace(bin, argv, env, cfg.VaultPath)
+	return execReplace(bin, argv, env, workDir)
 }

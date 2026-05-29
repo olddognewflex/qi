@@ -722,3 +722,51 @@ vault_path = "/tmp/acme"
 		t.Errorf("no selection = %q, want empty", got)
 	}
 }
+
+func TestLoadFrom_ProjectDevPath(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project]]
+project = "bhq"
+vault_path = "/tmp/notes"
+dev_path = "/tmp/code/bhq"
+
+[[project]]
+project = "nodev"
+vault_path = "/tmp/notes"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pc, ok := cfg.ProjectByName("bhq")
+	if !ok {
+		t.Fatal("bhq not found")
+	}
+	if pc.DevPath != "/tmp/code/bhq" {
+		t.Errorf("DevPath = %q, want /tmp/code/bhq", pc.DevPath)
+	}
+	if pc.VaultPath != "/tmp/notes" {
+		t.Errorf("VaultPath = %q, want /tmp/notes", pc.VaultPath)
+	}
+
+	pc, ok = cfg.ProjectByName("nodev")
+	if !ok {
+		t.Fatal("nodev not found")
+	}
+	if pc.DevPath != "" {
+		t.Errorf("DevPath = %q, want empty", pc.DevPath)
+	}
+
+	if _, ok := cfg.ProjectByName("ghost"); ok {
+		t.Error("ProjectByName(ghost) = true, want false")
+	}
+	if _, ok := cfg.ProjectByName(""); ok {
+		t.Error("ProjectByName(\"\") = true, want false")
+	}
+}
