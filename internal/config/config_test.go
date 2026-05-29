@@ -549,3 +549,176 @@ func TestLoadFrom_DailyFormatDefaults(t *testing.T) {
 		t.Errorf("DailyNotePath = %q, want %q", got, want)
 	}
 }
+
+func TestResolveLaunch_PerProjectOverridesGlobal(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[launch]
+harness = "claude"
+args = ["--global"]
+
+[[project_vault]]
+project = "acme"
+path = "/tmp/acme"
+  [project_vault.launch]
+  harness = "aider"
+  args = ["--model", "sonnet"]
+  detach = false
+
+[[project_vault]]
+project = "beta"
+path = "/tmp/beta"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Per-project override wins.
+	lc, err := cfg.ResolveLaunch("acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Harness != "aider" || len(lc.Args) != 2 || lc.Args[0] != "--model" {
+		t.Errorf("acme launch = %+v, want aider --model sonnet", lc)
+	}
+
+	// Project without its own launch falls back to global.
+	lc, err = cfg.ResolveLaunch("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Harness != "claude" || len(lc.Args) != 1 || lc.Args[0] != "--global" {
+		t.Errorf("beta launch = %+v, want global claude", lc)
+	}
+
+	// No project selects global.
+	lc, err = cfg.ResolveLaunch("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Harness != "claude" {
+		t.Errorf("default launch = %+v, want global claude", lc)
+	}
+}
+
+func TestResolveLaunch_EnvFallback(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("AI_HARNESS", "cursor")
+	lc, err := cfg.ResolveLaunch("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lc.Harness != "cursor" {
+		t.Errorf("env fallback = %q, want cursor", lc.Harness)
+	}
+
+	// AI_HARNESS takes precedence over AI_EDITOR.
+	t.Setenv("AI_EDITOR", "code")
+	lc, _ = cfg.ResolveLaunch("")
+	if lc.Harness != "cursor" {
+		t.Errorf("precedence = %q, want cursor (AI_HARNESS over AI_EDITOR)", lc.Harness)
+	}
+
+	// AI_EDITOR used when AI_HARNESS empty.
+	t.Setenv("AI_HARNESS", "")
+	lc, _ = cfg.ResolveLaunch("")
+	if lc.Harness != "code" {
+		t.Errorf("AI_EDITOR fallback = %q, want code", lc.Harness)
+	}
+}
+
+func TestResolveLaunch_NoneConfigured(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.ResolveLaunch(""); err == nil {
+		t.Error("expected error when no harness configured, got nil")
+	}
+}
+
+func TestResolveLaunch_UnknownProject(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+[launch]
+harness = "claude"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.ResolveLaunch("nonexistent"); err == nil {
+		t.Error("expected error for unknown project, got nil")
+	}
+}
+
+func TestEffectiveProject(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[project_vault]]
+project = "acme"
+path = "/tmp/acme"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Explicit flag wins verbatim, even if unmatched (typo surfaces later).
+	t.Setenv("WORK_CONTEXT", "acme")
+	if got := cfg.EffectiveProject("ghost"); got != "ghost" {
+		t.Errorf("flag override = %q, want ghost", got)
+	}
+
+	// Empty flag + matching WORK_CONTEXT → that project.
+	if got := cfg.EffectiveProject(""); got != "acme" {
+		t.Errorf("env match = %q, want acme", got)
+	}
+
+	// Empty flag + WORK_CONTEXT with no matching vault → "" (lenient).
+	t.Setenv("WORK_CONTEXT", "unmapped-client")
+	if got := cfg.EffectiveProject(""); got != "" {
+		t.Errorf("unmatched env = %q, want empty", got)
+	}
+
+	// No flag, no env → "".
+	t.Setenv("WORK_CONTEXT", "")
+	if got := cfg.EffectiveProject(""); got != "" {
+		t.Errorf("no selection = %q, want empty", got)
+	}
+}
