@@ -159,6 +159,7 @@ type launchTOML struct {
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
+	Path      string      `toml:"path"`       // optional; project base subdir within the vault for relative task_file/notes_path
 	NotesPath string      `toml:"notes_path"` // optional; note dir, default 00-inbox (inherits client)
 	DevPath   string      `toml:"dev_path"`   // absolute, or relative to client dev_root
 	File      string      `toml:"task_file"`  // projection task file; default 10-tasks/<project>.md
@@ -379,6 +380,18 @@ func LoadFrom(path string) (Config, error) {
 				vaultPath = cl.VaultPath
 			}
 
+			// base is the project's root for relative task_file/notes_path (and
+			// their defaults): vault + path. Empty path leaves base at the vault
+			// root. Absolute task_file/notes_path escape it.
+			base := vaultPath
+			if p.Path != "" {
+				if filepath.IsAbs(p.Path) {
+					base = p.Path
+				} else {
+					base = filepath.Join(vaultPath, p.Path)
+				}
+			}
+
 			devPath := p.DevPath
 			if devPath != "" && !filepath.IsAbs(devPath) {
 				if cl.DevRoot == "" {
@@ -393,7 +406,7 @@ func LoadFrom(path string) (Config, error) {
 				file = filepath.Join("10-tasks", flatName+".md")
 			}
 			if !filepath.IsAbs(file) {
-				file = filepath.Join(vaultPath, file)
+				file = filepath.Join(base, file)
 			}
 			if _, dup := seenFiles[file]; dup {
 				return Config{}, fmt.Errorf("project: duplicate resolved file path %q", file)
@@ -404,7 +417,7 @@ func LoadFrom(path string) (Config, error) {
 				Project:   p.Project,
 				Client:    cl.Name,
 				VaultPath: vaultPath,
-				NotesPath: resolveNotesPath(vaultPath, p.NotesPath, cl.NotesPath),
+				NotesPath: resolveNotesPath(base, p.NotesPath, cl.NotesPath),
 				DevPath:   devPath,
 				File:      file,
 				Launch:    launchFromTOML(p.Launch),

@@ -959,3 +959,62 @@ notes_path = "notes"
 		t.Error("unknown project should error")
 	}
 }
+
+func TestProjectPath(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("AI_HARNESS", "")
+	t.Setenv("AI_EDITOR", "")
+	t.Setenv("WORK_CONTEXT", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/main"
+[[client]]
+name = "Acme"
+vault_path = "/vaults/acme"
+  [[client.project]]
+  project = "web"
+  path = "projects/web"
+  task_file = "tasks.md"
+  notes_path = "notes"
+  [[client.project]]
+  project = "api"
+  path = "projects/api"
+  [[client.project]]
+  project = "abs"
+  path = "projects/abs"
+  task_file = "/elsewhere/tasks.md"
+  notes_path = "/elsewhere/notes"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Relative task_file/notes_path resolve under vault + path.
+	web, _ := cfg.ProjectByName("web")
+	if web.File != "/vaults/acme/projects/web/tasks.md" {
+		t.Errorf("web.File = %q", web.File)
+	}
+	if web.NotesPath != "/vaults/acme/projects/web/notes" {
+		t.Errorf("web.NotesPath = %q", web.NotesPath)
+	}
+
+	// Defaults also resolve under path when task_file/notes_path are unset.
+	api, _ := cfg.ProjectByName("api")
+	if api.File != "/vaults/acme/projects/api/10-tasks/api.md" {
+		t.Errorf("api.File = %q", api.File)
+	}
+	if api.NotesPath != "/vaults/acme/projects/api/00-inbox" {
+		t.Errorf("api.NotesPath = %q", api.NotesPath)
+	}
+
+	// Absolute task_file/notes_path escape the path.
+	abs, _ := cfg.ProjectByName("abs")
+	if abs.File != "/elsewhere/tasks.md" {
+		t.Errorf("abs.File = %q", abs.File)
+	}
+	if abs.NotesPath != "/elsewhere/notes" {
+		t.Errorf("abs.NotesPath = %q", abs.NotesPath)
+	}
+}
