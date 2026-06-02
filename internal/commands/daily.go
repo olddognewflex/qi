@@ -107,10 +107,18 @@ func newDailyCpCommand(cfg config.Config) *cobra.Command {
 func newDailyEndCommand(cfg config.Config) *cobra.Command {
 	var socketFlag, providerFlag, modelFlag string
 	cmd := &cobra.Command{
-		Use:   "end",
-		Short: "Summarize today's ## Logs via the AI planner (confirm before write)",
+		Use:   "end [date]",
+		Short: "Summarize a day's ## Logs via the AI planner (confirm before write)",
+		Long: "Summarize the ## Logs of a daily note via the AI planner, then " +
+			"(on confirmation) write the result to ## Summary.\n\n" +
+			"Defaults to today. Pass a date as YYYY-MM-DD to summarize an earlier day.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := cfg.DailyNotePath(time.Now())
+			day, err := parseDailyDate(args, time.Now())
+			if err != nil {
+				return err
+			}
+			path := cfg.DailyNotePath(day)
 
 			logs, found, err := vault.ReadSection(path, "Logs")
 			if err != nil {
@@ -167,6 +175,20 @@ func newDailyEndCommand(cfg config.Config) *cobra.Command {
 	cmd.Flags().StringVar(&providerFlag, "provider", "", "LLM provider: anthropic|ollama (overrides config)")
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model id (overrides provider default + config)")
 	return cmd
+}
+
+// parseDailyDate resolves the day a daily command targets. With no args it
+// returns fallback (typically time.Now()); with one arg it parses YYYY-MM-DD in
+// the local zone, erroring on anything else.
+func parseDailyDate(args []string, fallback time.Time) (time.Time, error) {
+	if len(args) == 0 {
+		return fallback, nil
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", args[0], time.Local)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid date %q: expected YYYY-MM-DD", args[0])
+	}
+	return parsed, nil
 }
 
 func collectPlannerText(turns []ai.TurnEvent) string {
