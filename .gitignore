@@ -38,3 +38,6 @@ go.work.sum
 qi.db
 ~/.local/share/qi/
 client_secret_*.json
+
+# oh-my-claudecode local state
+.omc/
