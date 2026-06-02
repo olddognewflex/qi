@@ -114,6 +114,9 @@ qi index rebuild
 qi agenda                     # today's events (local + any ICS / CalDAV / Google)
 qi agenda week
 qi calendar ...               # OAuth setup for Google Calendar
+
+qi daily start                # open today's note, write events into ## Agenda
+qi daily cp <text>            # append a timestamped checkpoint to ## Logs
 ```
 
 ### `qi ai` — requires `qid` running
@@ -125,6 +128,9 @@ qi ai approvals [--status pending|approved|denied|executed|failed]
 qi ai approve <id>                            # runs the queued tool
 qi ai deny <id> [--reason "..."]
 qi ai run "<prompt>" [--provider anthropic|ollama] [--model <id>]
+
+qi daily end [YYYY-MM-DD]                     # AI-summarize a day's ## Logs into ## Summary
+                                              # (confirm before write; defaults to today)
 ```
 
 Captures land in `00-inbox/` with a timestamped filename:
