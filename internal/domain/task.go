@@ -9,6 +9,7 @@ type Task struct {
 	Project     string
 	Tags        []string
 	Due         *time.Time
+	Scheduled   *time.Time
 	Priority    string
 	Completed   bool
 	CompletedAt *time.Time

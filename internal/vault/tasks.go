@@ -18,6 +18,7 @@ import (
 var (
 	taskPrefixRe = regexp.MustCompile(`^\s*-\s\[( |x)\]\s+`)
 	dueRe        = regexp.MustCompile(`📅\s+(\d{4}-\d{2}-\d{2})`)
+	scheduledRe  = regexp.MustCompile(`⏳\s*(\d{4}-\d{2}-\d{2})`)
 	tagRe        = regexp.MustCompile(`#([A-Za-z0-9_\-\/]+)`)
 	idRe         = regexp.MustCompile(`\^(qi-[0-9a-f]{8})\s*$`)
 	anyBlockRe   = regexp.MustCompile(`\^[A-Za-z0-9_-]+\s*$`)
@@ -63,6 +64,16 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 		content = strings.TrimSpace(dueRe.ReplaceAllString(content, ""))
 	}
 
+	var scheduled *time.Time
+	if m := scheduledRe.FindStringSubmatch(content); len(m) == 2 {
+		parsed, err := time.Parse("2006-01-02", m[1])
+		if err != nil {
+			return domain.Task{}, false, fmt.Errorf("parse scheduled date: %w", err)
+		}
+		scheduled = &parsed
+		content = strings.TrimSpace(scheduledRe.ReplaceAllString(content, ""))
+	}
+
 	tags := make([]string, 0)
 	project := ""
 	for _, m := range tagRe.FindAllStringSubmatch(content, -1) {
@@ -80,6 +91,7 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 		Project:   project,
 		Tags:      tags,
 		Due:       due,
+		Scheduled: scheduled,
 		Completed: completed,
 	}, true, nil
 }
@@ -126,6 +138,10 @@ func FormatTaskLine(task domain.Task) (string, error) {
 		if _, dup := inline[task.Project]; !dup {
 			parts = append(parts, "#"+task.Project)
 		}
+	}
+
+	if task.Scheduled != nil {
+		parts = append(parts, "⏳ "+task.Scheduled.Format("2006-01-02"))
 	}
 
 	if task.Due != nil {

@@ -29,6 +29,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	var project string
 	var client string
 	var due string
+	var schedule string
 
 	addCmd := &cobra.Command{
 		Use:   "add <text>",
@@ -42,6 +43,15 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 					return fmt.Errorf("invalid due date, use YYYY-MM-DD: %w", err)
 				}
 				parsedDue = &t
+			}
+
+			var parsedSchedule *time.Time
+			if schedule != "" {
+				t, err := time.Parse("2006-01-02", schedule)
+				if err != nil {
+					return fmt.Errorf("invalid schedule date, use YYYY-MM-DD: %w", err)
+				}
+				parsedSchedule = &t
 			}
 
 			// --client tags the task with a configured client name (validated),
@@ -59,15 +69,17 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			}
 
 			return svc.AddTask(service.AddTaskInput{
-				Text:    args[0],
-				Project: tag,
-				Due:     parsedDue,
+				Text:      args[0],
+				Project:   tag,
+				Due:       parsedDue,
+				Scheduled: parsedSchedule,
 			})
 		},
 	}
 	addCmd.Flags().StringVarP(&project, "project", "p", "", "project tag")
 	addCmd.Flags().StringVarP(&client, "client", "c", "", "client name (routes to the client's task_file)")
 	addCmd.Flags().StringVarP(&due, "due", "d", "", "due date (YYYY-MM-DD)")
+	addCmd.Flags().StringVarP(&schedule, "schedule", "s", "", "scheduled date (YYYY-MM-DD)")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
@@ -78,11 +90,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				return err
 			}
 			for _, task := range tasks {
-				if task.Due != nil {
-					fmt.Fprintf(os.Stdout, "- %s (due %s)\n", task.Text, task.Due.Format("2006-01-02"))
-				} else {
-					fmt.Fprintf(os.Stdout, "- %s\n", task.Text)
-				}
+				fmt.Fprintf(os.Stdout, "- %s\n", taskDisplayLine(task))
 			}
 			return nil
 		},
@@ -168,8 +176,15 @@ func completeTasks(svc service.TaskService, tasks []domain.Task) []domain.Task {
 }
 
 func taskDisplayLine(t domain.Task) string {
-	if t.Due != nil {
-		return fmt.Sprintf("%s (due %s)", t.Text, t.Due.Format("2006-01-02"))
+	var meta []string
+	if t.Scheduled != nil {
+		meta = append(meta, "scheduled "+t.Scheduled.Format("2006-01-02"))
 	}
-	return t.Text
+	if t.Due != nil {
+		meta = append(meta, "due "+t.Due.Format("2006-01-02"))
+	}
+	if len(meta) == 0 {
+		return t.Text
+	}
+	return fmt.Sprintf("%s (%s)", t.Text, strings.Join(meta, ", "))
 }
