@@ -316,4 +316,42 @@ func TestDecide_UnsyncedProjectNeverProjected(t *testing.T) {
 	if len(plan.ProjByProject["baz"]) != 0 {
 		t.Errorf("unsynced project must never be projected, got %v", plan.ProjByProject["baz"])
 	}
+	// CRITICAL: pass 1 must NOT seed base for an unsynced task. If it does, the
+	// next pass sees canon-present/projection-absent/base-present and deletes
+	// the task from canon -> silent data loss. (Regression: bhq/ODNF/Qi wipe.)
+	for _, u := range plan.BaseUpserts {
+		if u.ID == bazTask.ID {
+			t.Fatalf("unsynced task must NOT be base-upserted (would trigger Case 5 delete next pass)")
+		}
+	}
+}
+
+// TestDecide_UnsyncedProjectSurvivesSecondPass reproduces the data-loss bug
+// directly: an unsynced canon task with a STALE base row (as a pre-fix pass
+// would have seeded) must be KEPT in canon, never deleted, and the stale base
+// row dropped.
+func TestDecide_UnsyncedProjectSurvivesSecondPass(t *testing.T) {
+	sp := synced("foo")
+	bazTask := task("qi-22222222", "keep me", "baz", false)
+	staleBase := map[string]index.SyncBase{
+		bazTask.ID: {ID: bazTask.ID, Project: "baz", BaseLine: canonOf(bazTask)},
+	}
+	plan := Decide(
+		map[string]domain.Task{bazTask.ID: bazTask},
+		map[string]domain.Task{},
+		staleBase,
+		sp,
+	)
+	if !hasTask(plan.CanonByProject["baz"], canonicalize(bazTask)) {
+		t.Fatalf("unsynced task must survive a second pass, got canon=%v", plan.CanonByProject["baz"])
+	}
+	var dropped bool
+	for _, d := range plan.BaseDeletes {
+		if d == bazTask.ID {
+			dropped = true
+		}
+	}
+	if !dropped {
+		t.Errorf("stale base row for unsynced project should be dropped")
+	}
 }

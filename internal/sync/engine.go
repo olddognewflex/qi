@@ -151,6 +151,28 @@ func Decide(
 		p, hasP := proj[id]
 		b, hasB := base[id]
 
+		// UNSYNCED PROJECTS are outside sync's authority. A canon task whose
+		// project has no configured projection must pass through untouched: keep
+		// its line verbatim and never seed base for it. Without this guard Case 1
+		// seeds a base row for the unsynced task, and the next pass — canon
+		// present, projection absent (it never had one), base present — falls into
+		// Case 5 ("deleted in projection -> delete from canon") and DESTROYS it.
+		if hasC && !isSynced(c.Project) {
+			putCanon(c)
+			if hasB {
+				// Drop any stale base row left by a pre-fix pass; it is meaningless
+				// for a project we no longer manage.
+				plan.BaseDeletes = append(plan.BaseDeletes, id)
+			}
+			continue
+		}
+		// Stale base row for an unsynced project whose canon line is already gone:
+		// just drop the row, never emit a (non-existent) projection delete.
+		if !hasC && hasB && !isSynced(b.Project) {
+			plan.BaseDeletes = append(plan.BaseDeletes, id)
+			continue
+		}
+
 		// REASSIGNMENT: the task exists in canon and base, and its current
 		// project differs from the project recorded at last sync -> it MOVED.
 		// We must NOT let the id-keyed base (which belongs to the OLD project)
