@@ -46,17 +46,19 @@ type TaskService struct {
 }
 
 type AddTaskInput struct {
-	Text    string
-	Project string
-	Due     *time.Time
+	Text      string
+	Project   string
+	Due       *time.Time
+	Scheduled *time.Time
 }
 
 func (s TaskService) AddTask(input AddTaskInput) error {
 	task := domain.Task{
-		ID:      vault.MintID(),
-		Text:    strings.TrimSpace(input.Text),
-		Project: strings.TrimSpace(input.Project),
-		Due:     input.Due,
+		ID:        vault.MintID(),
+		Text:      strings.TrimSpace(input.Text),
+		Project:   strings.TrimSpace(input.Project),
+		Due:       input.Due,
+		Scheduled: input.Scheduled,
 	}
 
 	path := s.TaskFilePath
