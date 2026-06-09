@@ -101,7 +101,7 @@ bin/qi ai run "what's on my schedule today?"
 
 ```
 qi capture <text>             # alias: qi c <text>
-qi task add <text> [--project <tag>] [--due YYYY-MM-DD]
+qi task add <text> [--project <tag>] [--due YYYY-MM-DD] [--schedule YYYY-MM-DD]
 qi task list
 qi task done [fuzzy-text]
 qi sync [--dry-run]            # reconcile tasks with project vaults (see Cross-vault sync)
@@ -118,6 +118,8 @@ qi calendar ...               # OAuth setup for Google Calendar
 qi daily start                # open today's note, write events into ## Agenda
 qi daily cp <text>            # append a timestamped checkpoint to ## Logs
 ```
+
+`--due` writes the Obsidian Tasks due marker (`📅 YYYY-MM-DD`); `--schedule` writes the scheduled marker (`⏳ YYYY-MM-DD`). Both are optional and shown by `qi task list`.
 
 ### `qi ai` — requires `qid` running
 
