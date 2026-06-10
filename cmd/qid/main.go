@@ -8,10 +8,12 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"qi/internal/approval"
 	"qi/internal/calendar"
@@ -49,7 +51,18 @@ func run() error {
 		return fmt.Errorf("register capture: %w", err)
 	}
 
-	tasksSvc := service.TaskService{TaskFilePath: cfg.TaskFilePath}
+	// TasksDir must be set so task.add routes by project; without it every task
+	// would land in the inbox file regardless of its project tag.
+	tasksSvc := service.TaskService{
+		TaskFilePath: cfg.TaskFilePath,
+		TasksDir:     filepath.Dir(cfg.TaskFilePath),
+	}
+	if err := builtin.RegisterTaskAdd(registry, tasksSvc, func(name string) bool {
+		_, ok := cfg.ClientByName(name)
+		return ok
+	}); err != nil {
+		return fmt.Errorf("register task.add: %w", err)
+	}
 	agendaSvc := service.AgendaService{Providers: buildAgendaProviders(cfg, log)}
 	if err := skills.RegisterDailyReview(registry, tasksSvc, agendaSvc, cfg.InboxPath); err != nil {
 		return fmt.Errorf("register daily-review: %w", err)
@@ -101,11 +114,39 @@ func run() error {
 		log.Info("restored pending approvals from audit log", "count", restored)
 	}
 
-	decider := policy.DefaultDecider{}
+	// Remote (HTTP) callers may run only the allowlisted tools directly; every
+	// other mutation still routes through the approval queue via DefaultDecider.
+	decider := policy.NewRemoteDecider(builtin.CaptureToolName, builtin.TaskAddToolName)
 
 	log.Info("qid listening", "socket", socketPath, "audit", auditPath, "tools", registry.Len())
 
 	server := daemon.NewServer(registry, decider, queue, log)
+
+	// Optional HTTP endpoint for off-machine task creation (e.g. an iPhone
+	// Shortcut over Tailscale). Only starts when explicitly enabled AND a token
+	// is set, so a default daemon exposes no network surface.
+	if cfg.Remote.Enabled && cfg.Remote.Token != "" {
+		httpSrv := &http.Server{
+			Addr:              cfg.Remote.Addr,
+			Handler:           server.HTTPHandler(cfg.Remote.Token),
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			<-ctx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(shutCtx)
+		}()
+		go func() {
+			log.Info("qid http listening", "addr", cfg.Remote.Addr)
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error("http server", "err", err)
+			}
+		}()
+	} else if cfg.Remote.Enabled {
+		log.Warn("remote enabled but no token set; HTTP endpoint not started")
+	}
+
 	if err := server.Serve(ctx, ln); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
