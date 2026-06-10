@@ -244,27 +244,38 @@ func (s *Server) toolsCall(ctx context.Context, raw json.RawMessage) (json.RawMe
 		return nil, badParams("name is required")
 	}
 
-	tool, ok := s.registry.Lookup(p.Name)
+	return s.CallTool(ctx, p.Caller, p.Name, p.Arguments)
+}
+
+// CallTool runs the registry+policy+approval pipeline for a single tool call on
+// behalf of caller. It is the shared core behind every transport: the JSON-RPC
+// tools.call method and the HTTP endpoint both funnel through here, so the
+// policy gate and approval queue apply uniformly regardless of how the call
+// arrived. An allowed call executes and returns its result; a confirmed call
+// enqueues and returns a pendingResult; a denied call returns a
+// policyDeniedError.
+func (s *Server) CallTool(ctx context.Context, caller, name string, args json.RawMessage) (json.RawMessage, error) {
+	tool, ok := s.registry.Lookup(name)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", tools.ErrNotFound, p.Name)
+		return nil, fmt.Errorf("%w: %s", tools.ErrNotFound, name)
 	}
 
 	verdict := s.policy.Decide(ctx, policy.Request{
-		Caller: p.Caller,
+		Caller: caller,
 		Tool:   tool,
-		Params: p.Arguments,
+		Params: args,
 	})
 
 	switch verdict.Decision {
 	case policy.Allow:
-		return tools.Execute(ctx, s.registry, p.Name, p.Arguments)
+		return tools.Execute(ctx, s.registry, name, args)
 	case policy.Deny:
 		return nil, &policyDeniedError{reason: verdict.Reason}
 	case policy.Confirm:
 		if s.queue == nil {
 			return nil, &policyDeniedError{reason: "approval queue is not available"}
 		}
-		id, err := s.queue.Enqueue(p.Caller, p.Name, p.Arguments, verdict.Reason)
+		id, err := s.queue.Enqueue(caller, name, args, verdict.Reason)
 		if err != nil {
 			return nil, fmt.Errorf("enqueue: %w", err)
 		}
