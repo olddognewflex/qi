@@ -52,17 +52,7 @@ type AddTaskInput struct {
 	Scheduled *time.Time
 }
 
-// AddTask appends a new task and discards the created value. Kept for callers
-// that only care about success/failure (the CLI and existing tests).
 func (s TaskService) AddTask(input AddTaskInput) error {
-	_, err := s.CreateTask(input)
-	return err
-}
-
-// CreateTask mints an ID, routes the task to its project file (or the inbox),
-// appends it, and returns the created task. Callers that need the minted ID —
-// e.g. the daemon's task.add tool serving remote clients — use this directly.
-func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
 	task := domain.Task{
 		ID:        vault.MintID(),
 		Text:      strings.TrimSpace(input.Text),
@@ -75,11 +65,7 @@ func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
 	if task.Project != "" && s.TasksDir != "" {
 		path = filepath.Join(s.TasksDir, projectFileName(task.Project))
 	}
-	task.FilePath = path
-	if err := vault.AppendTask(path, task); err != nil {
-		return domain.Task{}, err
-	}
-	return task, nil
+	return vault.AppendTask(path, task)
 }
 
 func (s TaskService) CompleteTask(task domain.Task) error {

@@ -279,54 +279,6 @@ Connect Claude Desktop (or any MCP client) by pointing it at the `qi-mcp` binary
 ```
 The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`, every `mcp.<server>.<tool>`). Mutations route to the approval queue exactly like `qi ai run`.
 
-### Remote task creation (iPhone over Tailscale)
-
-`qid` can expose a **token-authenticated HTTP endpoint** so an iPhone Shortcut can add
-tasks that get a proper minted `^qi-…` block-ref ID and project routing — the same
-`task.add` code path as the CLI, not a raw Obsidian edit that sync has to backfill.
-
-It is **off by default**. Enable it with a token (env preferred so the secret stays out
-of the vault-adjacent config):
-
-```toml
-# ~/.config/qi/config.toml
-[remote]
-enabled = true
-addr    = "127.0.0.1:7777"   # loopback; reach it via Tailscale. NEVER 0.0.0.0 on an untrusted network.
-# token = "…"                # or set QI_REMOTE_TOKEN in qid's environment
-```
-
-```bash
-QI_REMOTE_TOKEN="$(openssl rand -hex 32)" QI_REMOTE_ENABLED=1 qid
-# then expose loopback to your tailnet:
-tailscale serve --bg --https 443 127.0.0.1:7777
-```
-
-Endpoint:
-
-```
-POST /task     Authorization: Bearer <token>
-               {"text": "Buy milk", "project": "home", "due": "2026-06-12"}
-            -> 201 {"id": "qi-1a2b3c4d", "path": ".../home.md", "project": "home"}
-GET  /healthz  -> 200 ok   (unauthenticated liveness check)
-```
-
-Body fields mirror `qi task add`: `text` (required), optional `project` **or** `client`
-(mutually exclusive; `client` must be a configured name; `project` is restricted to the
-tag charset `A-Za-z0-9_-/`), optional `due`/`schedule` (`YYYY-MM-DD`). `text` rejects
-embedded newlines/control chars so a remote caller can't forge extra lines in the vault.
-
-**iOS Shortcut:** add a *Get Contents of URL* action → Method `POST`, URL
-`https://<your-mac>.<tailnet>.ts.net/task`, Header `Authorization: Bearer <token>`,
-Request Body *JSON* `{ "text": <Shortcut Input / Ask Each Time>, "project": "inbox" }`.
-Trigger it from the share sheet or a Home Screen / Lock Screen button.
-
-**Security model:** the call arrives as the `remote` caller identity, which the policy
-gate allows **only** for an explicit allowlist (`task.add`, `vault.capture`) — every other
-mutation still routes through the approval queue. The shared secret is the authentication;
-keep the bind on loopback/tailnet. See `internal/policy` (`RemoteDecider`) and
-`internal/daemon/http.go`.
-
 ---
 
 ## Cross-vault task sync

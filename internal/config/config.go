@@ -109,18 +109,6 @@ type Config struct {
 	Clients         []ClientConfig
 	Projects        []ProjectConfig
 	Launch          LaunchConfig
-	Remote          RemoteConfig
-}
-
-// RemoteConfig configures qid's optional token-authenticated HTTP endpoint,
-// used to trigger task creation from off-machine clients (e.g. an iPhone
-// Shortcut reaching the daemon over Tailscale). Disabled unless Enabled is set
-// AND a non-empty Token is present. Bind Addr to a loopback or tailnet
-// interface — never 0.0.0.0 without an external auth layer.
-type RemoteConfig struct {
-	Enabled bool
-	Addr    string
-	Token   string
 }
 
 type icsCalTOML struct {
@@ -201,13 +189,6 @@ type tomlFile struct {
 	AI              aiTOML        `toml:"ai"`
 	Clients         []clientTOML  `toml:"client"`
 	Launch          launchTOML    `toml:"launch"`
-	Remote          remoteTOML    `toml:"remote"`
-}
-
-type remoteTOML struct {
-	Enabled bool   `toml:"enabled"`
-	Addr    string `toml:"addr"`
-	Token   string `toml:"token"`
 }
 
 func ConfigPath() string {
@@ -243,18 +224,6 @@ func LoadFrom(path string) (Config, error) {
 		raw.TaskFilePath = v
 	}
 
-	// Remote endpoint overrides. A token in the environment is preferred over one
-	// in config.toml so secrets need not live in the vault-adjacent config file.
-	if v := os.Getenv("QI_REMOTE_TOKEN"); v != "" {
-		raw.Remote.Token = v
-	}
-	if v := os.Getenv("QI_REMOTE_ADDR"); v != "" {
-		raw.Remote.Addr = v
-	}
-	if v := os.Getenv("QI_REMOTE_ENABLED"); v == "1" || v == "true" {
-		raw.Remote.Enabled = true
-	}
-
 	if raw.VaultPath == "" {
 		return Config{}, errors.New("vault_path is required: set vault_path in config.toml or QI_VAULT_PATH env var")
 	}
@@ -265,11 +234,6 @@ func LoadFrom(path string) (Config, error) {
 		taskFilePath = filepath.Join(raw.VaultPath, "10-tasks", "inbox.md")
 	case !filepath.IsAbs(taskFilePath):
 		taskFilePath = filepath.Join(raw.VaultPath, taskFilePath)
-	}
-
-	remoteAddr := raw.Remote.Addr
-	if remoteAddr == "" {
-		remoteAddr = "127.0.0.1:7777"
 	}
 
 	dailyDirFormat := raw.DailyDirFormat
@@ -489,11 +453,6 @@ func LoadFrom(path string) (Config, error) {
 			Harness: raw.Launch.Harness,
 			Args:    raw.Launch.Args,
 			Detach:  raw.Launch.Detach,
-		},
-		Remote: RemoteConfig{
-			Enabled: raw.Remote.Enabled,
-			Addr:    remoteAddr,
-			Token:   raw.Remote.Token,
 		},
 	}, nil
 }
