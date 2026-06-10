@@ -79,7 +79,17 @@ type ProjectConfig struct {
 type LaunchConfig struct {
 	Harness string   // executable resolved via PATH
 	Args    []string // prepended before any pass-through args
-	Detach  bool      // true for GUI apps (spawn + return); false replaces qi (TUI)
+	Detach  bool     // true for GUI apps (spawn + return); false replaces qi (TUI)
+}
+
+// RemoteQueueConfig configures the cloud queue that `qi remote-drain` pulls
+// remote-captured tasks from. The cloud holds transient intent; the laptop is
+// the only writer of the canonical vault. Token is the DRAIN token (pull/ack/
+// deadletter scope).
+type RemoteQueueConfig struct {
+	Enabled bool
+	URL     string
+	Token   string
 }
 
 // AIConfig selects the LLM provider and per-provider defaults used by
@@ -109,6 +119,7 @@ type Config struct {
 	Clients         []ClientConfig
 	Projects        []ProjectConfig
 	Launch          LaunchConfig
+	RemoteQueue     RemoteQueueConfig
 }
 
 type icsCalTOML struct {
@@ -156,6 +167,12 @@ type launchTOML struct {
 	Detach  bool     `toml:"detach"`
 }
 
+type remoteQueueTOML struct {
+	Enabled bool   `toml:"enabled"`
+	URL     string `toml:"url"`
+	Token   string `toml:"token"`
+}
+
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
@@ -177,18 +194,19 @@ type clientTOML struct {
 }
 
 type tomlFile struct {
-	VaultPath       string             `toml:"vault_path"`
-	TaskFilePath    string             `toml:"task_file_path"`
-	DailyDirFormat  string             `toml:"daily_dir_format"`
-	DailyFileFormat string             `toml:"daily_file_format"`
-	ICSCalendars    []icsCalTOML       `toml:"ics_calendars"`
-	CalDAVCalendars []caldavCalTOML    `toml:"caldav_calendars"`
-	GoogleOAuth     googleOAuthTOML    `toml:"google_oauth"`
-	GoogleCalendars []googleCalTOML    `toml:"google_calendars"`
-	MCPServers      []mcpServerTOML    `toml:"mcp_servers"`
-	AI              aiTOML        `toml:"ai"`
-	Clients         []clientTOML  `toml:"client"`
-	Launch          launchTOML    `toml:"launch"`
+	VaultPath       string          `toml:"vault_path"`
+	TaskFilePath    string          `toml:"task_file_path"`
+	DailyDirFormat  string          `toml:"daily_dir_format"`
+	DailyFileFormat string          `toml:"daily_file_format"`
+	ICSCalendars    []icsCalTOML    `toml:"ics_calendars"`
+	CalDAVCalendars []caldavCalTOML `toml:"caldav_calendars"`
+	GoogleOAuth     googleOAuthTOML `toml:"google_oauth"`
+	GoogleCalendars []googleCalTOML `toml:"google_calendars"`
+	MCPServers      []mcpServerTOML `toml:"mcp_servers"`
+	AI              aiTOML          `toml:"ai"`
+	Clients         []clientTOML    `toml:"client"`
+	Launch          launchTOML      `toml:"launch"`
+	RemoteQueue     remoteQueueTOML `toml:"remote_queue"`
 }
 
 func ConfigPath() string {
@@ -222,6 +240,19 @@ func LoadFrom(path string) (Config, error) {
 	}
 	if v := os.Getenv("QI_TASK_FILE_PATH"); v != "" {
 		raw.TaskFilePath = v
+	}
+
+	// [remote_queue] env overrides, consistent with the QI_* pattern. The token
+	// is preferably supplied via QI_QUEUE_TOKEN so it stays out of files synced
+	// to the vault.
+	if v := os.Getenv("QI_QUEUE_URL"); v != "" {
+		raw.RemoteQueue.URL = v
+	}
+	if v := os.Getenv("QI_QUEUE_TOKEN"); v != "" {
+		raw.RemoteQueue.Token = v
+	}
+	if v := os.Getenv("QI_QUEUE_ENABLED"); v == "1" || strings.EqualFold(v, "true") {
+		raw.RemoteQueue.Enabled = true
 	}
 
 	if raw.VaultPath == "" {
@@ -453,6 +484,11 @@ func LoadFrom(path string) (Config, error) {
 			Harness: raw.Launch.Harness,
 			Args:    raw.Launch.Args,
 			Detach:  raw.Launch.Detach,
+		},
+		RemoteQueue: RemoteQueueConfig{
+			Enabled: raw.RemoteQueue.Enabled,
+			URL:     raw.RemoteQueue.URL,
+			Token:   raw.RemoteQueue.Token,
 		},
 	}, nil
 }

@@ -309,6 +309,60 @@ each vault syncs independently through Obsidian Sync, with qi as the only bridge
 
 ---
 
+## Remote task capture (cloud queue)
+
+Add tasks from your phone — or anywhere — **even while the laptop is closed or offline.**
+The cloud holds the *intent*; your laptop stays the only writer of the vault, so markdown
+stays canonical and no remote caller ever mutates it directly.
+
+```
+iPhone Shortcut ──POST /enqueue──▶ Cloudflare Worker ──▶ D1 queue
+                                   mints qi-id, returns it
+laptop  qi remote-drain ──GET /pull──▶  writes vault (^qi-id) ──POST /ack──▶ row deleted
+        (launchd timer, every 5 min + on wake)
+```
+
+Tasks created **on** the laptop skip the queue entirely (the CLI writes the vault
+directly). The queue is inbound-only — remote → cloud → laptop — and a row dies the
+moment its task lands in the vault. Full design: [docs/cloud-queue-spec.md](docs/cloud-queue-spec.md).
+
+**Cloud side** (`worker/` — Cloudflare Worker + D1, free tier):
+```sh
+cd worker && npm install && wrangler login
+wrangler d1 create qi-queue        # paste database_id into wrangler.toml
+npm run db:init                    # apply schema.sql
+wrangler secret put ENQUEUE_TOKEN  # phone token  (enqueue only)
+wrangler secret put DRAIN_TOKEN    # laptop token (pull/ack/deadletter)
+wrangler deploy
+```
+
+**Laptop side** — config (`~/.config/qi/config.toml`):
+```toml
+[remote_queue]
+enabled = true
+url     = "https://qi-queue.<subdomain>.workers.dev"
+# token via env QI_QUEUE_TOKEN (preferred) or set here
+```
+Then drain on a timer with launchd (template: [init/com.olddognewflex.qi-drain.plist](init/com.olddognewflex.qi-drain.plist)):
+```sh
+cp init/com.olddognewflex.qi-drain.plist ~/Library/LaunchAgents/
+# edit the plist: set the qi path, QI_VAULT_PATH, and (if not in config) QI_QUEUE_TOKEN
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.olddognewflex.qi-drain.plist
+```
+A `StartInterval` timer that misses firings during sleep fires once on wake, so closing
+the lid for hours means one catch-up drain on reopen. Run `qi remote-drain` by hand to
+drain immediately; `qi remote-drain --show-failed` lists rejected (deadlettered) tasks.
+
+**iPhone Shortcut:** *Get Contents of URL* → `POST <url>/enqueue`, header
+`Authorization: Bearer <ENQUEUE_TOKEN>`, JSON body `{"text": <text>, "source": "ios-shortcut"}`.
+The `201` response returns the minted `id`. Add it to the Share Sheet to capture from any app.
+
+**Security:** two scoped tokens (a leaked phone token can't drain or delete the queue);
+TLS by default; the laptop re-validates every pulled task (the cloud is untrusted input);
+task text sits in the cloud only until the next drain deletes it.
+
+---
+
 ## Architecture principles
 
 - **Markdown is canonical.** If `qi` disappears, your vault still works with grep and your editor.

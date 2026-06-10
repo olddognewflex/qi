@@ -1,0 +1,18 @@
+{
+  "name": "qi-queue",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker + D1 queue for qi remote task capture",
+  "type": "module",
+  "scripts": {
+    "dev":     "wrangler dev",
+    "deploy":  "wrangler deploy",
+    "test":    "vitest run",
+    "db:init": "wrangler d1 execute qi-queue --file=./schema.sql --remote"
+  },
+  "devDependencies": {
+    "better-sqlite3": "^11.0.0",
+    "wrangler":       "^3.101.0",
+    "vitest":         "^2.1.0"
+  }
+}

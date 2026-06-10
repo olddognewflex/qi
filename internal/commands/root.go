@@ -31,5 +31,6 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newAICommand())
 	root.AddCommand(newSyncCommand(cfg))
 	root.AddCommand(newLaunchCommand(cfg))
+	root.AddCommand(newRemoteDrainCommand(cfg))
 	return root
 }
