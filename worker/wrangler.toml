@@ -1,4 +1,4 @@
-name = "qi-queue"
+name = "tasks"   # deployed worker (serves https://tasks.<subdomain>.workers.dev); the D1 database below is named qi-queue
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
