@@ -46,8 +46,12 @@ focus shifts to the medium/big items (closing the capture→processing loop).
    canon + projection task dirs and runs the existing `sync` reconcile (debounced via
    `debounce_ms`, default 750) on `.md` change. New `internal/watcher` package; reconcile
    injected as a closure so the watcher stays decoupled. Eliminates manual `qi sync` runs.
-7. **Unified `qi search`** — FTS across notes + tasks + dailies. Index currently covers
-   notes only. Still derived state; invariant-safe.
+7. ~~**Unified `qi search`.**~~ ✅ **Done.** The FTS index already covered *all* vault markdown
+   (`Rebuild` walks the whole vault), so this was a presentation gap, not storage. Added a
+   top-level `qi search <query>` with `--kind`/`-k` and `--limit`/`-n` that labels each hit by
+   kind (note/task/daily/inbox/other), and scoped `qi note search` to notes. Kind is derived
+   from the vault subdir in each result's path at query time — no schema change, still derived
+   state; invariant-safe.
 8. **Due-today notifications.** qid is long-running already — morning macOS notification
    listing due/scheduled tasks. Deterministic, read-only, no policy gate needed.
 9. **Recurring tasks** — `🔁 every week` marker, Obsidian Tasks plugin format.
@@ -78,5 +82,6 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
-(`qi inbox`) and programmatically (`skill.process-inbox`). Next focus shifts to the
-remaining medium item — #7 unified `qi search`.
+(`qi inbox`) and programmatically (`skill.process-inbox`), and the medium tier is fully
+shipped. Next focus shifts to the remaining medium/big items (#8+) — #8 due-today
+notifications and #9 recurring tasks are the nearest, then the big bets (#10–#14).
