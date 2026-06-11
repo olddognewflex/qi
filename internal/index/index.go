@@ -26,6 +26,12 @@ func dbPath() string {
 	return filepath.Join(base, "qi", "qi.db")
 }
 
+// DBPath returns the absolute path to the SQLite index database, so callers
+// (e.g. `qi doctor`) can stat it without opening the DB.
+func DBPath() string {
+	return dbPath()
+}
+
 func ensureDir(path string) error {
 	return os.MkdirAll(filepath.Dir(path), 0o755)
 }
