@@ -79,7 +79,17 @@ type ProjectConfig struct {
 type LaunchConfig struct {
 	Harness string   // executable resolved via PATH
 	Args    []string // prepended before any pass-through args
-	Detach  bool      // true for GUI apps (spawn + return); false replaces qi (TUI)
+	Detach  bool     // true for GUI apps (spawn + return); false replaces qi (TUI)
+}
+
+// RemoteQueueConfig configures the cloud queue that `qi remote-drain` pulls
+// remote-captured tasks from. The cloud holds transient intent; the laptop is
+// the only writer of the canonical vault. Token is the DRAIN token (pull/ack/
+// deadletter scope).
+type RemoteQueueConfig struct {
+	Enabled bool
+	URL     string
+	Token   string
 }
 
 // AIConfig selects the LLM provider and per-provider defaults used by
@@ -109,18 +119,7 @@ type Config struct {
 	Clients         []ClientConfig
 	Projects        []ProjectConfig
 	Launch          LaunchConfig
-	Remote          RemoteConfig
-}
-
-// RemoteConfig configures qid's optional token-authenticated HTTP endpoint,
-// used to trigger task creation from off-machine clients (e.g. an iPhone
-// Shortcut reaching the daemon over Tailscale). Disabled unless Enabled is set
-// AND a non-empty Token is present. Bind Addr to a loopback or tailnet
-// interface — never 0.0.0.0 without an external auth layer.
-type RemoteConfig struct {
-	Enabled bool
-	Addr    string
-	Token   string
+	RemoteQueue     RemoteQueueConfig
 }
 
 type icsCalTOML struct {
@@ -168,6 +167,12 @@ type launchTOML struct {
 	Detach  bool     `toml:"detach"`
 }
 
+type remoteQueueTOML struct {
+	Enabled bool   `toml:"enabled"`
+	URL     string `toml:"url"`
+	Token   string `toml:"token"`
+}
+
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
@@ -189,25 +194,19 @@ type clientTOML struct {
 }
 
 type tomlFile struct {
-	VaultPath       string             `toml:"vault_path"`
-	TaskFilePath    string             `toml:"task_file_path"`
-	DailyDirFormat  string             `toml:"daily_dir_format"`
-	DailyFileFormat string             `toml:"daily_file_format"`
-	ICSCalendars    []icsCalTOML       `toml:"ics_calendars"`
-	CalDAVCalendars []caldavCalTOML    `toml:"caldav_calendars"`
-	GoogleOAuth     googleOAuthTOML    `toml:"google_oauth"`
-	GoogleCalendars []googleCalTOML    `toml:"google_calendars"`
-	MCPServers      []mcpServerTOML    `toml:"mcp_servers"`
-	AI              aiTOML        `toml:"ai"`
-	Clients         []clientTOML  `toml:"client"`
-	Launch          launchTOML    `toml:"launch"`
-	Remote          remoteTOML    `toml:"remote"`
-}
-
-type remoteTOML struct {
-	Enabled bool   `toml:"enabled"`
-	Addr    string `toml:"addr"`
-	Token   string `toml:"token"`
+	VaultPath       string          `toml:"vault_path"`
+	TaskFilePath    string          `toml:"task_file_path"`
+	DailyDirFormat  string          `toml:"daily_dir_format"`
+	DailyFileFormat string          `toml:"daily_file_format"`
+	ICSCalendars    []icsCalTOML    `toml:"ics_calendars"`
+	CalDAVCalendars []caldavCalTOML `toml:"caldav_calendars"`
+	GoogleOAuth     googleOAuthTOML `toml:"google_oauth"`
+	GoogleCalendars []googleCalTOML `toml:"google_calendars"`
+	MCPServers      []mcpServerTOML `toml:"mcp_servers"`
+	AI              aiTOML          `toml:"ai"`
+	Clients         []clientTOML    `toml:"client"`
+	Launch          launchTOML      `toml:"launch"`
+	RemoteQueue     remoteQueueTOML `toml:"remote_queue"`
 }
 
 func ConfigPath() string {
@@ -243,16 +242,17 @@ func LoadFrom(path string) (Config, error) {
 		raw.TaskFilePath = v
 	}
 
-	// Remote endpoint overrides. A token in the environment is preferred over one
-	// in config.toml so secrets need not live in the vault-adjacent config file.
-	if v := os.Getenv("QI_REMOTE_TOKEN"); v != "" {
-		raw.Remote.Token = v
+	// [remote_queue] env overrides, consistent with the QI_* pattern. The token
+	// is preferably supplied via QI_QUEUE_TOKEN so it stays out of files synced
+	// to the vault.
+	if v := os.Getenv("QI_QUEUE_URL"); v != "" {
+		raw.RemoteQueue.URL = v
 	}
-	if v := os.Getenv("QI_REMOTE_ADDR"); v != "" {
-		raw.Remote.Addr = v
+	if v := os.Getenv("QI_QUEUE_TOKEN"); v != "" {
+		raw.RemoteQueue.Token = v
 	}
-	if v := os.Getenv("QI_REMOTE_ENABLED"); v == "1" || v == "true" {
-		raw.Remote.Enabled = true
+	if v := os.Getenv("QI_QUEUE_ENABLED"); v == "1" || strings.EqualFold(v, "true") {
+		raw.RemoteQueue.Enabled = true
 	}
 
 	if raw.VaultPath == "" {
@@ -265,11 +265,6 @@ func LoadFrom(path string) (Config, error) {
 		taskFilePath = filepath.Join(raw.VaultPath, "10-tasks", "inbox.md")
 	case !filepath.IsAbs(taskFilePath):
 		taskFilePath = filepath.Join(raw.VaultPath, taskFilePath)
-	}
-
-	remoteAddr := raw.Remote.Addr
-	if remoteAddr == "" {
-		remoteAddr = "127.0.0.1:7777"
 	}
 
 	dailyDirFormat := raw.DailyDirFormat
@@ -490,10 +485,10 @@ func LoadFrom(path string) (Config, error) {
 			Args:    raw.Launch.Args,
 			Detach:  raw.Launch.Detach,
 		},
-		Remote: RemoteConfig{
-			Enabled: raw.Remote.Enabled,
-			Addr:    remoteAddr,
-			Token:   raw.Remote.Token,
+		RemoteQueue: RemoteQueueConfig{
+			Enabled: raw.RemoteQueue.Enabled,
+			URL:     raw.RemoteQueue.URL,
+			Token:   raw.RemoteQueue.Token,
 		},
 	}, nil
 }

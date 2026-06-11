@@ -50,23 +50,57 @@ type AddTaskInput struct {
 	Project   string
 	Due       *time.Time
 	Scheduled *time.Time
+	ID        string // optional; if set, used instead of vault.MintID()
 }
 
-// AddTask appends a new task and discards the created value. Kept for callers
-// that only care about success/failure (the CLI and existing tests).
+// AddTask creates a task with a freshly minted ID. It is a thin wrapper over
+// CreateTask, kept for callers that don't need the created task back.
 func (s TaskService) AddTask(input AddTaskInput) error {
 	_, err := s.CreateTask(input)
 	return err
 }
 
-// CreateTask mints an ID, routes the task to its project file (or the inbox),
-// appends it, and returns the created task. Callers that need the minted ID —
-// e.g. the daemon's task.add tool serving remote clients — use this directly.
+// CreateTask creates a task and returns it. When input.ID is set it is treated
+// as a provided (cloud-minted) id and the write is made idempotent on that id —
+// the only dedup key the markdown carries (the ^qi-… block ref):
+//
+//   - id present in the vault with matching text → no-op, return the existing
+//     task (safe re-drain after a dropped /ack).
+//   - id present with DIFFERENT text → id collision; re-mint a fresh local id so
+//     the new task is written rather than silently dropped.
+//   - id empty → mint as usual.
+//
+// The returned task carries its FilePath so callers can report where it landed.
 func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
+	text := strings.TrimSpace(input.Text)
+	project := strings.TrimSpace(input.Project)
+
+	if input.ID != "" {
+		existing, found, err := s.findByID(input.ID)
+		if err != nil {
+			return domain.Task{}, err
+		}
+		if found {
+			if taskTextMatches(existing, text) {
+				// Already drained — no-op. Return the existing task unchanged.
+				return existing, nil
+			}
+			// Id collision (same id, different task): drop the provided id and
+			// fall through to MintID() so a fresh local id is used and both
+			// tasks survive.
+			input.ID = ""
+		}
+	}
+
+	id := input.ID
+	if id == "" {
+		id = vault.MintID()
+	}
+
 	task := domain.Task{
-		ID:        vault.MintID(),
-		Text:      strings.TrimSpace(input.Text),
-		Project:   strings.TrimSpace(input.Project),
+		ID:        id,
+		Text:      text,
+		Project:   project,
 		Due:       input.Due,
 		Scheduled: input.Scheduled,
 	}
@@ -75,11 +109,50 @@ func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
 	if task.Project != "" && s.TasksDir != "" {
 		path = filepath.Join(s.TasksDir, projectFileName(task.Project))
 	}
-	task.FilePath = path
 	if err := vault.AppendTask(path, task); err != nil {
 		return domain.Task{}, err
 	}
+	task.FilePath = path
 	return task, nil
+}
+
+// taskTextMatches reports whether an existing vault task is "the same" as the
+// trimmed candidate text, for the idempotency guard. ParseTaskLine leaves the
+// project tag inline in Text (e.g. "Buy milk #home"), while the candidate is the
+// bare text the task was created from ("Buy milk"). Compare against both the raw
+// stored text and the stored text with its trailing project tag stripped, so a
+// re-drained task is recognised as a no-op rather than a collision.
+func taskTextMatches(existing domain.Task, text string) bool {
+	stored := strings.TrimSpace(existing.Text)
+	if stored == text {
+		return true
+	}
+	if existing.Project != "" {
+		bare := strings.TrimSpace(strings.TrimSuffix(stored, "#"+existing.Project))
+		if bare == text {
+			return true
+		}
+	}
+	return false
+}
+
+// findByID scans every task in TasksDir for one carrying the given block-ref id.
+// O(n) per lookup is fine off the hot path (drain only). The second return is
+// false when no task carries the id.
+func (s TaskService) findByID(id string) (domain.Task, bool, error) {
+	if id == "" {
+		return domain.Task{}, false, nil
+	}
+	all, err := s.ListAllTasks()
+	if err != nil {
+		return domain.Task{}, false, err
+	}
+	for _, t := range all {
+		if t.ID == id {
+			return t, true, nil
+		}
+	}
+	return domain.Task{}, false, nil
 }
 
 func (s TaskService) CompleteTask(task domain.Task) error {

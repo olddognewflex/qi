@@ -1,0 +1,25 @@
+name = "qi-queue"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# ES module format (default for modern Workers)
+# workers_dev = true  # uncomment to enable <name>.workers.dev route during dev
+
+[[d1_databases]]
+binding      = "DB"
+database_name = "qi-queue"
+database_id  = "replace-after-running-wrangler-d1-create-qi-queue"
+# ^ After running: wrangler d1 create qi-queue
+#   paste the returned database_id above, then run: npm run db:init
+
+# Secrets — never stored in this file.
+# Set them once with:
+#   wrangler secret put ENQUEUE_TOKEN   <- phone / iOS Shortcut (enqueue only)
+#   wrangler secret put DRAIN_TOKEN     <- laptop qi remote-drain (pull/ack/deadletter)
+# Rotate independently if either is leaked; they are scoped so a leaked phone
+# token cannot pull or delete from the queue.
+
+# Optional cron: purge stale pending rows to deadletter after 7 days.
+# Uncomment to activate the scheduled handler.
+# [triggers]
+# crons = ["0 3 * * *"]   # 03:00 UTC daily

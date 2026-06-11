@@ -279,54 +279,6 @@ Connect Claude Desktop (or any MCP client) by pointing it at the `qi-mcp` binary
 ```
 The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`, every `mcp.<server>.<tool>`). Mutations route to the approval queue exactly like `qi ai run`.
 
-### Remote task creation (iPhone over Tailscale)
-
-`qid` can expose a **token-authenticated HTTP endpoint** so an iPhone Shortcut can add
-tasks that get a proper minted `^qi-…` block-ref ID and project routing — the same
-`task.add` code path as the CLI, not a raw Obsidian edit that sync has to backfill.
-
-It is **off by default**. Enable it with a token (env preferred so the secret stays out
-of the vault-adjacent config):
-
-```toml
-# ~/.config/qi/config.toml
-[remote]
-enabled = true
-addr    = "127.0.0.1:7777"   # loopback; reach it via Tailscale. NEVER 0.0.0.0 on an untrusted network.
-# token = "…"                # or set QI_REMOTE_TOKEN in qid's environment
-```
-
-```bash
-QI_REMOTE_TOKEN="$(openssl rand -hex 32)" QI_REMOTE_ENABLED=1 qid
-# then expose loopback to your tailnet:
-tailscale serve --bg --https 443 127.0.0.1:7777
-```
-
-Endpoint:
-
-```
-POST /task     Authorization: Bearer <token>
-               {"text": "Buy milk", "project": "home", "due": "2026-06-12"}
-            -> 201 {"id": "qi-1a2b3c4d", "path": ".../home.md", "project": "home"}
-GET  /healthz  -> 200 ok   (unauthenticated liveness check)
-```
-
-Body fields mirror `qi task add`: `text` (required), optional `project` **or** `client`
-(mutually exclusive; `client` must be a configured name; `project` is restricted to the
-tag charset `A-Za-z0-9_-/`), optional `due`/`schedule` (`YYYY-MM-DD`). `text` rejects
-embedded newlines/control chars so a remote caller can't forge extra lines in the vault.
-
-**iOS Shortcut:** add a *Get Contents of URL* action → Method `POST`, URL
-`https://<your-mac>.<tailnet>.ts.net/task`, Header `Authorization: Bearer <token>`,
-Request Body *JSON* `{ "text": <Shortcut Input / Ask Each Time>, "project": "inbox" }`.
-Trigger it from the share sheet or a Home Screen / Lock Screen button.
-
-**Security model:** the call arrives as the `remote` caller identity, which the policy
-gate allows **only** for an explicit allowlist (`task.add`, `vault.capture`) — every other
-mutation still routes through the approval queue. The shared secret is the authentication;
-keep the bind on loopback/tailnet. See `internal/policy` (`RemoteDecider`) and
-`internal/daemon/http.go`.
-
 ---
 
 ## Cross-vault task sync
@@ -354,6 +306,60 @@ each vault syncs independently through Obsidian Sync, with qi as the only bridge
 
 > Markdown stays canonical: projection files are real editable task lists, and `qi` never
 > needs to be running for the vaults to work.
+
+---
+
+## Remote task capture (cloud queue)
+
+Add tasks from your phone — or anywhere — **even while the laptop is closed or offline.**
+The cloud holds the *intent*; your laptop stays the only writer of the vault, so markdown
+stays canonical and no remote caller ever mutates it directly.
+
+```
+iPhone Shortcut ──POST /enqueue──▶ Cloudflare Worker ──▶ D1 queue
+                                   mints qi-id, returns it
+laptop  qi remote-drain ──GET /pull──▶  writes vault (^qi-id) ──POST /ack──▶ row deleted
+        (launchd timer, every 5 min + on wake)
+```
+
+Tasks created **on** the laptop skip the queue entirely (the CLI writes the vault
+directly). The queue is inbound-only — remote → cloud → laptop — and a row dies the
+moment its task lands in the vault. Full design: [docs/cloud-queue-spec.md](docs/cloud-queue-spec.md).
+
+**Cloud side** (`worker/` — Cloudflare Worker + D1, free tier):
+```sh
+cd worker && npm install && wrangler login
+wrangler d1 create qi-queue        # paste database_id into wrangler.toml
+npm run db:init                    # apply schema.sql
+wrangler secret put ENQUEUE_TOKEN  # phone token  (enqueue only)
+wrangler secret put DRAIN_TOKEN    # laptop token (pull/ack/deadletter)
+wrangler deploy
+```
+
+**Laptop side** — config (`~/.config/qi/config.toml`):
+```toml
+[remote_queue]
+enabled = true
+url     = "https://qi-queue.<subdomain>.workers.dev"
+# token via env QI_QUEUE_TOKEN (preferred) or set here
+```
+Then drain on a timer with launchd (template: [init/com.olddognewflex.qi-drain.plist](init/com.olddognewflex.qi-drain.plist)):
+```sh
+cp init/com.olddognewflex.qi-drain.plist ~/Library/LaunchAgents/
+# edit the plist: set the qi path, QI_VAULT_PATH, and (if not in config) QI_QUEUE_TOKEN
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.olddognewflex.qi-drain.plist
+```
+A `StartInterval` timer that misses firings during sleep fires once on wake, so closing
+the lid for hours means one catch-up drain on reopen. Run `qi remote-drain` by hand to
+drain immediately; `qi remote-drain --show-failed` lists rejected (deadlettered) tasks.
+
+**iPhone Shortcut:** *Get Contents of URL* → `POST <url>/enqueue`, header
+`Authorization: Bearer <ENQUEUE_TOKEN>`, JSON body `{"text": <text>, "source": "ios-shortcut"}`.
+The `201` response returns the minted `id`. Add it to the Share Sheet to capture from any app.
+
+**Security:** two scoped tokens (a leaked phone token can't drain or delete the queue);
+TLS by default; the laptop re-validates every pulled task (the cloud is untrusted input);
+task text sits in the cloud only until the next drain deletes it.
 
 ---
 

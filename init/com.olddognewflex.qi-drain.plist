@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd template: periodically drain the qi cloud queue into the vault.
+
+  This is a periodic ONE-SHOT (StartInterval), not a daemon — no KeepAlive.
+  A StartInterval timer that misses firings while the laptop sleeps fires once
+  on wake, so closing the lid for hours yields a single catch-up drain on reopen.
+
+  Install:
+    cp init/com.olddognewflex.qi-drain.plist ~/Library/LaunchAgents/
+    # then edit the placeholders below, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.olddognewflex.qi-drain.plist
+
+  Reload after editing:
+    launchctl bootout   gui/$(id -u)/com.olddognewflex.qi-drain
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.olddognewflex.qi-drain.plist
+
+  Edit before installing:
+    - the qi binary path (use an installed path, e.g. ~/go/bin/qi, not a build dir)
+    - QI_VAULT_PATH
+    - QI_QUEUE_TOKEN — OR drop it here and keep the token in config.toml (0600).
+      The plist is world-readable (0644); only put the token here on a single-user mac.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.olddognewflex.qi-drain</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/CHANGEME/go/bin/qi</string>
+    <string>remote-drain</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>QI_VAULT_PATH</key>
+    <string>/CHANGEME/path/to/vault</string>
+    <!-- Prefer keeping the token in config.toml (0600) and removing this line. -->
+    <key>QI_QUEUE_TOKEN</key>
+    <string>CHANGEME_DRAIN_TOKEN</string>
+  </dict>
+
+  <!-- Drain on login/load. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- And every 5 minutes thereafter (one catch-up firing on wake). -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGEME/.local/state/qi/drain.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGEME/.local/state/qi/drain.err.log</string>
+</dict>
+</plist>
