@@ -4,7 +4,7 @@
  * Two-token auth model:
  *   ENQUEUE_TOKEN  — phone / iOS Shortcut, authorizes POST /enqueue only.
  *   DRAIN_TOKEN    — laptop qi remote-drain, authorizes GET|POST|DELETE on
- *                    /pull, /ack, /deadletter.
+ *                    /pull, /ack, /deadletter, /stats.
  *
  * A valid token presented to a route outside its scope returns 403.
  * A missing or wrong token returns 401.
@@ -31,6 +31,7 @@ const ROUTE_TOKEN_SCOPE = {
   'POST /deadletter':    'DRAIN_TOKEN',
   'GET /deadletter':     'DRAIN_TOKEN',
   'DELETE /deadletter':  'DRAIN_TOKEN',
+  'GET /stats':          'DRAIN_TOKEN',
 };
 
 // ---------------------------------------------------------------------------
@@ -328,6 +329,19 @@ async function handleDeadletterDelete(request, env) {
   return json({ deleted: result.meta?.changes ?? 0 });
 }
 
+async function handleStats(_request, env) {
+  // One grouped scan over the status index returns both counts.
+  const { results } = await env.DB.prepare(
+    `SELECT status, COUNT(*) AS count FROM queue GROUP BY status`
+  ).all();
+
+  const counts = { pending: 0, deadletter: 0 };
+  for (const row of results ?? []) {
+    if (row.status in counts) counts[row.status] = row.count;
+  }
+  return json(counts);
+}
+
 // ---------------------------------------------------------------------------
 // Scheduled handler — purge stale pending rows (> 7 days) to deadletter.
 // Enable by uncommenting [triggers] crons in wrangler.toml.
@@ -388,6 +402,9 @@ export default {
     }
     if (method === 'DELETE' && pathname === '/deadletter') {
       return handleDeadletterDelete(request, env);
+    }
+    if (method === 'GET' && pathname === '/stats') {
+      return handleStats(request, env);
     }
 
     return err('not found', 404);
