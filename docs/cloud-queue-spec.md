@@ -87,6 +87,7 @@ token in **constant time**. Tokens are Worker secrets (`wrangler secret put …`
 | POST   | `/deadletter`  | drain       | `UPDATE status='deadletter' … WHERE id IN (ids)`; store `reason`; `200`. |
 | GET    | `/deadletter`  | drain       | List deadletter rows (for `qi remote-drain --show-failed`). |
 | DELETE | `/deadletter`  | drain       | Purge resolved deadletter rows by id. |
+| GET    | `/stats`       | drain       | Queue depth, no rows: `200 {pending:n, deadletter:m}` (for `qi remote-status`). |
 | GET    | `/healthz`     | none        | `200 ok`. |
 
 **Two tokens (recommended).** `ENQUEUE_TOKEN` for the phone (enqueue only) and
@@ -212,6 +213,14 @@ service). Flow:
 
 Flags: `--show-failed` (GET /deadletter), `--once` (default; single pass),
 `--limit N`. No long-running mode — the launchd timer provides the cadence.
+
+### 2c′. `qi remote-status`
+
+A read-only companion to `remote-drain` (same config + `DRAIN_TOKEN`, registered in
+`root.go`). Hits `GET /stats` and prints `pending N, deadletter M` — visibility into
+the queue depth without pulling or mutating anything. No-op (exit 0) when
+`[remote_queue].enabled` is false. The Worker computes both counts in one grouped
+scan over the `(status, created_at)` index, so it stays cheap regardless of depth.
 
 ### 2d. Config
 
