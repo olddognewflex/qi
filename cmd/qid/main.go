@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"qi/internal/approval"
 	"qi/internal/calendar"
@@ -23,8 +24,10 @@ import (
 	"qi/internal/policy"
 	"qi/internal/service"
 	"qi/internal/skills"
+	"qi/internal/sync"
 	"qi/internal/tools"
 	"qi/internal/tools/builtin"
+	"qi/internal/watcher"
 )
 
 func main() {
@@ -133,12 +136,68 @@ func run() error {
 
 	log.Info("qid listening", "socket", socketPath, "audit", auditPath, "tools", registry.Len())
 
+	// Opt-in fsnotify-driven auto-reconcile: when [sync] watch = true, watch the
+	// vault task dirs and run the existing sync reconcile (debounced) on change.
+	if cfg.Sync.Watch {
+		if dirs := watcher.DirsFor(cfg); len(dirs) > 0 {
+			debounce := time.Duration(cfg.Sync.DebounceMS) * time.Millisecond
+			w, werr := watcher.New(watcher.Options{
+				Dirs:     dirs,
+				Debounce: debounce,
+				OnChange: makeReconciler(cfg, log),
+				Log:      log,
+			})
+			if werr != nil {
+				return fmt.Errorf("sync watcher: %w", werr)
+			}
+			log.Info("sync watcher enabled", "dirs", dirs, "debounce_ms", cfg.Sync.DebounceMS)
+			go func() {
+				if err := w.Run(ctx); err != nil {
+					log.Warn("sync watcher stopped", "err", err)
+				}
+			}()
+		}
+	}
+
 	server := daemon.NewServer(registry, decider, queue, log)
 	if err := server.Serve(ctx, ln); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 	log.Info("qid stopped")
 	return nil
+}
+
+// makeReconciler builds the watcher's OnChange callback: it opens the index,
+// runs the existing sync.Reconcile (never dry-run), and logs the outcome. The
+// reconcile is idempotent and TOCTOU-guarded, so it is safe to run concurrently
+// with a manual `qi sync`.
+func makeReconciler(cfg config.Config, log *slog.Logger) watcher.ReconcileFunc {
+	return func() {
+		idx, err := index.Open()
+		if err != nil {
+			log.Warn("sync watcher: open index", "err", err)
+			return
+		}
+		defer idx.Close()
+
+		rep, err := sync.Reconcile(cfg, idx, false)
+		if err != nil {
+			log.Warn("sync watcher: reconcile failed", "err", err)
+			return
+		}
+		// A change-triggered reconcile is usually a no-op (already in sync, or our
+		// own write echoing back). Only announce at Info when something actually
+		// changed; otherwise keep it at Debug so the log isn't chatty on every save.
+		if len(rep.Files) > 0 || len(rep.Conflicts) > 0 || len(rep.Skipped) > 0 {
+			log.Info("sync watcher: reconciled",
+				"files", len(rep.Files),
+				"conflicts", len(rep.Conflicts),
+				"skipped", len(rep.Skipped),
+			)
+		} else {
+			log.Debug("sync watcher: reconciled, no changes")
+		}
+	}
 }
 
 // indexSearcher adapts the SQLite note index to builtin.NoteSearcher. It opens

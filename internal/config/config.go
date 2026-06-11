@@ -92,6 +92,15 @@ type RemoteQueueConfig struct {
 	Token   string
 }
 
+// SyncConfig configures qid's opt-in fsnotify-driven auto-reconcile. When Watch
+// is true, qid watches the vault task dirs and runs the existing sync reconcile
+// on change. DebounceMS coalesces bursts of writes; 0 lets the watcher apply its
+// default (see internal/watcher.DefaultDebounce).
+type SyncConfig struct {
+	Watch      bool
+	DebounceMS int
+}
+
 // AIConfig selects the LLM provider and per-provider defaults used by
 // `qi ai run`. The provider string is matched case-insensitively against
 // ai.ProviderAnthropic / ai.ProviderOllama.
@@ -120,6 +129,7 @@ type Config struct {
 	Projects        []ProjectConfig
 	Launch          LaunchConfig
 	RemoteQueue     RemoteQueueConfig
+	Sync            SyncConfig
 }
 
 type icsCalTOML struct {
@@ -173,6 +183,11 @@ type remoteQueueTOML struct {
 	Token   string `toml:"token"`
 }
 
+type syncTOML struct {
+	Watch      bool `toml:"watch"`
+	DebounceMS int  `toml:"debounce_ms"`
+}
+
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
@@ -207,6 +222,7 @@ type tomlFile struct {
 	Clients         []clientTOML    `toml:"client"`
 	Launch          launchTOML      `toml:"launch"`
 	RemoteQueue     remoteQueueTOML `toml:"remote_queue"`
+	Sync            syncTOML        `toml:"sync"`
 }
 
 func ConfigPath() string {
@@ -490,6 +506,8 @@ func LoadFrom(path string) (Config, error) {
 			URL:     raw.RemoteQueue.URL,
 			Token:   raw.RemoteQueue.Token,
 		},
+		// Keep the raw debounce; the default is applied by the watcher, not here.
+		Sync: SyncConfig{Watch: raw.Sync.Watch, DebounceMS: raw.Sync.DebounceMS},
 	}, nil
 }
 
