@@ -51,6 +51,7 @@ qid is the orchestration core. Every tool call — from the CLI, the AI planner,
 - `internal/mcp/` — connects qid to external MCP servers listed in `config.MCPServers`, surfaces their tools under namespace `mcp.<serverID>.<toolName>`, and routes `Execute` calls back to the right client.
 - `internal/qimcp/` — the inverse bridge: re-publishes qid's tools to AI clients via MCP, forwarding each call back through the daemon client as `caller="mcp:<sessionID>"` so mutations hit the approval queue. Drives `cmd/qi-mcp`.
 - `internal/ai/` — LLM tool-use loop (`Planner`) against qid's catalog. Providers: Anthropic and Ollama. Executes proposed tool calls as `caller="ai-planner:<sessionID>"`; mutating calls surface as approval-pending results — the planner never bypasses qid's policy gate.
+- `internal/watcher/` — opt-in fsnotify-driven auto-reconcile. When `[sync] watch = true`, qid watches the canon + projection task dirs (`watcher.DirsFor(cfg)`) and runs the existing `sync.Reconcile` (debounced via `debounce_ms`, default 750) on any `.md` change, eliminating manual `qi sync`. The watcher depends only on fsnotify/config/stdlib; the reconcile is injected as a closure (`cmd/qid` wires index + sync). Off by default — no watcher starts unless `watch` is set.
 
 ### Non-negotiable invariants
 

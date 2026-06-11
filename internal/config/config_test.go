@@ -260,6 +260,50 @@ ollama_model = "qwen3:14b"
 	}
 }
 
+func TestLoadFrom_SyncSection(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[sync]
+watch = true
+debounce_ms = 1200
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Sync.Watch {
+		t.Errorf("Sync.Watch = %v, want true", cfg.Sync.Watch)
+	}
+	if cfg.Sync.DebounceMS != 1200 {
+		t.Errorf("Sync.DebounceMS = %d, want 1200", cfg.Sync.DebounceMS)
+	}
+}
+
+func TestLoadFrom_SyncDefaults(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No [sync] block -> watch off, debounce raw (default applied by the watcher).
+	if cfg.Sync.Watch {
+		t.Errorf("Sync.Watch = %v, want false by default", cfg.Sync.Watch)
+	}
+	if cfg.Sync.DebounceMS != 0 {
+		t.Errorf("Sync.DebounceMS = %d, want 0 (default applied in watcher)", cfg.Sync.DebounceMS)
+	}
+}
+
 func TestConfigPath_XDGEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 

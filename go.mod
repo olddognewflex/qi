@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608
 	github.com/emersion/go-webdav v0.7.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/spf13/cobra v1.8.1
 	github.com/zalando/go-keyring v0.2.8

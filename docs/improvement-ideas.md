@@ -42,8 +42,10 @@ focus shifts to the medium/big items (closing the capture→processing loop).
    task / note / archive / delete (`--dry-run` prints proposals). Triage core extracted to
    `service.InboxService`, shared with the `skill.process-inbox` tools. Closes the
    capture→processing loop.
-6. **fsnotify-driven sync** (on roadmap) — qid watches vaults, runs the `sync` reconcile
-   on change. Eliminates manual `qi sync` runs.
+6. ~~**fsnotify-driven sync.**~~ ✅ **Done.** Opt-in via `[sync] watch = true`: qid watches the
+   canon + projection task dirs and runs the existing `sync` reconcile (debounced via
+   `debounce_ms`, default 750) on `.md` change. New `internal/watcher` package; reconcile
+   injected as a closure so the watcher stays decoupled. Eliminates manual `qi sync` runs.
 7. **Unified `qi search`** — FTS across notes + tasks + dailies. Index currently covers
    notes only. Still derived state; invariant-safe.
 8. **Due-today notifications.** qid is long-running already — morning macOS notification
@@ -77,4 +79,4 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
 (`qi inbox`) and programmatically (`skill.process-inbox`). Next focus shifts to the
-remaining medium items — #6 fsnotify sync and #7 unified `qi search`.
+remaining medium item — #7 unified `qi search`.
