@@ -1,0 +1,55 @@
+# Example tkt config for OpenKanban (https://github.com/TechDufus/openkanban).
+# Copy to .sdlc/config.toml. tkt reads/writes openkanban's JSON store directly
+# (openkanban has no ticket CLI). Register a project first: `openkanban new <name>`.
+
+[ticketing]
+provider = "openkanban"
+
+[openkanban]
+project    = "qi"     # project name or id (as shown by `openkanban list`)
+# config_dir = "~/.config/openkanban"   # optional; else OPENKANBAN_CONFIG_DIR / XDG / ~/.config/openkanban
+me         = "raymond"        # optional label (openkanban is single-user, no assignees)
+
+# OpenKanban statuses are a FIXED enum: backlog | in_progress | done | archived.
+# This is a 3-lane board (+archived); review/qa lanes don't exist here, so it fits
+# the short todo -> in_progress -> done flow. Map roles to those statuses:
+[board.roles]
+todo        = "backlog"
+in_progress = "in_progress"
+done        = "done"
+cancelled   = "archived"
+
+[board.ownership]
+"todo->in_progress" = "agent"
+"in_progress->done" = "agent"
+
+[issue_types]            # openkanban has no native type — derived from labels
+full_sdlc   = ["Story", "Bug"]
+deliverable = ["Task", "Chore", "Spike"]
+
+# Queries use the shared tiny JQL subset (client-side over the JSON store). Note:
+# openkanban has no assignee, so don't filter by assignee. Priority labels:
+# Highest/High/Medium/Low/Lowest (mapped to openkanban's 1..5).
+[queries]
+tier1 = 'status = "backlog" AND priority = "Highest" ORDER BY priority DESC'
+tier2 = 'status = "backlog" ORDER BY priority DESC'
+blocked = 'status = "backlog"'        # openkanban has no Blocked status; tkt blockers reads meta
+deploy_ready = 'status = "done"'
+
+[vcs]
+provider       = "github"
+repo           = "olddognewflex/qi"
+default_branch = "main"
+branch_fmt     = "task/{slug}"        # note: openkanban manages its own worktrees/branches
+hotfix_fmt     = "hotfix/{slug}"
+reviewers      = []
+merge          = "squash"
+
+[build]
+build     = "go build ./..."
+test      = "go test ./..."
+typecheck = "go vet ./..."
+lint      = "gofmt -l ."
+
+[timetracking]
+provider = "none"        # openkanban has no time tracking; worklog/lane-time are no-ops
