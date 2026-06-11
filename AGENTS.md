@@ -46,8 +46,8 @@ qi/
 │    ├── tui/         # Bubble Tea pickers
 │    ├── config/      # TOML loader + env overrides
 │    ├── tools/       # qid tool registry (Local / MCP / Skill sources)
-│    │    └── builtin/ # Compiled-in local tools (capture, ...)
-│    ├── skills/      # Deterministic composed workflows (daily-review)
+│    │    └── builtin/ # Compiled-in local tools (capture, task.add, task.list, note.search, agenda.today)
+│    ├── skills/      # Deterministic composed workflows (daily-review, process-inbox[-apply])
 │    ├── daemon/      # JSON-RPC 2.0 server + client (unix socket)
 │    ├── policy/      # allow / queue / refuse decisions per caller
 │    ├── approval/    # Approval queue + append-only JSONL audit log
@@ -127,6 +127,19 @@ Plugins live in `.git/hooks/<plugin>/`. Active plugins run on pre-commit, commit
 ## MCP tools
 
 qid exposes its registered tools to AI clients through `qi-mcp`. Tools come from three sources: compiled-in local Go (`internal/tools/builtin`), connected external MCP servers (namespaced `mcp.<serverID>.<toolName>`), and deterministic skills (`internal/skills`). Mutating tools surface to AI clients as approval-pending and are gated behind `qi ai approve`.
+
+Current catalog (local + skill sources):
+
+| Tool | Source | Mutating | Purpose |
+|---|---|---|---|
+| `vault.capture` | builtin | yes | Write a timestamped capture to `00-inbox/` |
+| `task.add` | builtin | yes | Append a task (`text`, `project`, `due`, `scheduled`) |
+| `task.list` | builtin | no | List tasks (`query`, `project`, `all`) |
+| `note.search` | builtin | no | FTS5 search over notes (`query`) |
+| `agenda.today` | builtin | no | Today's events |
+| `skill.daily-review` | skill | no | Agenda + open tasks + recent captures |
+| `skill.process-inbox` | skill | no | Propose task/note/archive per `00-inbox/` capture |
+| `skill.process-inbox-apply` | skill | yes | Execute one proposed inbox action (`path`, `action`) |
 
 ---
 

@@ -45,8 +45,8 @@ External MCP servers ─┐
 | Package | What it does |
 |---|---|
 | `internal/tools` | In-memory tool registry. `SourceLocal`, `SourceMCP`, `SourceSkill`. `RegisterLocal`/`RegisterSkill`/`RegisterDynamic`/`Unregister`. JSON-tagged so the wire shape matches MCP catalog format. |
-| `internal/tools/builtin` | Local tools wired into the registry. `vault.capture` so far. |
-| `internal/skills` | Composed deterministic workflows registered as `SourceSkill`. `skill.daily-review` (today's agenda + open tasks + recent captures). |
+| `internal/tools/builtin` | Local tools wired into the registry: `vault.capture`, `task.add` (mutating), `task.list`, `note.search`, `agenda.today`. |
+| `internal/skills` | Composed deterministic workflows registered as `SourceSkill`. `skill.daily-review` (today's agenda + open tasks + recent captures); `skill.process-inbox` (read-only triage proposal) + `skill.process-inbox-apply` (mutating, gated). |
 | `internal/mcp` | `Manager` connecting external MCP servers via `mark3labs/mcp-go` stdio, registering their tools into the catalog under `mcp.<server>.<tool>`. |
 | `internal/daemon` | JSON-RPC 2.0 server over unix socket. Methods: `tools.list`, `tools.call`, `approval.list/get/approve/deny`. ndjson framing matches MCP stdio convention. |
 | `internal/daemon/client` | Typed JSON-RPC client. `Dial`, `Call`, `CallToolAs(caller, …)`, approval helpers. |
@@ -117,7 +117,15 @@ qi calendar ...               # OAuth setup for Google Calendar
 
 qi daily start                # open today's note, write events into ## Agenda
 qi daily cp <text>            # append a timestamped checkpoint to ## Logs
+
+qi doctor                     # health check: config, vault, qid socket, index, worker
+qi remote-status              # pending + deadletter counts in the cloud queue (read-only)
+qi remote-drain [--show-failed]   # pull queued remote tasks into the vault (see Remote task capture)
 ```
+
+`qi doctor` reports per-component status and exits non-zero only on a hard **fail** (missing
+config-derived vault, unreachable Worker); optional/lazy components (no daemon, unbuilt index)
+report **warn** and don't fail. `qi remote-status` is a no-op when `[remote_queue]` is disabled.
 
 `--due` writes the Obsidian Tasks due marker (`📅 YYYY-MM-DD`); `--schedule` writes the scheduled marker (`⏳ YYYY-MM-DD`). Both are optional and shown by `qi task list`.
 
@@ -277,7 +285,7 @@ Connect Claude Desktop (or any MCP client) by pointing it at the `qi-mcp` binary
   }
 }
 ```
-The AI client sees the full live catalog (`vault.capture`, `skill.daily-review`, every `mcp.<server>.<tool>`). Mutations route to the approval queue exactly like `qi ai run`.
+The AI client sees the full live catalog (`vault.capture`, `task.add`, `task.list`, `note.search`, `agenda.today`, `skill.daily-review`, `skill.process-inbox`/`-apply`, every `mcp.<server>.<tool>`). Read-only tools run immediately; mutating ones (`task.add`, `skill.process-inbox-apply`) route to the approval queue exactly like `qi ai run`.
 
 ---
 
@@ -432,10 +440,14 @@ go build -o /tmp/mcpdriver  ./internal/qimcp/testdata/mcpdriver
 - `skill.daily-review`
 - AI planner with provider abstraction (Anthropic + Ollama)
 - Cross-vault task sync (`qi sync`, `[[client]]` / `[[client.project]]`)
+- Builtin tools (`task.add`, `task.list`, `note.search`, `agenda.today`) — usable MCP surface
+- `skill.process-inbox` + `skill.process-inbox-apply` (gated inbox triage)
+- `qi doctor` health check, `qi remote-status` cloud-queue visibility
 
 ### Next
 - Cross-vault sync via `qid` fsnotify watch (near-real-time, replaces manual `qi sync`)
-- More skills (`skill.weekly-plan`, `skill.process-inbox`)
+- More skills (`skill.weekly-plan`)
+- Inbox triage TUI (`qi inbox`)
 - Streaming planner output (`Messages.NewStreaming`)
 - Conversation-history caching (second cache breakpoint mid-loop)
 - Mobile capture → write to synced inbox or POST to `qid` over Tailscale
