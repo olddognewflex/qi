@@ -38,9 +38,10 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 
 ### Medium (week-ish)
 
-5. **Inbox triage TUI.** `qi inbox` Bubble Tea flow: for each capture → make task /
-   make note / archive / delete. Bubbletea dependency already present. Turns the capture
-   habit into a closed loop — captures currently pile up.
+5. ~~**Inbox triage TUI.**~~ ✅ **Done.** `qi inbox` Bubble Tea flow: per capture →
+   task / note / archive / delete (`--dry-run` prints proposals). Triage core extracted to
+   `service.InboxService`, shared with the `skill.process-inbox` tools. Closes the
+   capture→processing loop.
 6. **fsnotify-driven sync** (on roadmap) — qid watches vaults, runs the `sync` reconcile
    on change. Eliminates manual `qi sync` runs.
 7. **Unified `qi search`** — FTS across notes + tasks + dailies. Index currently covers
@@ -64,9 +65,9 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 
 ## Recommended order
 
-~~**#1 builtin tools → #2 process-inbox**~~ ✅ done → **#5 triage TUI** (next).
+~~**#1 builtin tools → #2 process-inbox → #5 triage TUI**~~ ✅ all done.
 
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
-solved (CLI, phone, offline queue). Stuff flows in; nothing helps it flow out. #1/#2 shipped
-and activated the qid / MCP / approval machinery already paid for; #5 (the `qi inbox` Bubble
-Tea triage flow) is the next step to close the loop interactively.
+solved (CLI, phone, offline queue). The processing loop is now closed interactively
+(`qi inbox`) and programmatically (`skill.process-inbox`). Next focus shifts to the
+remaining medium items — #6 fsnotify sync and #7 unified `qi search`.

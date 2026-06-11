@@ -111,6 +111,8 @@ qi note list
 qi note search "query"
 qi index rebuild
 
+qi inbox [--dry-run]          # interactively triage 00-inbox captures (task/note/archive/delete)
+
 qi agenda                     # today's events (local + any ICS / CalDAV / Google)
 qi agenda week
 qi calendar ...               # OAuth setup for Google Calendar
@@ -443,11 +445,11 @@ go build -o /tmp/mcpdriver  ./internal/qimcp/testdata/mcpdriver
 - Builtin tools (`task.add`, `task.list`, `note.search`, `agenda.today`) — usable MCP surface
 - `skill.process-inbox` + `skill.process-inbox-apply` (gated inbox triage)
 - `qi doctor` health check, `qi remote-status` cloud-queue visibility
+- Inbox triage TUI (`qi inbox`) — interactive task/note/archive/delete per capture
 
 ### Next
 - Cross-vault sync via `qid` fsnotify watch (near-real-time, replaces manual `qi sync`)
 - More skills (`skill.weekly-plan`)
-- Inbox triage TUI (`qi inbox`)
 - Streaming planner output (`Messages.NewStreaming`)
 - Conversation-history caching (second cache breakpoint mid-loop)
 - Mobile capture → write to synced inbox or POST to `qid` over Tailscale
