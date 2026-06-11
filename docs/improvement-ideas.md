@@ -62,6 +62,13 @@ focus shifts to the medium/big items (closing the capture→processing loop).
     alongside FTS. Derived index, rebuildable, invariant-safe. Opt-in.
 13. **`skill.weekly-review`** — completed tasks, capture volume, daily log highlights →
     propose a review note (gated write). Pairs with `skill.daily-review`.
+14. **qid SourceSkill for in-session task/capture (revisit).** A Claude Code skill
+    (`.claude/skills/qi/`) now teaches agents to drive the `qi` CLI in sessions. Open
+    question: also add a deterministic qid `SourceSkill` (like `daily-review`/`process-inbox`)
+    that composes task-add + capture so AI/MCP callers get a single gated workflow instead of
+    individual builtin tools. Candidate shapes: `skill.quick-task` (add task → return updated
+    open list) or `skill.session-log` (append a journal entry to today's daily note). Must
+    stay deterministic, no silent LLM, mutations declared `Mutating: true`.
 
 ## Recommended order
 
