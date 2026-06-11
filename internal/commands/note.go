@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"qi/internal/config"
+	"qi/internal/domain"
 	"qi/internal/index"
 	"qi/internal/service"
 )
@@ -83,7 +84,7 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 			}
 			defer idx.Close()
 
-			results, err := idx.Search(args[0])
+			results, err := idx.SearchWith(args[0], index.SearchOptions{Kinds: []string{domain.SearchKindNote}})
 			if err != nil {
 				return fmt.Errorf("search: %w", err)
 			}

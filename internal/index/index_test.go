@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"qi/internal/domain"
 )
 
 func TestOpen(t *testing.T) {
@@ -40,6 +42,111 @@ func TestRebuildAndSearch(t *testing.T) {
 	}
 	if results[0].Note.Title != "Apple" {
 		t.Errorf("Title = %q, want Apple", results[0].Note.Title)
+	}
+}
+
+func TestClassifyKind(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"/vault/00-inbox/2026-06-11-1200.md", domain.SearchKindInbox},
+		{"/vault/10-tasks/inbox.md", domain.SearchKindTask},
+		{"/vault/20-notes/x.md", domain.SearchKindNote},
+		{"/vault/20-notes/sub/x.md", domain.SearchKindNote},
+		{"/vault/30-daily/2026-06-11.md", domain.SearchKindDaily},
+		{"20-notes/x.md", domain.SearchKindNote},
+		{"/vault/README.md", domain.SearchKindOther},
+		{"/vault/40-other/x.md", domain.SearchKindOther},
+	}
+	for _, c := range cases {
+		if got := classifyKind(c.path); got != c.want {
+			t.Errorf("classifyKind(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+func TestSearchWith_KindFilter(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	vault := t.TempDir()
+	mustWrite := func(rel, content string) {
+		full := filepath.Join(vault, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("10-tasks/inbox.md", "# Tasks\n\n- [ ] do the alpha thing\n")
+	mustWrite("20-notes/n.md", "# Note\n\nThis note mentions alpha.\n")
+	mustWrite("30-daily/2026-06-11.md", "# Daily\n\nReviewed alpha today.\n")
+
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if err := idx.Rebuild(vault); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	noteOnly, err := idx.SearchWith("alpha", SearchOptions{Kinds: []string{domain.SearchKindNote}})
+	if err != nil {
+		t.Fatalf("search note-only: %v", err)
+	}
+	if len(noteOnly) != 1 {
+		t.Fatalf("note-only: got %d results, want 1", len(noteOnly))
+	}
+	for _, r := range noteOnly {
+		if r.Kind != domain.SearchKindNote {
+			t.Errorf("note-only result kind = %q, want note", r.Kind)
+		}
+	}
+
+	all, err := idx.SearchWith("alpha", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("all: got %d results, want 3", len(all))
+	}
+	seen := map[string]bool{}
+	for _, r := range all {
+		seen[r.Kind] = true
+	}
+	for _, k := range []string{domain.SearchKindNote, domain.SearchKindTask, domain.SearchKindDaily} {
+		if !seen[k] {
+			t.Errorf("all: missing kind %q (got %v)", k, seen)
+		}
+	}
+}
+
+func TestSearch_PopulatesKind(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	vault := t.TempDir()
+	os.WriteFile(filepath.Join(vault, "a.md"), []byte("# Apple\n\nApples are red.\n"), 0o644)
+
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if err := idx.Rebuild(vault); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	results, err := idx.Search("apple")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	for _, r := range results {
+		if r.Kind == "" {
+			t.Errorf("result %q has empty Kind", r.Note.Path)
+		}
 	}
 }
 

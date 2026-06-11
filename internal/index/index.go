@@ -189,10 +189,69 @@ func (idx *Indexer) Rebuild(vaultPath string) error {
 	return tx.Commit()
 }
 
+// defaultSearchLimit is the user-facing result cap when none is requested,
+// preserving the historical behavior of Search (LIMIT 50).
+const defaultSearchLimit = 50
+
+// SearchOptions tunes a SearchWith query. The zero value reproduces Search:
+// all kinds, default limit.
+type SearchOptions struct {
+	// Kinds restricts results to these kinds (domain.SearchKind* values).
+	// Empty means no filter (all kinds).
+	Kinds []string
+	// Limit caps the number of returned results. <= 0 means defaultSearchLimit.
+	Limit int
+}
+
+// classifyKind derives a SearchResult kind from a result's path by matching the
+// vault subdir it lives under. Matching is segment-based (on path separators)
+// so it works for both absolute vault paths and relative paths, and won't false-
+// match a directory name embedded in a longer segment.
+func classifyKind(path string) string {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		switch seg {
+		case "00-inbox":
+			return domain.SearchKindInbox
+		case "10-tasks":
+			return domain.SearchKindTask
+		case "20-notes":
+			return domain.SearchKindNote
+		case "30-daily":
+			return domain.SearchKindDaily
+		}
+	}
+	return domain.SearchKindOther
+}
+
+// Search runs an FTS query across all vault markdown, returning up to 50 ranked
+// results of any kind. Behavior-preserving wrapper over SearchWith; results
+// carry a populated Kind.
 func (idx *Indexer) Search(query string) ([]domain.SearchResult, error) {
+	return idx.SearchWith(query, SearchOptions{})
+}
+
+// SearchWith runs an FTS query and labels each hit by kind (derived from its
+// path). When opts.Kinds is set, results are filtered to those kinds in Go
+// (the kind is not a stored column), so a wider SQL window is fetched to still
+// fill the user limit after filtering.
+func (idx *Indexer) SearchWith(query string, opts SearchOptions) ([]domain.SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("empty query")
+	}
+
+	userLimit := opts.Limit
+	if userLimit <= 0 {
+		userLimit = defaultSearchLimit
+	}
+
+	// When filtering by kind, over-fetch so post-filter still fills userLimit.
+	sqlLimit := userLimit
+	if len(opts.Kinds) > 0 {
+		sqlLimit = max(userLimit, defaultSearchLimit) * 5
+		if sqlLimit > 1000 {
+			sqlLimit = 1000
+		}
 	}
 
 	rows, err := idx.db.Query(`
@@ -200,18 +259,30 @@ func (idx *Indexer) Search(query string) ([]domain.SearchResult, error) {
 		FROM notes
 		WHERE notes MATCH ?
 		ORDER BY rank
-		LIMIT 50
-	`, query)
+		LIMIT ?
+	`, query, sqlLimit)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
 	}
 	defer rows.Close()
+
+	var keep map[string]bool
+	if len(opts.Kinds) > 0 {
+		keep = make(map[string]bool, len(opts.Kinds))
+		for _, k := range opts.Kinds {
+			keep[k] = true
+		}
+	}
 
 	var results []domain.SearchResult
 	for rows.Next() {
 		var title, body, path string
 		var rank float64
 		if err := rows.Scan(&title, &body, &path, &rank); err != nil {
+			continue
+		}
+		kind := classifyKind(path)
+		if keep != nil && !keep[kind] {
 			continue
 		}
 		snippet := extractSnippet(body, query)
@@ -222,7 +293,11 @@ func (idx *Indexer) Search(query string) ([]domain.SearchResult, error) {
 			},
 			Match: snippet,
 			Rank:  rank,
+			Kind:  kind,
 		})
+		if len(results) >= userLimit {
+			break
+		}
 	}
 	return results, rows.Err()
 }
