@@ -55,6 +55,15 @@ func run() error {
 		return fmt.Errorf("register daily-review: %w", err)
 	}
 
+	if err := skills.RegisterProcessInbox(registry, cfg.InboxPath); err != nil {
+		return fmt.Errorf("register process-inbox: %w", err)
+	}
+	notesSvc := service.NoteService{NotesDir: cfg.NotesPath}
+	inboxArchive := filepath.Join(cfg.InboxPath, "archive")
+	if err := skills.RegisterProcessInboxApply(registry, cfg.InboxPath, inboxArchive, tasksSvc, notesSvc); err != nil {
+		return fmt.Errorf("register process-inbox-apply: %w", err)
+	}
+
 	socketPath := socketFlag
 	if socketPath == "" {
 		socketPath, err = daemon.SocketPath()
