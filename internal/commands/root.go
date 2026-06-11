@@ -34,5 +34,6 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newRemoteDrainCommand(cfg))
 	root.AddCommand(newDoctorCommand(cfg))
 	root.AddCommand(newRemoteStatusCommand(cfg))
+	root.AddCommand(newInboxCommand(cfg))
 	return root
 }
