@@ -126,6 +126,29 @@ func (c *Client) ListDeadletter(ctx context.Context) ([]Task, error) {
 	return body.Tasks, nil
 }
 
+// Stats are the queue depth counts returned by GET /stats.
+type Stats struct {
+	Pending    int `json:"pending"`
+	Deadletter int `json:"deadletter"`
+}
+
+// Stats returns the pending and deadletter row counts from the Worker.
+func (c *Client) Stats(ctx context.Context) (Stats, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/stats", nil)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer resp.Body.Close()
+	if err := checkStatus(resp); err != nil {
+		return Stats{}, err
+	}
+	var s Stats
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return Stats{}, fmt.Errorf("remotequeue: decode stats response: %w", err)
+	}
+	return s, nil
+}
+
 // doJSON marshals payload as a JSON body with the right content type.
 func (c *Client) doJSON(ctx context.Context, method, path string, payload any) (*http.Response, error) {
 	b, err := json.Marshal(payload)

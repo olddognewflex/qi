@@ -439,6 +439,57 @@ describe('GET /pull limit', () => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /stats — pending + deadletter counts
+// ---------------------------------------------------------------------------
+
+describe('GET /stats', () => {
+  beforeEach(freshDB);
+
+  it('GET /stats with enqueue token → 403 (wrong scope)', async () => {
+    const r = await call('GET', '/stats', { _db: db, token: ENQUEUE });
+    expect(r.status).toBe(403);
+  });
+
+  it('GET /stats with no token → 401', async () => {
+    const r = await call('GET', '/stats', { _db: db });
+    expect(r.status).toBe(401);
+  });
+
+  it('returns zeros on an empty queue', async () => {
+    const env = makeEnv(db);
+    const res = await worker.fetch(req('GET', '/stats', { token: DRAIN }), env, {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pending: 0, deadletter: 0 });
+  });
+
+  it('counts pending and deadletter separately', async () => {
+    const env = makeEnv(db);
+
+    // 3 pending
+    for (let i = 0; i < 3; i++) {
+      await worker.fetch(
+        req('POST', '/enqueue', { token: ENQUEUE, body: { text: `pend ${i}` } }),
+        env, {},
+      );
+    }
+    // 1 more, then deadletter it → 2 pending, 1 deadletter
+    const enqRes = await worker.fetch(
+      req('POST', '/enqueue', { token: ENQUEUE, body: { text: 'bad' } }),
+      env, {},
+    );
+    const { id } = await enqRes.json();
+    await worker.fetch(
+      req('POST', '/deadletter', { token: DRAIN, body: { ids: [id], reason: 'nope' } }),
+      env, {},
+    );
+
+    const res = await worker.fetch(req('GET', '/stats', { token: DRAIN }), env, {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pending: 3, deadletter: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 404 for unknown routes
 // ---------------------------------------------------------------------------
 
