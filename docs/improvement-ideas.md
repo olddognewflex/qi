@@ -68,9 +68,14 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 
 ### Big bets
 
-10. **Time-blocking: `qi plan`.** Pick open tasks, write them into the daily note's
-    `## Schedule` block. Closes the loop between task list and agenda — the local calendar
-    provider already parses that block, so scheduled tasks appear in `qi agenda` for free.
+10. ~~**Time-blocking: `qi plan`.**~~ ✅ **Done.** `qi plan [date]` packs open tasks into free
+    slots of the daily note's `## Schedule` (ASCII-hyphen `- HH:MM-HH:MM Title #proj` ranges the
+    local provider parses, so they appear in `qi agenda` for free). Hand-authored events are
+    preserved and idempotent across runs — already-scheduled titles are skipped. Pure planning in
+    `service.PlanBlocks` over reusable `calendar.ParseScheduleEntries`/`ScheduleEntry.Render` (the
+    single source of truth for the line format, shared with `local.go`'s regexes); flags
+    `--start`/`--block`/`--limit`/`--project`/`--all`/`--dry-run`. Defaults to tasks due/scheduled
+    that day.
 11. **Remote queue beyond tasks.** Enqueue notes/captures too; iOS shortcut variants.
     Worker D1 schema needs a `kind` column; drain routes by kind.
 12. **Local embeddings search.** Ollama provider exists — embed notes, semantic search
@@ -92,4 +97,5 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
 (`qi inbox`) and programmatically (`skill.process-inbox`), and the **entire medium tier
-(#5–#9) is shipped**. Next focus shifts to the big bets (#10–#14).
+(#5–#9) is shipped**. Big-bet #10 (`qi plan` time-blocking) is now done too; next focus is the
+remaining big bets (#11–#14).
