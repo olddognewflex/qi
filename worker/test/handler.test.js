@@ -101,6 +101,7 @@ function freshDB() {
     CREATE TABLE queue (
       id         TEXT PRIMARY KEY,
       text       TEXT NOT NULL,
+      kind       TEXT NOT NULL DEFAULT 'task',
       project    TEXT,
       client     TEXT,
       due        TEXT,
@@ -252,6 +253,66 @@ describe('POST /enqueue validation', () => {
       source: 'ios-shortcut',
     });
     expect(r.status).toBe(201);
+  });
+
+  it('rejects unknown kind → 400 with validation message', async () => {
+    const r = await enqueue({ text: 'x', kind: 'bogus' });
+    expect(r.status).toBe(400);
+    expect(r.data.error).toBe('kind must be one of task, note, capture');
+  });
+
+  it('accepts kind:note → 201', async () => {
+    const r = await enqueue({ text: 'a thought worth keeping', kind: 'note' });
+    expect(r.status).toBe(201);
+  });
+
+  it('accepts kind:capture → 201', async () => {
+    const r = await enqueue({ text: 'fleeting idea', kind: 'capture' });
+    expect(r.status).toBe(201);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// kind — persists through enqueue → pull, defaults to 'task'
+// ---------------------------------------------------------------------------
+
+describe('kind round-trip', () => {
+  beforeEach(freshDB);
+
+  it('enqueue kind:note persists and /pull returns kind:note', async () => {
+    const env = makeEnv(db);
+    await worker.fetch(
+      req('POST', '/enqueue', { token: ENQUEUE, body: { text: 'note me', kind: 'note' } }),
+      env, {},
+    );
+    const pullRes = await worker.fetch(req('GET', '/pull', { token: DRAIN }), env, {});
+    const { tasks } = await pullRes.json();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].kind).toBe('note');
+  });
+
+  it('enqueue without kind defaults to task on pull', async () => {
+    const env = makeEnv(db);
+    await worker.fetch(
+      req('POST', '/enqueue', { token: ENQUEUE, body: { text: 'default kind' } }),
+      env, {},
+    );
+    const pullRes = await worker.fetch(req('GET', '/pull', { token: DRAIN }), env, {});
+    const { tasks } = await pullRes.json();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].kind).toBe('task');
+  });
+
+  it('enqueue kind:capture persists and /pull returns kind:capture', async () => {
+    const env = makeEnv(db);
+    await worker.fetch(
+      req('POST', '/enqueue', { token: ENQUEUE, body: { text: 'capture me', kind: 'capture' } }),
+      env, {},
+    );
+    const pullRes = await worker.fetch(req('GET', '/pull', { token: DRAIN }), env, {});
+    const { tasks } = await pullRes.json();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].kind).toBe('capture');
   });
 });
 

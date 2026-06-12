@@ -60,6 +60,7 @@ Free tier is far more than enough (Workers 100k req/day, D1 5GB). Cost: **$0**.
 CREATE TABLE queue (
   id          TEXT PRIMARY KEY,                -- qi-xxxxxxxx, minted by the Worker
   text        TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'task',     -- 'task' | 'note' | 'capture' (drain routing)
   project     TEXT,                            -- free-form tag, or NULL
   client      TEXT,                            -- configured client name, or NULL
   due         TEXT,                            -- 'YYYY-MM-DD' or NULL
@@ -107,6 +108,9 @@ the phone an instant `400` instead of a silent deadletter later:
   records it; the laptop validates at drain.
 - `project` and `client` are mutually exclusive.
 - `due`, `scheduled`: optional, `^\d{4}-\d{2}-\d{2}$`.
+- `kind`: optional, one of `task` | `note` | `capture` (absent/null defaults to `task`).
+  `/pull` and `/deadletter` return it; the laptop drain routes by kind (`task`→task file,
+  `note`→a note, `capture`→a `00-inbox/` file). project/client/dates apply to tasks only.
 
 ### Id minting — the contract
 

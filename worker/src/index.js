@@ -91,6 +91,7 @@ function mintID() {
 
 const RE_PROJECT  = /^[A-Za-z0-9_\-/]+$/;
 const RE_DATE     = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_KINDS = new Set(['task', 'note', 'capture']);
 
 /**
  * Returns a string error message or null if valid.
@@ -102,7 +103,7 @@ function validateEnqueueBody(body) {
   }
 
   // Reject unknown fields to surface Shortcut misconfiguration quickly.
-  const allowed = new Set(['text', 'project', 'client', 'due', 'scheduled', 'source']);
+  const allowed = new Set(['text', 'kind', 'project', 'client', 'due', 'scheduled', 'source']);
   for (const k of Object.keys(body)) {
     if (!allowed.has(k)) return `unknown field: ${k}`;
   }
@@ -115,6 +116,14 @@ function validateEnqueueBody(body) {
   for (let i = 0; i < body.text.length; i++) {
     const c = body.text.charCodeAt(i);
     if (c < 0x20 || c === 0x7f) return 'text must not contain control characters';
+  }
+
+  // kind: optional; defaults to 'task' (absent/null is allowed). When present it
+  // must name a known kind so the laptop drain can route the row.
+  if (body.kind !== undefined && body.kind !== null) {
+    if (typeof body.kind !== 'string' || !VALID_KINDS.has(body.kind)) {
+      return 'kind must be one of task, note, capture';
+    }
   }
 
   // project / client: optional, mutually exclusive
@@ -237,11 +246,12 @@ async function handleEnqueue(request, env) {
   const createdAt  = Math.floor(Date.now() / 1000);
 
   await env.DB.prepare(
-    `INSERT INTO queue (id, text, project, client, due, scheduled, source, created_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
+    `INSERT INTO queue (id, text, kind, project, client, due, scheduled, source, created_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
   ).bind(
     id,
     body.text.trim(),
+    body.kind      ?? 'task',
     body.project   ?? null,
     body.client    ?? null,
     body.due       ?? null,
@@ -260,7 +270,7 @@ async function handlePull(request, env) {
   if (limit > PULL_MAX_LIMIT)    limit = PULL_MAX_LIMIT;
 
   const { results } = await env.DB.prepare(
-    `SELECT id, text, project, client, due, scheduled, source, created_at
+    `SELECT id, text, kind, project, client, due, scheduled, source, created_at
      FROM queue
      WHERE status = 'pending'
      ORDER BY created_at ASC
@@ -305,7 +315,7 @@ async function handleDeadletterPost(request, env) {
 
 async function handleDeadletterGet(_request, env) {
   const { results } = await env.DB.prepare(
-    `SELECT id, text, project, client, due, scheduled, source, created_at, reason
+    `SELECT id, text, kind, project, client, due, scheduled, source, created_at, reason
      FROM queue
      WHERE status = 'deadletter'
      ORDER BY created_at ASC`

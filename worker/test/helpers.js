@@ -41,6 +41,7 @@ export function mintID() {
 
 const RE_PROJECT = /^[A-Za-z0-9_\-/]+$/;
 const RE_DATE    = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_KINDS = new Set(['task', 'note', 'capture']);
 const ACK_MAX_IDS = 500;
 
 export function validateEnqueueBody(body) {
@@ -48,7 +49,7 @@ export function validateEnqueueBody(body) {
     return 'body must be a JSON object';
   }
 
-  const allowed = new Set(['text', 'project', 'client', 'due', 'scheduled', 'source']);
+  const allowed = new Set(['text', 'kind', 'project', 'client', 'due', 'scheduled', 'source']);
   for (const k of Object.keys(body)) {
     if (!allowed.has(k)) return `unknown field: ${k}`;
   }
@@ -60,6 +61,12 @@ export function validateEnqueueBody(body) {
   for (let i = 0; i < body.text.length; i++) {
     const c = body.text.charCodeAt(i);
     if (c < 0x20 || c === 0x7f) return 'text must not contain control characters';
+  }
+
+  if (body.kind !== undefined && body.kind !== null) {
+    if (typeof body.kind !== 'string' || !VALID_KINDS.has(body.kind)) {
+      return 'kind must be one of task, note, capture';
+    }
   }
 
   const hasProject = body.project !== undefined && body.project !== null;

@@ -171,6 +171,30 @@ describe('validateEnqueueBody', () => {
   it('accepts null optional fields (explicit null = omitted)', () => {
     expect(validateEnqueueBody({ text: 'x', project: null, client: null, due: null, scheduled: null, source: null })).toBeNull();
   });
+
+  it('accepts a valid kind — note', () => {
+    expect(validateEnqueueBody({ text: 'x', kind: 'note' })).toBeNull();
+  });
+
+  it('accepts a valid kind — capture', () => {
+    expect(validateEnqueueBody({ text: 'x', kind: 'capture' })).toBeNull();
+  });
+
+  it('accepts kind:task (explicit default)', () => {
+    expect(validateEnqueueBody({ text: 'x', kind: 'task' })).toBeNull();
+  });
+
+  it('accepts null kind (explicit null = defaults to task)', () => {
+    expect(validateEnqueueBody({ text: 'x', kind: null })).toBeNull();
+  });
+
+  it('rejects an unknown kind', () => {
+    expect(validateEnqueueBody({ text: 'x', kind: 'bogus' })).toBe('kind must be one of task, note, capture');
+  });
+
+  it('rejects a non-string kind', () => {
+    expect(validateEnqueueBody({ text: 'x', kind: 42 })).not.toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

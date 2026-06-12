@@ -15,7 +15,7 @@ func TestPullSendsBearerAndLimit(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		gotLimit = r.URL.Query().Get("limit")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"tasks": []Task{{ID: "qi-aaaaaaaa", Text: "hello", Project: "p"}},
+			"tasks": []Task{{ID: "qi-aaaaaaaa", Text: "hello", Kind: "note", Project: "p"}},
 		})
 	}))
 	defer ts.Close()
@@ -33,6 +33,9 @@ func TestPullSendsBearerAndLimit(t *testing.T) {
 	}
 	if len(tasks) != 1 || tasks[0].ID != "qi-aaaaaaaa" {
 		t.Fatalf("tasks = %+v", tasks)
+	}
+	if tasks[0].Kind != "note" {
+		t.Fatalf("kind did not round-trip: %q", tasks[0].Kind)
 	}
 }
 
