@@ -304,6 +304,50 @@ func TestLoadFrom_SyncDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFrom_NotifySection(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[notify]
+due_today = true
+at = "07:30"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Notify.DueToday {
+		t.Errorf("Notify.DueToday = %v, want true", cfg.Notify.DueToday)
+	}
+	if cfg.Notify.At != "07:30" {
+		t.Errorf("Notify.At = %q, want 07:30", cfg.Notify.At)
+	}
+}
+
+func TestLoadFrom_NotifyDefaults(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No [notify] block -> due-today off, At empty (default applied by the scheduler).
+	if cfg.Notify.DueToday {
+		t.Errorf("Notify.DueToday = %v, want false by default", cfg.Notify.DueToday)
+	}
+	if cfg.Notify.At != "" {
+		t.Errorf("Notify.At = %q, want \"\" (default applied in scheduler)", cfg.Notify.At)
+	}
+}
+
 func TestConfigPath_XDGEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 

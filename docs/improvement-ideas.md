@@ -52,8 +52,12 @@ focus shifts to the medium/big items (closing the capture→processing loop).
    kind (note/task/daily/inbox/other), and scoped `qi note search` to notes. Kind is derived
    from the vault subdir in each result's path at query time — no schema change, still derived
    state; invariant-safe.
-8. **Due-today notifications.** qid is long-running already — morning macOS notification
-   listing due/scheduled tasks. Deterministic, read-only, no policy gate needed.
+8. ~~**Due-today notifications.**~~ ✅ **Done.** Opt-in via `[notify] due_today = true` (time
+   `at`, default 08:00): qid's long-running daemon sends one macOS notification each morning
+   listing tasks due/scheduled today. New `internal/notify` package (osascript banner on macOS
+   with safely-escaped AppleScript, `*slog.Logger` fallback elsewhere; stdlib-only); pure
+   `service.FilterDueToday` does the filtering. Deterministic, read-only, no policy gate, off
+   by default.
 9. **Recurring tasks** — `🔁 every week` marker, Obsidian Tasks plugin format.
    Caution: invariant 4 — `ParseTaskLine`/`FormatTaskLine` round-trip tests are load-bearing.
 
@@ -83,5 +87,5 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
 (`qi inbox`) and programmatically (`skill.process-inbox`), and the medium tier is fully
-shipped. Next focus shifts to the remaining medium/big items (#8+) — #8 due-today
-notifications and #9 recurring tasks are the nearest, then the big bets (#10–#14).
+shipped, and #8 due-today notifications has landed. Next focus shifts to the remaining
+items — #9 recurring tasks is the nearest, then the big bets (#10–#14).

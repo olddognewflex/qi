@@ -101,6 +101,15 @@ type SyncConfig struct {
 	DebounceMS int
 }
 
+// NotifyConfig configures qid's opt-in morning due-today notification. When
+// DueToday is true, qid sends one macOS notification each morning at At
+// (HH:MM, 24h) listing tasks due/scheduled for that day. An empty At lets the
+// scheduler apply its default (see internal/notify.DefaultAt). Read-only.
+type NotifyConfig struct {
+	DueToday bool
+	At       string
+}
+
 // AIConfig selects the LLM provider and per-provider defaults used by
 // `qi ai run`. The provider string is matched case-insensitively against
 // ai.ProviderAnthropic / ai.ProviderOllama.
@@ -130,6 +139,7 @@ type Config struct {
 	Launch          LaunchConfig
 	RemoteQueue     RemoteQueueConfig
 	Sync            SyncConfig
+	Notify          NotifyConfig
 }
 
 type icsCalTOML struct {
@@ -188,6 +198,11 @@ type syncTOML struct {
 	DebounceMS int  `toml:"debounce_ms"`
 }
 
+type notifyTOML struct {
+	DueToday bool   `toml:"due_today"`
+	At       string `toml:"at"`
+}
+
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
@@ -223,6 +238,7 @@ type tomlFile struct {
 	Launch          launchTOML      `toml:"launch"`
 	RemoteQueue     remoteQueueTOML `toml:"remote_queue"`
 	Sync            syncTOML        `toml:"sync"`
+	Notify          notifyTOML      `toml:"notify"`
 }
 
 func ConfigPath() string {
@@ -508,6 +524,8 @@ func LoadFrom(path string) (Config, error) {
 		},
 		// Keep the raw debounce; the default is applied by the watcher, not here.
 		Sync: SyncConfig{Watch: raw.Sync.Watch, DebounceMS: raw.Sync.DebounceMS},
+		// Keep the raw At; the default is applied by the scheduler, not here.
+		Notify: NotifyConfig{DueToday: raw.Notify.DueToday, At: raw.Notify.At},
 	}, nil
 }
 
