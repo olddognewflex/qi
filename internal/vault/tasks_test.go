@@ -548,3 +548,71 @@ func TestUpdateTaskLine_ConcurrentDistinctLinesNoLostUpdate(t *testing.T) {
 		t.Fatalf("completed %d/%d tasks — lost updates under concurrency", completed, n)
 	}
 }
+
+// TestParseTaskLine_DoneDate: a completed line with an Obsidian ✅ done-date
+// parses CompletedAt and doesn't leak the date into Text.
+func TestParseTaskLine_DoneDate(t *testing.T) {
+	line := "- [x] ship release #qi 📅 2026-06-10 ✅ 2026-06-11 ^qi-12345678"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if !task.Completed {
+		t.Fatal("expected completed")
+	}
+	if task.CompletedAt == nil || task.CompletedAt.Format("2006-01-02") != "2026-06-11" {
+		t.Fatalf("CompletedAt = %v, want 2026-06-11", task.CompletedAt)
+	}
+	if task.Due == nil || task.Due.Format("2006-01-02") != "2026-06-10" {
+		t.Fatalf("Due = %v, want 2026-06-10", task.Due)
+	}
+	if task.Text != "ship release #qi" {
+		t.Fatalf("Text leaked a date: %q", task.Text)
+	}
+}
+
+// TestFormatTaskLine_DoneDate: a task carrying CompletedAt emits ✅ after 📅 due.
+func TestFormatTaskLine_DoneDate(t *testing.T) {
+	due := time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)
+	done := time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC)
+	line, err := FormatTaskLine(domain.Task{
+		Text:        "ship release",
+		Project:     "qi",
+		Due:         &due,
+		Completed:   true,
+		CompletedAt: &done,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- [x] ship release #qi 📅 2026-06-10 ✅ 2026-06-11"
+	if line != want {
+		t.Fatalf("got %q want %q", line, want)
+	}
+}
+
+// TestDoneDate_RoundTripStable: a fully-decorated completed line (tags +
+// recurrence + scheduled + due + done + id) is idempotent across two
+// parse→format cycles, and the done-date survives.
+func TestDoneDate_RoundTripStable(t *testing.T) {
+	line := "- [x] water plants #home 🔁 every week ⏳ 2026-06-09 📅 2026-06-10 ✅ 2026-06-11 ^qi-abcdef12"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.Recurrence != "every week" {
+		t.Fatalf("recurrence = %q", task.Recurrence)
+	}
+	if task.CompletedAt == nil || task.CompletedAt.Format("2006-01-02") != "2026-06-11" {
+		t.Fatalf("CompletedAt = %v", task.CompletedAt)
+	}
+	out1, err := FormatTaskLine(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t2, _, _ := ParseTaskLine(out1)
+	out2, _ := FormatTaskLine(t2)
+	if out1 != out2 {
+		t.Fatalf("not stable:\n  %q\n  %q", out1, out2)
+	}
+}

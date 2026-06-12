@@ -19,10 +19,11 @@ var (
 	taskPrefixRe = regexp.MustCompile(`^\s*-\s\[( |x)\]\s+`)
 	dueRe        = regexp.MustCompile(`📅\s+(\d{4}-\d{2}-\d{2})`)
 	scheduledRe  = regexp.MustCompile(`⏳\s*(\d{4}-\d{2}-\d{2})`)
+	doneRe       = regexp.MustCompile(`✅\s*(\d{4}-\d{2}-\d{2})`)
 	// recurrenceRe captures the Obsidian Tasks 🔁 rule text. Go's regexp has no
 	// lookahead, so a negated character class bounds the rule: it runs until the
-	// next field/tag emoji (#, 📅, ⏳, 🔁), a block-ref caret, or end of line.
-	recurrenceRe = regexp.MustCompile(`🔁\s*([^#📅⏳🔁\^\n]+)`)
+	// next field/tag emoji (#, 📅, ⏳, ✅, 🔁), a block-ref caret, or end of line.
+	recurrenceRe = regexp.MustCompile(`🔁\s*([^#📅⏳✅🔁\^\n]+)`)
 	tagRe        = regexp.MustCompile(`#([A-Za-z0-9_\-\/]+)`)
 	idRe         = regexp.MustCompile(`\^(qi-[0-9a-f]{8})\s*$`)
 	anyBlockRe   = regexp.MustCompile(`\^[A-Za-z0-9_-]+\s*$`)
@@ -78,6 +79,16 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 		content = strings.TrimSpace(scheduledRe.ReplaceAllString(content, ""))
 	}
 
+	var completedAt *time.Time
+	if m := doneRe.FindStringSubmatch(content); len(m) == 2 {
+		parsed, err := time.Parse("2006-01-02", m[1])
+		if err != nil {
+			return domain.Task{}, false, fmt.Errorf("parse done date: %w", err)
+		}
+		completedAt = &parsed
+		content = strings.TrimSpace(doneRe.ReplaceAllString(content, ""))
+	}
+
 	// Extract recurrence after the date emojis are gone (so they can't bound the
 	// negated class oddly) and before tag parsing (so the rule text never leaks
 	// into Tags/Project — the negated class already stops at the first #).
@@ -99,14 +110,15 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 	content = strings.TrimSpace(content)
 
 	return domain.Task{
-		ID:         taskID,
-		Text:       content,
-		Project:    project,
-		Tags:       tags,
-		Due:        due,
-		Scheduled:  scheduled,
-		Recurrence: recurrence,
-		Completed:  completed,
+		ID:          taskID,
+		Text:        content,
+		Project:     project,
+		Tags:        tags,
+		Due:         due,
+		Scheduled:   scheduled,
+		Recurrence:  recurrence,
+		Completed:   completed,
+		CompletedAt: completedAt,
 	}, true, nil
 }
 
@@ -166,6 +178,12 @@ func FormatTaskLine(task domain.Task) (string, error) {
 
 	if task.Due != nil {
 		parts = append(parts, "📅 "+task.Due.Format("2006-01-02"))
+	}
+
+	// Obsidian Tasks done-date: emitted after 📅 due, before the block ref, when
+	// the task carries a completion date (CompleteTask stamps it).
+	if task.CompletedAt != nil {
+		parts = append(parts, "✅ "+task.CompletedAt.Format("2006-01-02"))
 	}
 
 	// Append qi block-ref ID as the very last token when the task carries one.

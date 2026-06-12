@@ -88,6 +88,13 @@ func run() error {
 		return fmt.Errorf("register process-inbox-apply: %w", err)
 	}
 
+	if err := skills.RegisterWeeklyReview(registry, tasksSvc, cfg.InboxPath, inboxArchive, cfg.DailyNotePath); err != nil {
+		return fmt.Errorf("register weekly-review: %w", err)
+	}
+	if err := skills.RegisterWeeklyReviewApply(registry, notesSvc); err != nil {
+		return fmt.Errorf("register weekly-review-apply: %w", err)
+	}
+
 	socketPath := socketFlag
 	if socketPath == "" {
 		socketPath, err = daemon.SocketPath()

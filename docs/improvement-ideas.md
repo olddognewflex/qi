@@ -80,8 +80,15 @@ focus shifts to the medium/big items (closing the capture→processing loop).
     Worker D1 schema needs a `kind` column; drain routes by kind.
 12. **Local embeddings search.** Ollama provider exists — embed notes, semantic search
     alongside FTS. Derived index, rebuildable, invariant-safe. Opt-in.
-13. **`skill.weekly-review`** — completed tasks, capture volume, daily log highlights →
-    propose a review note (gated write). Pairs with `skill.daily-review`.
+13. ~~**`skill.weekly-review`**~~ ✅ **Done.** Read-only `skill.weekly-review` aggregates the
+    week's completed tasks (now scoped by the new `✅ YYYY-MM-DD` done-date the task line carries —
+    `ParseTaskLine`/`FormatTaskLine` round-trip it into `Task.CompletedAt`, stamped by
+    `CompleteTask`), capture volume (inbox + archive, bucketed by filename date), and daily
+    `## Logs` highlights into a proposed review note (title + markdown body). Gated
+    `skill.weekly-review-apply` (Mutating) writes the proposal as a note via `NoteService`. Both
+    live in `internal/skills/weeklyreview.go` and pair with `skill.daily-review`. Deterministic,
+    no LLM; the read-only skill never writes, the apply skill routes non-cli callers through the
+    approval queue.
 14. **qid SourceSkill for in-session task/capture (revisit).** A Claude Code skill
     (`.claude/skills/qi/`) now teaches agents to drive the `qi` CLI in sessions. Open
     question: also add a deterministic qid `SourceSkill` (like `daily-review`/`process-inbox`)
@@ -97,5 +104,5 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
 (`qi inbox`) and programmatically (`skill.process-inbox`), and the **entire medium tier
-(#5–#9) is shipped**. Big-bet #10 (`qi plan` time-blocking) is now done too; next focus is the
-remaining big bets (#11–#14).
+(#5–#9) is shipped**. Big-bets #10 (`qi plan` time-blocking) and #13 (`skill.weekly-review`) are
+now done too; next focus is the remaining big bets (#11, #12, #14).
