@@ -15,6 +15,7 @@ import (
 type RemoteTask struct {
 	ID        string
 	Text      string
+	Kind      string // "task" (default) | "note" | "capture"; drives drain routing
 	Project   string
 	Client    string
 	Due       string // "YYYY-MM-DD" or ""
@@ -37,6 +38,8 @@ type RemoteQueue interface {
 // either acked (written) or deadlettered (rejected).
 type DrainService struct {
 	Tasks    TaskService
+	Notes    NoteService    // sink for kind="note" rows
+	Captures CaptureService // sink for kind="capture" rows
 	Queue    RemoteQueue
 	IsClient func(string) bool // closure over Config.ClientByName; may be nil
 }
@@ -73,44 +76,77 @@ func (s DrainService) Drain(ctx context.Context, limit int) (DrainSummary, error
 	var writtenIDs []string
 
 	for _, rt := range tasks {
-		// project and client arrive separately from the cloud; validate the raw
-		// pair (mutual exclusion, charset, client-against-config) before routing.
-		input := AddTaskInput{Text: rt.Text}
-		if err := ValidateAddInput(input, rt.Project, rt.Client, s.IsClient); err != nil {
-			summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: err.Error()})
+		// Route by kind BEFORE task-specific validation. project/client/dates only
+		// apply to tasks; note/capture rows ignore them entirely. Unlike tasks,
+		// note/capture writes are NOT id-idempotent (the vault has no dedup against
+		// the queue id), so a rare ack-failure re-drain can duplicate them — that
+		// is acceptable: these writes are cheap and reversible, and ack failures
+		// are rare. Tasks remain idempotent via their provided id.
+		kind := strings.TrimSpace(rt.Kind)
+		if kind == "" {
+			kind = "task"
+		}
+
+		switch kind {
+		case "task":
+			// project and client arrive separately from the cloud; validate the raw
+			// pair (mutual exclusion, charset, client-against-config) before routing.
+			input := AddTaskInput{Text: rt.Text}
+			if err := ValidateAddInput(input, rt.Project, rt.Client, s.IsClient); err != nil {
+				summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: err.Error()})
+				continue
+			}
+
+			due, err := parseDrainDate("due", rt.Due)
+			if err != nil {
+				summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: err.Error()})
+				continue
+			}
+			scheduled, err := parseDrainDate("scheduled", rt.Scheduled)
+			if err != nil {
+				summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: err.Error()})
+				continue
+			}
+
+			// A configured client name routes to its own tag (mirrors `qi task add
+			// --client`). Otherwise the free-form project tag is used.
+			tag := strings.TrimSpace(rt.Project)
+			if c := strings.TrimSpace(rt.Client); c != "" {
+				tag = c
+			}
+
+			if _, err := s.Tasks.CreateTask(AddTaskInput{
+				Text:      rt.Text,
+				Project:   tag,
+				Due:       due,
+				Scheduled: scheduled,
+				ID:        rt.ID,
+			}); err != nil {
+				// A write failure is not a validation rejection — surface it so the
+				// command exits non-zero, and do NOT ack (the row stays pending for
+				// the next pass). Re-pull + idempotency keeps that safe.
+				return summary, fmt.Errorf("drain: write task %s: %w", rt.ID, err)
+			}
+
+		case "note":
+			if _, err := s.Notes.AddNote(rt.Text, ""); err != nil {
+				// Same fatal handling as the task write path: surface the error and
+				// do NOT ack so the row stays pending for the next pass.
+				return summary, fmt.Errorf("drain: write note %s: %w", rt.ID, err)
+			}
+
+		case "capture":
+			if err := s.Captures.Capture(rt.Text); err != nil {
+				return summary, fmt.Errorf("drain: write capture %s: %w", rt.ID, err)
+			}
+
+		default:
+			// An unknown kind is a validation rejection, not a silent drop — it
+			// deadletters so it is kept for review.
+			summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: fmt.Sprintf("unknown kind %q", kind)})
 			continue
 		}
 
-		due, err := parseDrainDate("due", rt.Due)
-		if err != nil {
-			summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: err.Error()})
-			continue
-		}
-		scheduled, err := parseDrainDate("scheduled", rt.Scheduled)
-		if err != nil {
-			summary.Failures = append(summary.Failures, DrainFailure{ID: rt.ID, Reason: err.Error()})
-			continue
-		}
-
-		// A configured client name routes to its own tag (mirrors `qi task add
-		// --client`). Otherwise the free-form project tag is used.
-		tag := strings.TrimSpace(rt.Project)
-		if c := strings.TrimSpace(rt.Client); c != "" {
-			tag = c
-		}
-
-		if _, err := s.Tasks.CreateTask(AddTaskInput{
-			Text:      rt.Text,
-			Project:   tag,
-			Due:       due,
-			Scheduled: scheduled,
-			ID:        rt.ID,
-		}); err != nil {
-			// A write failure is not a validation rejection — surface it so the
-			// command exits non-zero, and do NOT ack (the row stays pending for
-			// the next pass). Re-pull + idempotency keeps that safe.
-			return summary, fmt.Errorf("drain: write task %s: %w", rt.ID, err)
-		}
 		writtenIDs = append(writtenIDs, rt.ID)
 	}
 

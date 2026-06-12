@@ -10,7 +10,8 @@
 CREATE TABLE IF NOT EXISTS queue (
   id          TEXT PRIMARY KEY,               -- qi-xxxxxxxx (8 lowercase hex), minted by the Worker
   text        TEXT NOT NULL,
-  project     TEXT,                           -- free-form tag, or NULL
+  kind        TEXT NOT NULL DEFAULT 'task',    -- 'task' | 'note' | 'capture'; drives drain routing
+  project     TEXT,                           -- free-form tag, or NULL (tasks only)
   client      TEXT,                           -- configured client name, or NULL
   due         TEXT,                           -- 'YYYY-MM-DD' or NULL
   scheduled   TEXT,                           -- 'YYYY-MM-DD' or NULL

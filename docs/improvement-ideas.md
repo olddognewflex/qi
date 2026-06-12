@@ -76,8 +76,15 @@ focus shifts to the medium/big items (closing the capture→processing loop).
     single source of truth for the line format, shared with `local.go`'s regexes); flags
     `--start`/`--block`/`--limit`/`--project`/`--all`/`--dry-run`. Defaults to tasks due/scheduled
     that day.
-11. **Remote queue beyond tasks.** Enqueue notes/captures too; iOS shortcut variants.
-    Worker D1 schema needs a `kind` column; drain routes by kind.
+11. ~~**Remote queue beyond tasks.**~~ ✅ **Done.** The Worker `queue` table gained a
+    `kind TEXT NOT NULL DEFAULT 'task'` column (fresh deploys via `schema.sql`; already-deployed
+    DBs via `worker/migrations/0001_add_kind.sql`). `/enqueue` validates an optional `kind`
+    (`task`|`note`|`capture`, absent = `task`) and `/pull`/`/deadletter` carry it through. The
+    drain (`internal/service/drain_service.go`) routes by kind before task validation:
+    `task`→`TaskService.CreateTask` (unchanged, id-idempotent), `note`→`NoteService.AddNote`,
+    `capture`→`CaptureService.Capture`; note/capture ignore project/client/dates and are not
+    id-deduped, an unknown kind deadletters. Backward compatible — absent kind = task end to end,
+    and the `qi-id` format is unchanged.
 12. ~~**Local embeddings search.**~~ ✅ **Done.** Opt-in via `[embeddings] enabled = true`
     (model/`ollama_url`). `internal/embed` is a tiny Ollama `/api/embed` client; `qi embed`
     walks the vault and stores per-note vectors in the SQLite index (`note_embeddings` table,
@@ -112,4 +119,4 @@ solved (CLI, phone, offline queue). The processing loop is now closed interactiv
 (`qi inbox`) and programmatically (`skill.process-inbox`), and the **entire medium tier
 (#5–#9) is shipped**. Big-bets #10 (`qi plan` time-blocking), #13 (`skill.weekly-review`) and
 #14 (`skill.quick-task` / `skill.session-log`) are now done too; with #12 (local embeddings
-search) shipped, only #11 (remote queue beyond tasks) remains.
+search) and #11 (remote queue beyond tasks) shipped, **all listed items (#1–#14) are shipped.**

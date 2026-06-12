@@ -29,6 +29,7 @@ func (a queueAdapter) Pull(ctx context.Context, limit int) ([]service.RemoteTask
 		out = append(out, service.RemoteTask{
 			ID:        t.ID,
 			Text:      t.Text,
+			Kind:      t.Kind,
 			Project:   t.Project,
 			Client:    t.Client,
 			Due:       t.Due,
@@ -82,6 +83,8 @@ func newRemoteDrainCommand(cfg config.Config) *cobra.Command {
 			}
 			drain := service.DrainService{
 				Tasks:    taskSvc,
+				Notes:    service.NoteService{NotesDir: cfg.NotesPath},
+				Captures: service.CaptureService{InboxPath: cfg.InboxPath},
 				Queue:    queueAdapter{c: client},
 				IsClient: func(name string) bool { _, ok := cfg.ClientByName(name); return ok },
 			}

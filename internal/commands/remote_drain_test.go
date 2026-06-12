@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -101,9 +103,17 @@ func (w *fakeWorker) handler(t *testing.T) http.Handler {
 	return mux
 }
 
+// drainDirs holds the temp vault paths a drain test writes into, so a test can
+// assert against the task file, the notes dir, and the inbox dir.
+type drainDirs struct {
+	tasksDir string
+	notesDir string
+	inboxDir string
+}
+
 // newDrain wires a DrainService against the fake worker, writing into a temp
 // vault. isClient marks "acme" as the only configured client.
-func newDrain(t *testing.T, w *fakeWorker) (service.DrainService, string) {
+func newDrain(t *testing.T, w *fakeWorker) (service.DrainService, drainDirs) {
 	t.Helper()
 	ts := httptest.NewServer(w.handler(t))
 	t.Cleanup(ts.Close)
@@ -111,14 +121,18 @@ func newDrain(t *testing.T, w *fakeWorker) (service.DrainService, string) {
 	dir := t.TempDir()
 	tasksDir := filepath.Join(dir, "10-tasks")
 	taskFile := filepath.Join(tasksDir, "inbox.md")
+	notesDir := filepath.Join(dir, "20-notes")
+	inboxDir := filepath.Join(dir, "00-inbox")
 
 	client := remotequeue.NewClient(ts.URL, drainToken)
 	drain := service.DrainService{
 		Tasks:    service.TaskService{TaskFilePath: taskFile, TasksDir: tasksDir},
+		Notes:    service.NoteService{NotesDir: notesDir},
+		Captures: service.CaptureService{InboxPath: inboxDir},
 		Queue:    queueAdapter{c: client},
 		IsClient: func(name string) bool { return name == "acme" },
 	}
-	return drain, tasksDir
+	return drain, drainDirs{tasksDir: tasksDir, notesDir: notesDir, inboxDir: inboxDir}
 }
 
 func countLines(t *testing.T, tasksDir, file string) []vaultTask {
@@ -143,7 +157,7 @@ func TestDrain_HappyPath(t *testing.T) {
 	w := &fakeWorker{pullBatches: [][]remotequeue.Task{{
 		{ID: "qi-11111111", Text: "Buy milk", Project: "home"},
 	}}}
-	drain, tasksDir := newDrain(t, w)
+	drain, dirs := newDrain(t, w)
 
 	summary, err := drain.Drain(context.Background(), 100)
 	if err != nil {
@@ -153,7 +167,7 @@ func TestDrain_HappyPath(t *testing.T) {
 		t.Fatalf("summary = %+v", summary)
 	}
 
-	lines := countLines(t, tasksDir, "home.md")
+	lines := countLines(t, dirs.tasksDir, "home.md")
 	if len(lines) != 1 {
 		t.Fatalf("want 1 line, got %d: %+v", len(lines), lines)
 	}
@@ -168,7 +182,7 @@ func TestDrain_HappyPath(t *testing.T) {
 func TestDrain_IdempotentReDrain(t *testing.T) {
 	task := remotequeue.Task{ID: "qi-22222222", Text: "Same task", Project: "home"}
 	w := &fakeWorker{pullBatches: [][]remotequeue.Task{{task}}} // last batch repeats
-	drain, tasksDir := newDrain(t, w)
+	drain, dirs := newDrain(t, w)
 
 	for i := 0; i < 2; i++ {
 		if _, err := drain.Drain(context.Background(), 100); err != nil {
@@ -176,7 +190,7 @@ func TestDrain_IdempotentReDrain(t *testing.T) {
 		}
 	}
 
-	lines := countLines(t, tasksDir, "home.md")
+	lines := countLines(t, dirs.tasksDir, "home.md")
 	if len(lines) != 1 {
 		t.Fatalf("re-drain duplicated task: want 1 line, got %d", len(lines))
 	}
@@ -188,13 +202,13 @@ func TestDrain_AckFailThenReDrain(t *testing.T) {
 		pullBatches: [][]remotequeue.Task{{task}},
 		failAck:     true,
 	}
-	drain, tasksDir := newDrain(t, w)
+	drain, dirs := newDrain(t, w)
 
 	// First pass: write succeeds, ack fails → error, but the line is written.
 	if _, err := drain.Drain(context.Background(), 100); err == nil {
 		t.Fatal("expected ack failure to surface as error")
 	}
-	if got := countLines(t, tasksDir, "home.md"); len(got) != 1 {
+	if got := countLines(t, dirs.tasksDir, "home.md"); len(got) != 1 {
 		t.Fatalf("after ack-fail want 1 line, got %d", len(got))
 	}
 
@@ -206,7 +220,7 @@ func TestDrain_AckFailThenReDrain(t *testing.T) {
 		t.Fatalf("second drain: %v", err)
 	}
 
-	if got := countLines(t, tasksDir, "home.md"); len(got) != 1 {
+	if got := countLines(t, dirs.tasksDir, "home.md"); len(got) != 1 {
 		t.Fatalf("ack-fail + re-drain duplicated: want 1 line, got %d", len(got))
 	}
 }
@@ -216,7 +230,7 @@ func TestDrain_ValidationFailureDeadletters(t *testing.T) {
 		{ID: "qi-44444444", Text: "Bad client", Client: "ghost"},
 		{ID: "qi-55555555", Text: "Has\nnewline"},
 	}}}
-	drain, tasksDir := newDrain(t, w)
+	drain, dirs := newDrain(t, w)
 
 	summary, err := drain.Drain(context.Background(), 100)
 	if err != nil {
@@ -227,7 +241,7 @@ func TestDrain_ValidationFailureDeadletters(t *testing.T) {
 	}
 
 	// Nothing written anywhere.
-	if got := countLines(t, tasksDir, "inbox.md"); len(got) != 0 {
+	if got := countLines(t, dirs.tasksDir, "inbox.md"); len(got) != 0 {
 		t.Fatalf("inbox should be empty, got %d", len(got))
 	}
 	// Both deadlettered, none acked.
@@ -241,13 +255,13 @@ func TestDrain_ValidationFailureDeadletters(t *testing.T) {
 
 func TestDrain_PullNetworkFailure(t *testing.T) {
 	w := &fakeWorker{failPull: true}
-	drain, tasksDir := newDrain(t, w)
+	drain, dirs := newDrain(t, w)
 
 	if _, err := drain.Drain(context.Background(), 100); err == nil {
 		t.Fatal("expected pull failure to return an error")
 	}
 	// No partial write.
-	if got := countLines(t, tasksDir, "inbox.md"); len(got) != 0 {
+	if got := countLines(t, dirs.tasksDir, "inbox.md"); len(got) != 0 {
 		t.Fatalf("pull failure must not write, got %d", len(got))
 	}
 }
@@ -259,7 +273,7 @@ func TestDrain_IDCollisionReMints(t *testing.T) {
 		{{ID: "qi-66666666", Text: "Original", Project: "home"}},
 		{{ID: "qi-66666666", Text: "Different", Project: "home"}},
 	}}
-	drain, tasksDir := newDrain(t, w)
+	drain, dirs := newDrain(t, w)
 
 	if _, err := drain.Drain(context.Background(), 100); err != nil {
 		t.Fatalf("first drain: %v", err)
@@ -268,7 +282,7 @@ func TestDrain_IDCollisionReMints(t *testing.T) {
 		t.Fatalf("second drain: %v", err)
 	}
 
-	lines := countLines(t, tasksDir, "home.md")
+	lines := countLines(t, dirs.tasksDir, "home.md")
 	if len(lines) != 2 {
 		t.Fatalf("id collision: want 2 lines, got %d: %+v", len(lines), lines)
 	}
@@ -278,5 +292,84 @@ func TestDrain_IDCollisionReMints(t *testing.T) {
 	}
 	if len(ids) != 2 {
 		t.Fatalf("want 2 distinct ids, got %v", ids)
+	}
+}
+
+// countMarkdown returns the number of *.md files in dir (0 if dir is absent).
+func countMarkdown(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatalf("read dir %s: %v", dir, err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			n++
+		}
+	}
+	return n
+}
+
+func contains(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDrain_RoutesByKind verifies the kind router: a task lands in the task
+// file, a note as a file in the notes dir, a capture as a .md in the inbox dir,
+// and an unknown kind deadletters. Acks cover task+note+capture; the unknown
+// kind is deadlettered, never acked.
+func TestDrain_RoutesByKind(t *testing.T) {
+	w := &fakeWorker{pullBatches: [][]remotequeue.Task{{
+		{ID: "qi-aaaaaaaa", Text: "Buy milk", Kind: "task", Project: "home"},
+		{ID: "qi-bbbbbbbb", Text: "A thought worth keeping", Kind: "note"},
+		{ID: "qi-cccccccc", Text: "Fleeting idea", Kind: "capture"},
+		{ID: "qi-dddddddd", Text: "Mystery", Kind: "bogus"},
+	}}}
+	drain, dirs := newDrain(t, w)
+
+	summary, err := drain.Drain(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if summary.Drained != 3 || summary.Rejected != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+
+	// Task → task file (routed to home.md by its project tag).
+	taskLines := countLines(t, dirs.tasksDir, "home.md")
+	if len(taskLines) != 1 || taskLines[0].ID != "qi-aaaaaaaa" {
+		t.Fatalf("task not written: %+v", taskLines)
+	}
+
+	// Note → one file in the notes dir.
+	if got := countMarkdown(t, dirs.notesDir); got != 1 {
+		t.Fatalf("want 1 note file, got %d", got)
+	}
+
+	// Capture → one .md in the inbox dir.
+	if got := countMarkdown(t, dirs.inboxDir); got != 1 {
+		t.Fatalf("want 1 capture file, got %d", got)
+	}
+
+	// Ack covered task+note+capture; the unknown kind was deadlettered.
+	if len(w.acked) != 3 {
+		t.Fatalf("want 3 acked, got %v", w.acked)
+	}
+	for _, id := range []string{"qi-aaaaaaaa", "qi-bbbbbbbb", "qi-cccccccc"} {
+		if !contains(w.acked, id) {
+			t.Fatalf("expected %s acked, got %v", id, w.acked)
+		}
+	}
+	if len(w.deadletter) != 1 || w.deadletter[0].ID != "qi-dddddddd" {
+		t.Fatalf("want only qi-dddddddd deadlettered, got %+v", w.deadletter)
 	}
 }

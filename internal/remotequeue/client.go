@@ -25,6 +25,7 @@ import (
 type Task struct {
 	ID        string `json:"id"`
 	Text      string `json:"text"`
+	Kind      string `json:"kind,omitempty"` // "task" (default) | "note" | "capture"
 	Project   string `json:"project,omitempty"`
 	Client    string `json:"client,omitempty"`
 	Due       string `json:"due,omitempty"`
