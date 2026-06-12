@@ -120,6 +120,17 @@ type AIConfig struct {
 	OllamaModel string
 }
 
+// EmbeddingsConfig configures opt-in local semantic search. When Enabled,
+// `qi embed` builds per-note embeddings via Ollama (Model on OllamaURL) into the
+// derived SQLite index, and `qi search --semantic` cosine-ranks against them.
+// Empty Model/OllamaURL let the embed/search consumers apply their defaults
+// (see internal/embed.DefaultModel / DefaultOllamaURL).
+type EmbeddingsConfig struct {
+	Enabled   bool
+	Model     string
+	OllamaURL string
+}
+
 type Config struct {
 	VaultPath       string
 	TaskFilePath    string
@@ -140,6 +151,7 @@ type Config struct {
 	RemoteQueue     RemoteQueueConfig
 	Sync            SyncConfig
 	Notify          NotifyConfig
+	Embeddings      EmbeddingsConfig
 }
 
 type icsCalTOML struct {
@@ -203,6 +215,12 @@ type notifyTOML struct {
 	At       string `toml:"at"`
 }
 
+type embeddingsTOML struct {
+	Enabled   bool   `toml:"enabled"`
+	Model     string `toml:"model"`
+	OllamaURL string `toml:"ollama_url"`
+}
+
 type projectTOML struct {
 	Project   string      `toml:"project"`
 	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
@@ -239,6 +257,7 @@ type tomlFile struct {
 	RemoteQueue     remoteQueueTOML `toml:"remote_queue"`
 	Sync            syncTOML        `toml:"sync"`
 	Notify          notifyTOML      `toml:"notify"`
+	Embeddings      embeddingsTOML  `toml:"embeddings"`
 }
 
 func ConfigPath() string {
@@ -526,6 +545,13 @@ func LoadFrom(path string) (Config, error) {
 		Sync: SyncConfig{Watch: raw.Sync.Watch, DebounceMS: raw.Sync.DebounceMS},
 		// Keep the raw At; the default is applied by the scheduler, not here.
 		Notify: NotifyConfig{DueToday: raw.Notify.DueToday, At: raw.Notify.At},
+		// Keep the raw Model/OllamaURL; defaults are applied by the embed/search
+		// consumers (internal/embed), not here.
+		Embeddings: EmbeddingsConfig{
+			Enabled:   raw.Embeddings.Enabled,
+			Model:     raw.Embeddings.Model,
+			OllamaURL: raw.Embeddings.OllamaURL,
+		},
 	}, nil
 }
 

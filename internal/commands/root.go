@@ -37,5 +37,6 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newRemoteStatusCommand(cfg))
 	root.AddCommand(newInboxCommand(cfg))
 	root.AddCommand(newSearchCommand(cfg))
+	root.AddCommand(newEmbedCommand(cfg))
 	return root
 }
