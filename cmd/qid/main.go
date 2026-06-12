@@ -95,6 +95,13 @@ func run() error {
 		return fmt.Errorf("register weekly-review-apply: %w", err)
 	}
 
+	if err := skills.RegisterQuickTask(registry, tasksSvc); err != nil {
+		return fmt.Errorf("register quick-task: %w", err)
+	}
+	if err := skills.RegisterSessionLog(registry, cfg.DailyNotePath); err != nil {
+		return fmt.Errorf("register session-log: %w", err)
+	}
+
 	socketPath := socketFlag
 	if socketPath == "" {
 		socketPath, err = daemon.SocketPath()

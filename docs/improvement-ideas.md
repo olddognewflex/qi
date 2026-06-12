@@ -89,13 +89,14 @@ focus shifts to the medium/big items (closing the capture→processing loop).
     live in `internal/skills/weeklyreview.go` and pair with `skill.daily-review`. Deterministic,
     no LLM; the read-only skill never writes, the apply skill routes non-cli callers through the
     approval queue.
-14. **qid SourceSkill for in-session task/capture (revisit).** A Claude Code skill
-    (`.claude/skills/qi/`) now teaches agents to drive the `qi` CLI in sessions. Open
-    question: also add a deterministic qid `SourceSkill` (like `daily-review`/`process-inbox`)
-    that composes task-add + capture so AI/MCP callers get a single gated workflow instead of
-    individual builtin tools. Candidate shapes: `skill.quick-task` (add task → return updated
-    open list) or `skill.session-log` (append a journal entry to today's daily note). Must
-    stay deterministic, no silent LLM, mutations declared `Mutating: true`.
+14. ~~**qid SourceSkill for in-session task/capture (revisit).**~~ ✅ **Done.** Both candidate
+    shapes shipped as gated mutating `SourceSkill`s, giving AI/MCP callers a single composed
+    workflow instead of wiring individual builtin tools. `skill.quick-task` adds a task and
+    returns the refreshed open-task list in one call (composition is the value over the bare
+    `task.add` builtin); `skill.session-log` appends a timestamped entry to today's daily note
+    `## Logs` (headless equivalent of `qi daily cp`). Both live in `internal/skills/quicktask.go`
+    and `internal/skills/sessionlog.go`, compose the existing `TaskService`/`vault` helpers, call
+    no LLM, and are declared `Mutating: true` so non-cli callers route through the approval queue.
 
 ## Recommended order
 
@@ -104,5 +105,6 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
 (`qi inbox`) and programmatically (`skill.process-inbox`), and the **entire medium tier
-(#5–#9) is shipped**. Big-bets #10 (`qi plan` time-blocking) and #13 (`skill.weekly-review`) are
-now done too; next focus is the remaining big bets (#11, #12, #14).
+(#5–#9) is shipped**. Big-bets #10 (`qi plan` time-blocking), #13 (`skill.weekly-review`) and
+#14 (`skill.quick-task` / `skill.session-log`) are now done too; next focus is the remaining big
+bets (#11, #12).
