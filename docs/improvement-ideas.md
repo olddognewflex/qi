@@ -78,8 +78,13 @@ focus shifts to the medium/big items (closing the capture→processing loop).
     that day.
 11. **Remote queue beyond tasks.** Enqueue notes/captures too; iOS shortcut variants.
     Worker D1 schema needs a `kind` column; drain routes by kind.
-12. **Local embeddings search.** Ollama provider exists — embed notes, semantic search
-    alongside FTS. Derived index, rebuildable, invariant-safe. Opt-in.
+12. ~~**Local embeddings search.**~~ ✅ **Done.** Opt-in via `[embeddings] enabled = true`
+    (model/`ollama_url`). `internal/embed` is a tiny Ollama `/api/embed` client; `qi embed`
+    walks the vault and stores per-note vectors in the SQLite index (`note_embeddings` table,
+    BLOB of little-endian float32s) — derived state, fully rebuildable, never the source of
+    truth (invariant #1). `qi search --semantic` embeds the query and cosine-ranks in Go (no
+    SQLite vector ext), reusing #7's `classifyKind` labels and `--kind`/`--limit` filters and
+    appending `(0.NN)` scores. The index never imports `embed`; the command wires the two.
 13. ~~**`skill.weekly-review`**~~ ✅ **Done.** Read-only `skill.weekly-review` aggregates the
     week's completed tasks (now scoped by the new `✅ YYYY-MM-DD` done-date the task line carries —
     `ParseTaskLine`/`FormatTaskLine` round-trip it into `Task.CompletedAt`, stamped by
@@ -106,5 +111,5 @@ Theme: stop building capture/infrastructure, start building **processing**. Capt
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
 (`qi inbox`) and programmatically (`skill.process-inbox`), and the **entire medium tier
 (#5–#9) is shipped**. Big-bets #10 (`qi plan` time-blocking), #13 (`skill.weekly-review`) and
-#14 (`skill.quick-task` / `skill.session-log`) are now done too; next focus is the remaining big
-bets (#11, #12).
+#14 (`skill.quick-task` / `skill.session-log`) are now done too; with #12 (local embeddings
+search) shipped, only #11 (remote queue beyond tasks) remains.

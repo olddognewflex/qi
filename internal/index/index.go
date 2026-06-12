@@ -66,12 +66,26 @@ func initSchema(db *sql.DB) error {
 	// task_sync_state is the 3-way-merge ancestor for cross-vault task sync.
 	// DERIVED state (invariant #4): fully rebuildable by re-seeding from the
 	// canonical markdown task lines, never the source of truth.
-	_, err := db.Exec(`
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS task_sync_state (
 			id        TEXT PRIMARY KEY,
 			project   TEXT NOT NULL,
 			base_line TEXT NOT NULL,
 			synced_at TEXT NOT NULL
+		);
+	`); err != nil {
+		return err
+	}
+	// note_embeddings stores per-note semantic vectors for opt-in `qi search
+	// --semantic`. DERIVED state (invariant #1): fully rebuildable from the
+	// markdown via `qi embed`, never the source of truth.
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS note_embeddings (
+			path       TEXT PRIMARY KEY,
+			model      TEXT NOT NULL,
+			dim        INTEGER NOT NULL,
+			vector     BLOB NOT NULL,
+			updated_at TEXT NOT NULL
 		);
 	`)
 	return err

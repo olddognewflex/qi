@@ -348,6 +348,57 @@ func TestLoadFrom_NotifyDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFrom_EmbeddingsSection(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[embeddings]
+enabled = true
+model = "nomic-embed-text"
+ollama_url = "http://localhost:11434"
+`)
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Embeddings.Enabled {
+		t.Errorf("Embeddings.Enabled = %v, want true", cfg.Embeddings.Enabled)
+	}
+	if cfg.Embeddings.Model != "nomic-embed-text" {
+		t.Errorf("Embeddings.Model = %q, want nomic-embed-text", cfg.Embeddings.Model)
+	}
+	if cfg.Embeddings.OllamaURL != "http://localhost:11434" {
+		t.Errorf("Embeddings.OllamaURL = %q", cfg.Embeddings.OllamaURL)
+	}
+}
+
+func TestLoadFrom_EmbeddingsDefaults(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No [embeddings] block -> disabled, model/url empty (defaults applied by consumers).
+	if cfg.Embeddings.Enabled {
+		t.Errorf("Embeddings.Enabled = %v, want false by default", cfg.Embeddings.Enabled)
+	}
+	if cfg.Embeddings.Model != "" {
+		t.Errorf("Embeddings.Model = %q, want \"\" (default applied in embed)", cfg.Embeddings.Model)
+	}
+	if cfg.Embeddings.OllamaURL != "" {
+		t.Errorf("Embeddings.OllamaURL = %q, want \"\" (default applied in embed)", cfg.Embeddings.OllamaURL)
+	}
+}
+
 func TestConfigPath_XDGEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 
