@@ -28,6 +28,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newAgendaCommand(cfg))
 	root.AddCommand(newCalendarCommand(cfg))
 	root.AddCommand(newDailyCommand(cfg))
+	root.AddCommand(newPlanCommand(cfg))
 	root.AddCommand(newAICommand())
 	root.AddCommand(newSyncCommand(cfg))
 	root.AddCommand(newLaunchCommand(cfg))

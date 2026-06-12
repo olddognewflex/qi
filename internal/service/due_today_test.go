@@ -7,6 +7,33 @@ import (
 	"qi/internal/domain"
 )
 
+// TestFilterForDay_TimezoneSkew guards the regression that `qi plan` exposed:
+// task dates are parsed at UTC midnight (time.Parse("2006-01-02")), while the
+// target day comes from time.Now() in Local. Converting one into the other's
+// zone shifts its wall-clock date across the offset, so a task scheduled "today"
+// would be dropped in a western timezone. sameDay must compare each side's
+// intended Y/M/D without conversion.
+func TestFilterForDay_TimezoneSkew(t *testing.T) {
+	// Task date as qi stores it: UTC midnight on 2026-06-11.
+	sched := time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC)
+	tasks := []domain.Task{{Text: "scheduled today", Scheduled: &sched}}
+
+	// Target day in a western zone (UTC-7), same calendar date.
+	west := time.FixedZone("UTC-7", -7*3600)
+	day := time.Date(2026, 6, 11, 9, 0, 0, 0, west)
+
+	got := FilterForDay(tasks, day)
+	if len(got) != 1 {
+		t.Fatalf("expected the UTC-midnight task to match the local day across the offset, got %d", len(got))
+	}
+
+	// And it must NOT match the neighbouring day.
+	dayPrev := time.Date(2026, 6, 10, 9, 0, 0, 0, west)
+	if n := len(FilterForDay(tasks, dayPrev)); n != 0 {
+		t.Fatalf("expected no match on 2026-06-10, got %d", n)
+	}
+}
+
 func TestFilterDueToday(t *testing.T) {
 	now := time.Date(2026, 6, 11, 9, 30, 0, 0, time.Local)
 	day := func(y int, m time.Month, d int) *time.Time {
