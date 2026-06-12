@@ -41,3 +41,6 @@ client_secret_*.json
 
 # oh-my-claudecode local state
 .omc/
+
+# Claude Code local agent state
+.claude/agent-memory/
