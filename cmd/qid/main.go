@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"qi/internal/domain"
 	"qi/internal/index"
 	"qi/internal/mcp"
+	"qi/internal/notify"
 	"qi/internal/policy"
 	"qi/internal/service"
 	"qi/internal/skills"
@@ -159,6 +161,31 @@ func run() error {
 		}
 	}
 
+	// Opt-in morning due-today notifier: when [notify] due_today = true, schedule
+	// a once-a-day macOS notification (at [notify] at, default 08:00) listing
+	// tasks due/scheduled today. Read-only, no policy gate. Off by default.
+	if cfg.Notify.DueToday {
+		notifier := notify.NewNotifier(log)
+		s, nerr := notify.New(notify.Options{
+			At:     cfg.Notify.At,
+			OnFire: makeDueTodayNotifier(tasksSvc, notifier, log),
+			Log:    log,
+		})
+		if nerr != nil {
+			return fmt.Errorf("due-today notifier: %w", nerr)
+		}
+		at := cfg.Notify.At
+		if at == "" {
+			at = notify.DefaultAt
+		}
+		log.Info("due-today notifier enabled", "at", at)
+		go func() {
+			if err := s.Run(ctx); err != nil {
+				log.Warn("due-today notifier stopped", "err", err)
+			}
+		}()
+	}
+
 	server := daemon.NewServer(registry, decider, queue, log)
 	if err := server.Serve(ctx, ln); err != nil {
 		return fmt.Errorf("serve: %w", err)
@@ -198,6 +225,57 @@ func makeReconciler(cfg config.Config, log *slog.Logger) watcher.ReconcileFunc {
 			log.Debug("sync watcher: reconciled, no changes")
 		}
 	}
+}
+
+// makeDueTodayNotifier builds the scheduler's OnFire callback: it lists open
+// tasks, filters to those due/scheduled today, and — if any — sends ONE macOS
+// notification summarising them. When nothing is due it stays quiet (logs at
+// Debug). It never writes the vault.
+func makeDueTodayNotifier(tasksSvc service.TaskService, notifier notify.Notifier, log *slog.Logger) func() {
+	return func() {
+		tasks, err := tasksSvc.ListOpenTasks()
+		if err != nil {
+			log.Warn("due-today notifier: list tasks failed", "err", err)
+			return
+		}
+		due := service.FilterDueToday(tasks, time.Now())
+		if len(due) == 0 {
+			log.Debug("due-today notifier: nothing due today")
+			return
+		}
+		body := dueTodayBody(due)
+		if err := notifier.Notify("qi — Due today", body); err != nil {
+			log.Warn("due-today notifier: notify failed", "err", err)
+		}
+	}
+}
+
+// dueTodayBody renders the notification body: a count prefix plus the task
+// texts joined with "; ", truncated to a sane length with an "…(+N more)"
+// suffix so a long list can't produce an unwieldy banner.
+func dueTodayBody(tasks []domain.Task) string {
+	const maxLen = 200
+	prefix := fmt.Sprintf("%d due today: ", len(tasks))
+
+	var b strings.Builder
+	b.WriteString(prefix)
+	shown := 0
+	for i, t := range tasks {
+		sep := ""
+		if i > 0 {
+			sep = "; "
+		}
+		next := sep + strings.TrimSpace(t.Text)
+		if b.Len()+len(next) > maxLen && shown > 0 {
+			break
+		}
+		b.WriteString(next)
+		shown++
+	}
+	if shown < len(tasks) {
+		fmt.Fprintf(&b, " …(+%d more)", len(tasks)-shown)
+	}
+	return b.String()
 }
 
 // indexSearcher adapts the SQLite note index to builtin.NoteSearcher. It opens
