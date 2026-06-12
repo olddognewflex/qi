@@ -378,6 +378,127 @@ func TestUpdateTaskLine_LegacyTextMatch(t *testing.T) {
 	}
 }
 
+// --- Recurrence (🔁) round-trip tests ---
+
+func TestParseTaskLine_Recurrence(t *testing.T) {
+	line := "- [ ] water plants 🔁 every week 📅 2026-06-12"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.Recurrence != "every week" {
+		t.Fatalf("Recurrence: got %q want %q", task.Recurrence, "every week")
+	}
+	if task.Text != "water plants" {
+		t.Fatalf("Text: got %q want %q", task.Text, "water plants")
+	}
+	if strings.Contains(task.Text, "🔁") {
+		t.Fatalf("recurrence emoji leaked into Text: %q", task.Text)
+	}
+	if task.Due == nil || task.Due.Format("2006-01-02") != "2026-06-12" {
+		t.Fatalf("unexpected due: %#v", task.Due)
+	}
+}
+
+func TestFormatTaskLine_Recurrence(t *testing.T) {
+	due := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	line, err := FormatTaskLine(domain.Task{
+		Text:       "water plants",
+		Recurrence: "every week",
+		Due:        &due,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "- [ ] water plants 🔁 every week 📅 2026-06-12"
+	if line != want {
+		t.Fatalf("got %q want %q", line, want)
+	}
+}
+
+func TestRecurrence_RoundTripStable(t *testing.T) {
+	cases := []string{
+		"- [ ] review backlog #work 🔁 every 2 weeks ⏳ 2026-06-10 📅 2026-06-12 ^qi-a1b2c3d4",
+		"- [ ] stand up 🔁 every day when done ⏳ 2026-06-10 📅 2026-06-11 ^qi-deadbeef",
+	}
+	for _, line := range cases {
+		task, ok, err := ParseTaskLine(line)
+		if err != nil || !ok {
+			t.Fatalf("parse %q: ok=%v err=%v", line, ok, err)
+		}
+		out1, err := FormatTaskLine(task)
+		if err != nil {
+			t.Fatalf("format1 %q: %v", line, err)
+		}
+		task2, ok, err := ParseTaskLine(out1)
+		if err != nil || !ok {
+			t.Fatalf("reparse %q: ok=%v err=%v", out1, ok, err)
+		}
+		out2, err := FormatTaskLine(task2)
+		if err != nil {
+			t.Fatalf("format2 %q: %v", out1, err)
+		}
+		if out1 != out2 {
+			t.Fatalf("not idempotent:\n out1 %q\n out2 %q", out1, out2)
+		}
+		if task2.Recurrence != task.Recurrence {
+			t.Fatalf("recurrence drift: %q -> %q", task.Recurrence, task2.Recurrence)
+		}
+		if task.Recurrence == "" {
+			t.Fatalf("expected recurrence to survive in %q", line)
+		}
+		if (task.Due == nil) != (task2.Due == nil) || (task.Scheduled == nil) != (task2.Scheduled == nil) {
+			t.Fatalf("date presence drift for %q", line)
+		}
+		if task2.Text != task.Text {
+			t.Fatalf("text drift: %q -> %q", task.Text, task2.Text)
+		}
+	}
+}
+
+func TestRecurrence_WithTag(t *testing.T) {
+	const line = "- [ ] pay rent #home 🔁 every month 📅 2026-07-01"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.Project != "home" {
+		t.Fatalf("Project: got %q want %q", task.Project, "home")
+	}
+	if task.Recurrence != "every month" {
+		t.Fatalf("Recurrence: got %q want %q", task.Recurrence, "every month")
+	}
+	out, err := FormatTaskLine(task)
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if out != line {
+		t.Fatalf("round-trip mismatch:\n got  %q\n want %q", out, line)
+	}
+	if strings.Count(out, "#home") != 1 {
+		t.Fatalf("tag duplicated: %q", out)
+	}
+}
+
+func TestRecurrence_NoneFormatsWithoutEmoji(t *testing.T) {
+	due := time.Date(2026, 4, 22, 0, 0, 0, 0, time.UTC)
+	line, err := FormatTaskLine(domain.Task{
+		Text:    "Fix CDK bootstrap",
+		Project: "builderhq",
+		Due:     &due,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(line, "🔁") {
+		t.Fatalf("non-recurring task gained a 🔁 marker: %q", line)
+	}
+	want := "- [ ] Fix CDK bootstrap #builderhq 📅 2026-04-22"
+	if line != want {
+		t.Fatalf("got %q want %q", line, want)
+	}
+}
+
 func TestUpdateTaskLine_ConcurrentDistinctLinesNoLostUpdate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tasks.md")
 	const n = 16

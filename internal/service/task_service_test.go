@@ -83,6 +83,101 @@ func TestCompleteTask(t *testing.T) {
 	}
 }
 
+// TestCompleteTask_RecurringSpawnsNext verifies that completing a recurring,
+// dated task marks the original done (keeping its 🔁) and appends a fresh open
+// instance with the date advanced by the rule and a new id.
+func TestCompleteTask_RecurringSpawnsNext(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	taskFile := filepath.Join(tasksDir, "inbox.md")
+	svc := TaskService{TaskFilePath: taskFile, TasksDir: tasksDir}
+
+	due := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	if err := svc.AddTask(AddTaskInput{Text: "water plants", Due: &due, Recurrence: "every week"}); err != nil {
+		t.Fatalf("add task: %v", err)
+	}
+
+	open, err := svc.ListOpenTasks()
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("expected 1 open task, got %d", len(open))
+	}
+	original := open[0]
+
+	if err := svc.CompleteTask(original); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+
+	all, err := vault.ReadTasks(taskFile)
+	if err != nil {
+		t.Fatalf("read tasks: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tasks after completing a recurring one, got %d", len(all))
+	}
+
+	var done, spawned *domain.Task
+	for i := range all {
+		if all[i].Completed {
+			done = &all[i]
+		} else {
+			spawned = &all[i]
+		}
+	}
+	if done == nil || spawned == nil {
+		t.Fatalf("expected one completed + one open task, got %+v", all)
+	}
+
+	// The completed line keeps its recurrence marker (Layer A round-trip).
+	if done.Recurrence != "every week" {
+		t.Errorf("completed task lost recurrence: %q", done.Recurrence)
+	}
+
+	// The spawned instance: same text/recurrence, due advanced +1 week, new id.
+	if spawned.Text != "water plants" {
+		t.Errorf("spawned text = %q, want %q", spawned.Text, "water plants")
+	}
+	if spawned.Recurrence != "every week" {
+		t.Errorf("spawned recurrence = %q, want %q", spawned.Recurrence, "every week")
+	}
+	if spawned.Due == nil || spawned.Due.Format("2006-01-02") != "2026-06-19" {
+		t.Errorf("spawned due = %v, want 2026-06-19", spawned.Due)
+	}
+	if spawned.ID == "" || spawned.ID == original.ID {
+		t.Errorf("spawned id = %q, want a fresh id (original %q)", spawned.ID, original.ID)
+	}
+}
+
+// TestCompleteTask_NonRecurringNoSpawn guards that a plain task does not spawn a
+// follow-up when completed.
+func TestCompleteTask_NonRecurringNoSpawn(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	taskFile := filepath.Join(tasksDir, "inbox.md")
+	svc := TaskService{TaskFilePath: taskFile, TasksDir: tasksDir}
+
+	due := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	if err := svc.AddTask(AddTaskInput{Text: "one-off", Due: &due}); err != nil {
+		t.Fatalf("add task: %v", err)
+	}
+	open, err := svc.ListOpenTasks()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if err := svc.CompleteTask(open[0]); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	all, err := vault.ReadTasks(taskFile)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 task (no spawn), got %d", len(all))
+	}
+}
+
 func TestAddAndListOpenTasks(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := filepath.Join(dir, "10-tasks")

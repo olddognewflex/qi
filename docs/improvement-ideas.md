@@ -58,8 +58,13 @@ focus shifts to the medium/big items (closing the capture→processing loop).
    with safely-escaped AppleScript, `*slog.Logger` fallback elsewhere; stdlib-only); pure
    `service.FilterDueToday` does the filtering. Deterministic, read-only, no policy gate, off
    by default.
-9. **Recurring tasks** — `🔁 every week` marker, Obsidian Tasks plugin format.
-   Caution: invariant 4 — `ParseTaskLine`/`FormatTaskLine` round-trip tests are load-bearing.
+9. ~~**Recurring tasks.**~~ ✅ **Done.** The Obsidian Tasks `🔁 <rule>` marker round-trips
+   losslessly: `ParseTaskLine` extracts it into `Task.Recurrence`, `FormatTaskLine` re-emits it
+   in canonical order (after tags, before `⏳`/`📅`) — invariant 4 round-trip tests extended, not
+   weakened. Completing a recurring dated task spawns the next occurrence (`recurrence.go`
+   `NextRecurrence`; supported subset `every [N] day|week|month|year`, optional `when done`;
+   unsupported rules preserve the marker but don't spawn). New `qi task add --repeat "every week"`
+   flag. The completed line keeps its marker; the spawned instance gets a fresh id + advanced dates.
 
 ### Big bets
 
@@ -86,6 +91,5 @@ focus shifts to the medium/big items (closing the capture→processing loop).
 
 Theme: stop building capture/infrastructure, start building **processing**. Capture is
 solved (CLI, phone, offline queue). The processing loop is now closed interactively
-(`qi inbox`) and programmatically (`skill.process-inbox`), and the medium tier is fully
-shipped, and #8 due-today notifications has landed. Next focus shifts to the remaining
-items — #9 recurring tasks is the nearest, then the big bets (#10–#14).
+(`qi inbox`) and programmatically (`skill.process-inbox`), and the **entire medium tier
+(#5–#9) is shipped**. Next focus shifts to the big bets (#10–#14).

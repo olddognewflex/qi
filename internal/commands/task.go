@@ -30,6 +30,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	var client string
 	var due string
 	var schedule string
+	var repeat string
 
 	addCmd := &cobra.Command{
 		Use:   "add <text>",
@@ -69,10 +70,11 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			}
 
 			return svc.AddTask(service.AddTaskInput{
-				Text:      args[0],
-				Project:   tag,
-				Due:       parsedDue,
-				Scheduled: parsedSchedule,
+				Text:       args[0],
+				Project:    tag,
+				Due:        parsedDue,
+				Scheduled:  parsedSchedule,
+				Recurrence: repeat,
 			})
 		},
 	}
@@ -80,6 +82,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd.Flags().StringVarP(&client, "client", "c", "", "client name (routes to the client's task_file)")
 	addCmd.Flags().StringVarP(&due, "due", "d", "", "due date (YYYY-MM-DD)")
 	addCmd.Flags().StringVarP(&schedule, "schedule", "s", "", "scheduled date (YYYY-MM-DD)")
+	addCmd.Flags().StringVarP(&repeat, "repeat", "r", "", "recurrence rule, e.g. \"every week\"")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
