@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,11 +47,12 @@ type TaskService struct {
 }
 
 type AddTaskInput struct {
-	Text      string
-	Project   string
-	Due       *time.Time
-	Scheduled *time.Time
-	ID        string // optional; if set, used instead of vault.MintID()
+	Text       string
+	Project    string
+	Due        *time.Time
+	Scheduled  *time.Time
+	Recurrence string // optional; raw Obsidian rule text without 🔁
+	ID         string // optional; if set, used instead of vault.MintID()
 }
 
 // AddTask creates a task with a freshly minted ID. It is a thin wrapper over
@@ -98,11 +100,12 @@ func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
 	}
 
 	task := domain.Task{
-		ID:        id,
-		Text:      text,
-		Project:   project,
-		Due:       input.Due,
-		Scheduled: input.Scheduled,
+		ID:         id,
+		Text:       text,
+		Project:    project,
+		Due:        input.Due,
+		Scheduled:  input.Scheduled,
+		Recurrence: strings.TrimSpace(input.Recurrence),
 	}
 
 	path := s.TaskFilePath
@@ -159,7 +162,35 @@ func (s TaskService) CompleteTask(task domain.Task) error {
 	now := time.Now()
 	task.Completed = true
 	task.CompletedAt = &now
-	return vault.UpdateTaskLine(task.FilePath, task.LineNumber, task)
+	if err := vault.UpdateTaskLine(task.FilePath, task.LineNumber, task); err != nil {
+		return err
+	}
+
+	// Recurring tasks spawn their next occurrence on completion. The completed
+	// line keeps its 🔁 (Layer A round-trips it); the new instance is a fresh
+	// open task in the same file with a new ID and advanced dates. Unsupported
+	// rules and undated tasks return ok=false and simply don't spawn.
+	if task.Recurrence == "" {
+		return nil
+	}
+	nextDue, nextScheduled, ok := vault.NextRecurrence(task.Recurrence, task.Due, task.Scheduled, time.Now())
+	if !ok {
+		return nil
+	}
+
+	next := domain.Task{
+		ID:         vault.MintID(),
+		Text:       task.Text,
+		Project:    task.Project,
+		Tags:       task.Tags,
+		Due:        nextDue,
+		Scheduled:  nextScheduled,
+		Recurrence: task.Recurrence,
+	}
+	if err := vault.AppendTask(task.FilePath, next); err != nil {
+		return fmt.Errorf("recurring task completed but next instance failed: %w", err)
+	}
+	return nil
 }
 
 // ListAllTasks aggregates tasks from every *.md file in TasksDir.
