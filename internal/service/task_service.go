@@ -193,6 +193,15 @@ func (s TaskService) CompleteTask(task domain.Task) error {
 	return nil
 }
 
+// RescheduleTask sets a task's scheduled date (⏳) to newScheduled and writes the
+// updated line back to its file. A nil newScheduled clears the scheduled date.
+// Only the ⏳ scheduled date is touched; due (📅), recurrence and all other markers
+// round-trip untouched via vault.UpdateTaskLine.
+func (s TaskService) RescheduleTask(task domain.Task, newScheduled *time.Time) error {
+	task.Scheduled = newScheduled
+	return vault.UpdateTaskLine(task.FilePath, task.LineNumber, task)
+}
+
 // ListAllTasks aggregates tasks from every *.md file in TasksDir.
 // Falls back to reading TaskFilePath when TasksDir is empty.
 // Skips sync-conflict files.
