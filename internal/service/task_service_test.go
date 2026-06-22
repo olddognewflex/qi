@@ -178,6 +178,74 @@ func TestCompleteTask_NonRecurringNoSpawn(t *testing.T) {
 	}
 }
 
+// TestRescheduleTask sets a task's scheduled date and confirms it round-trips
+// to the vault while leaving the due date untouched.
+func TestRescheduleTask(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	taskFile := filepath.Join(tasksDir, "inbox.md")
+	svc := TaskService{TaskFilePath: taskFile, TasksDir: tasksDir}
+
+	due := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	if err := svc.AddTask(AddTaskInput{Text: "ship it", Due: &due}); err != nil {
+		t.Fatalf("add task: %v", err)
+	}
+
+	open, err := svc.ListOpenTasks()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("want 1 open task, got %d", len(open))
+	}
+
+	when := time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)
+	if err := svc.RescheduleTask(open[0], &when); err != nil {
+		t.Fatalf("reschedule: %v", err)
+	}
+
+	all, err := vault.ReadTasks(taskFile)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("want 1 task, got %d", len(all))
+	}
+	if all[0].Scheduled == nil || all[0].Scheduled.Format("2006-01-02") != "2026-06-25" {
+		t.Fatalf("scheduled = %v, want 2026-06-25", all[0].Scheduled)
+	}
+	if all[0].Due == nil || all[0].Due.Format("2006-01-02") != "2026-06-30" {
+		t.Fatalf("due should be untouched, got %v", all[0].Due)
+	}
+}
+
+// TestRescheduleTask_Clear: a nil date clears the scheduled marker.
+func TestRescheduleTask_Clear(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	taskFile := filepath.Join(tasksDir, "inbox.md")
+	svc := TaskService{TaskFilePath: taskFile, TasksDir: tasksDir}
+
+	sched := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	if err := svc.AddTask(AddTaskInput{Text: "later", Scheduled: &sched}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	open, err := svc.ListOpenTasks()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if err := svc.RescheduleTask(open[0], nil); err != nil {
+		t.Fatalf("reschedule clear: %v", err)
+	}
+	all, err := vault.ReadTasks(taskFile)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if all[0].Scheduled != nil {
+		t.Fatalf("scheduled should be cleared, got %v", all[0].Scheduled)
+	}
+}
+
 func TestAddAndListOpenTasks(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := filepath.Join(dir, "10-tasks")
