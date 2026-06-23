@@ -304,7 +304,91 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	scheduleCmd.Flags().StringVarP(&schedProject, "project", "p", "", "filter candidates by project tag")
 	scheduleCmd.Flags().BoolVar(&schedDryRun, "dry-run", false, "preview changes without writing to the vault")
 
-	taskCmd.AddCommand(addCmd, listCmd, doneCmd, scheduleCmd)
+	var breakdownLevel string
+	var breakdownDryRun bool
+
+	breakdownCmd := &cobra.Command{
+		Use:   "breakdown [fuzzy]",
+		Short: "Break an existing task into AI-proposed subtasks",
+		Long: "Fuzzy-match an existing open task and use the configured LLM to split it\n" +
+			"into individually-implementable subtasks. Shows a picker when more than one\n" +
+			"task matches, and refuses a task that already has subtasks. Proposed subtasks\n" +
+			"require explicit approval before any vault write (--dry-run previews only).",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !ai.ValidLevel(breakdownLevel) {
+				return fmt.Errorf("invalid --level %q (want coarse|normal|fine)", breakdownLevel)
+			}
+
+			tasks, err := svc.ListOpenTasks()
+			if err != nil {
+				return err
+			}
+			if len(tasks) == 0 {
+				fmt.Fprintln(os.Stdout, "No open tasks.")
+				return nil
+			}
+
+			query := ""
+			if len(args) > 0 {
+				query = args[0]
+			}
+			candidates := service.FuzzyMatch(query, tasks)
+			if len(candidates) == 0 {
+				fmt.Fprintf(os.Stdout, "No tasks match %q.\n", query)
+				return nil
+			}
+
+			var parent domain.Task
+			if len(candidates) == 1 && query != "" {
+				parent = candidates[0]
+			} else {
+				title := "Select a task to break down"
+				if query != "" {
+					title = fmt.Sprintf("Tasks matching %q", query)
+				}
+				picked, err := tui.PickTasks(title, candidates)
+				if err != nil {
+					return err
+				}
+				if len(picked) == 0 {
+					fmt.Fprintln(os.Stdout, "Aborted.")
+					return nil
+				}
+				// breakdown targets a single parent; if several were ticked,
+				// take the first and say so rather than silently dropping them.
+				parent = picked[0]
+				if len(picked) > 1 {
+					fmt.Fprintf(os.Stdout, "Multiple selected; breaking down only %q.\n", parent.Text)
+				}
+			}
+
+			// Refuse to re-break a task that already has subtasks; the guard
+			// keeps breakdown idempotent and avoids duplicate children.
+			kids, err := svc.SubtasksOf(parent.ID)
+			if err != nil {
+				return err
+			}
+			if len(kids) > 0 {
+				fmt.Fprintf(os.Stdout, "%q already has %d subtask(s); leaving it unchanged.\n", parent.Text, len(kids))
+				return nil
+			}
+
+			// Echo the resolved target before the (billable) LLM round-trip so a
+			// mis-match is caught before any AI call.
+			fmt.Fprintf(os.Stdout, "Breaking down: %s\n", parent.Text)
+
+			llm, model, err := buildLLM("", "")
+			if err != nil {
+				return err
+			}
+			return breakdownFn(svc, parent, breakdownLevel, llm, model, breakdownDryRun, os.Stdin, os.Stdout)
+		},
+	}
+	breakdownCmd.Flags().StringVarP(&breakdownLevel, "level", "l", ai.DefaultBreakdownLevel, "breakdown granularity: coarse|normal|fine")
+	breakdownCmd.Flags().BoolVar(&breakdownDryRun, "dry-run", false, "preview proposed subtasks without writing to the vault")
+
+	taskCmd.AddCommand(addCmd, listCmd, doneCmd, scheduleCmd, breakdownCmd)
 	return taskCmd
 }
 
