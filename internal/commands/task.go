@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"qi/internal/ai"
 	"qi/internal/config"
 	"qi/internal/domain"
 	"qi/internal/service"
@@ -32,6 +33,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	var due string
 	var schedule string
 	var repeat string
+	var breakdown string
 
 	addCmd := &cobra.Command{
 		Use:   "add <text>",
@@ -70,13 +72,35 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				tag = client
 			}
 
-			return svc.AddTask(service.AddTaskInput{
+			input := service.AddTaskInput{
 				Text:       args[0],
 				Project:    tag,
 				Due:        parsedDue,
 				Scheduled:  parsedSchedule,
 				Recurrence: repeat,
-			})
+			}
+
+			// --breakdown opts into an AI subtask split. Without it, add stays
+			// on its zero-AI hot path (byte-for-byte unchanged). With it, the
+			// base task is created first (so it persists even if the AI is
+			// unreachable), then its proposed subtasks are confirmation-gated
+			// before any are written.
+			if !cmd.Flags().Changed("breakdown") {
+				return svc.AddTask(input)
+			}
+			if !ai.ValidLevel(breakdown) {
+				return fmt.Errorf("invalid --breakdown level %q (want coarse|normal|fine)", breakdown)
+			}
+			llm, model, err := buildLLM("", "")
+			if err != nil {
+				return err
+			}
+			parent, err := svc.CreateTask(input)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stdout, "Added: %s\n", parent.Text)
+			return breakdownFn(svc, parent, breakdown, llm, model, false, os.Stdin, os.Stdout)
 		},
 	}
 	addCmd.Flags().StringVarP(&project, "project", "p", "", "project tag")
@@ -84,6 +108,10 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd.Flags().StringVarP(&due, "due", "d", "", "due date (YYYY-MM-DD)")
 	addCmd.Flags().StringVarP(&schedule, "schedule", "s", "", "scheduled date (YYYY-MM-DD)")
 	addCmd.Flags().StringVarP(&repeat, "repeat", "r", "", "recurrence rule, e.g. \"every week\"")
+	addCmd.Flags().StringVar(&breakdown, "breakdown", "", "AI-split the task into subtasks at an optional level (coarse|normal|fine; default normal)")
+	// NoOptDefVal lets `--breakdown` (no value) resolve to the default level
+	// while `--breakdown=fine` sets an explicit one.
+	addCmd.Flags().Lookup("breakdown").NoOptDefVal = ai.DefaultBreakdownLevel
 
 	var listProject, listStatus, listDate, listBefore, listAfter string
 

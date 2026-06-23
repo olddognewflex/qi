@@ -290,6 +290,78 @@ func TestParseFormat_ForeignRefNotManaged(t *testing.T) {
 	}
 }
 
+// TestParseFormat_ParentRoundTrip: a child line carrying [parent:: qi-…] parses
+// to a populated ParentID and re-emits byte-identically, with the parent link
+// in its canonical slot (after ✅ done-date, before the trailing ^qi-id).
+func TestParseFormat_ParentRoundTrip(t *testing.T) {
+	const line = "- [ ] Cut changelog #qi ⏳ 2026-06-25 [parent:: qi-1a2b3c4d] ^qi-9f8e7d6c"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.ParentID != "qi-1a2b3c4d" {
+		t.Fatalf("ParentID: got %q want %q", task.ParentID, "qi-1a2b3c4d")
+	}
+	if task.ID != "qi-9f8e7d6c" {
+		t.Fatalf("ID: got %q want %q", task.ID, "qi-9f8e7d6c")
+	}
+	// The parent link must not leak into Text.
+	if strings.Contains(task.Text, "parent") {
+		t.Fatalf("parent field leaked into Text: %q", task.Text)
+	}
+	out, err := FormatTaskLine(task)
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if out != line {
+		t.Fatalf("round-trip mismatch:\n got  %q\n want %q", out, line)
+	}
+}
+
+// TestParseFormat_ParentWithDoneDate: parent link sits after ✅ done-date and
+// before the ^qi-id on a completed child, and round-trips byte-identically.
+func TestParseFormat_ParentWithDoneDate(t *testing.T) {
+	const line = "- [x] Cut changelog #qi 📅 2026-06-25 ✅ 2026-06-26 [parent:: qi-1a2b3c4d] ^qi-9f8e7d6c"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.ParentID != "qi-1a2b3c4d" {
+		t.Fatalf("ParentID: got %q want %q", task.ParentID, "qi-1a2b3c4d")
+	}
+	out, err := FormatTaskLine(task)
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if out != line {
+		t.Fatalf("round-trip mismatch:\n got  %q\n want %q", out, line)
+	}
+}
+
+// TestParseFormat_ForeignInlineFieldSurvives: a foreign Dataview inline field
+// (not parent::) is left untouched in Text and survives the round-trip, while a
+// non-qi ^ref is preserved — guarding invariant #4.
+func TestParseFormat_ForeignInlineFieldSurvives(t *testing.T) {
+	const line = "- [ ] Do the thing [priority:: high] ^myref"
+	task, ok, err := ParseTaskLine(line)
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.ParentID != "" {
+		t.Fatalf("expected empty ParentID, got %q", task.ParentID)
+	}
+	if !strings.Contains(task.Text, "[priority:: high]") {
+		t.Fatalf("foreign inline field stripped from Text: %q", task.Text)
+	}
+	out, err := FormatTaskLine(task)
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	if out != line {
+		t.Fatalf("round-trip mismatch:\n got  %q\n want %q", out, line)
+	}
+}
+
 // --- Phase 2: ID minting + ID-based update tests ---
 
 // TestMintID: returned string matches "qi-" + 8 lowercase hex chars and is

@@ -52,6 +52,7 @@ type AddTaskInput struct {
 	Due        *time.Time
 	Scheduled  *time.Time
 	Recurrence string // optional; raw Obsidian rule text without 🔁
+	ParentID   string // optional; parent task's qi id for subtasks ([parent:: …])
 	ID         string // optional; if set, used instead of vault.MintID()
 }
 
@@ -106,6 +107,7 @@ func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
 		Due:        input.Due,
 		Scheduled:  input.Scheduled,
 		Recurrence: strings.TrimSpace(input.Recurrence),
+		ParentID:   strings.TrimSpace(input.ParentID),
 	}
 
 	path := s.TaskFilePath

@@ -101,13 +101,32 @@ func newAIRunCommand() *cobra.Command {
 }
 
 // buildPlanner picks an ai.Provider based on, in priority order:
-//   1. --provider flag
-//   2. QI_AI_PROVIDER env var
-//   3. [ai].provider in config.toml
-//   4. anthropic (final default)
+//  1. --provider flag
+//  2. QI_AI_PROVIDER env var
+//  3. [ai].provider in config.toml
+//  4. anthropic (final default)
+//
 // Model selection follows the same priority chain via flag → config →
 // provider default.
 func buildPlanner(c *client.Client, providerFlag, modelFlag string) (*ai.Planner, error) {
+	llm, model, err := buildLLM(providerFlag, modelFlag)
+	if err != nil {
+		return nil, err
+	}
+	p := ai.NewWithLLM(c, llm)
+	if model != "" {
+		p.SetModel(model)
+	}
+	return p, nil
+}
+
+// buildLLM resolves an ai.LLM provider and its model from (in priority order)
+// the flag, the QI_AI_PROVIDER env var, the [ai] config section, then the
+// anthropic default. It does NOT touch qid, so non-planner AI paths (e.g.
+// `qi task add --breakdown`) can reuse the same provider selection without a
+// daemon. The returned model may be empty, in which case the provider applies
+// its own default.
+func buildLLM(providerFlag, modelFlag string) (ai.LLM, string, error) {
 	cfg, _ := config.Load()
 	prov := strings.ToLower(strings.TrimSpace(providerFlag))
 	if prov == "" {
@@ -119,31 +138,24 @@ func buildPlanner(c *client.Client, providerFlag, modelFlag string) (*ai.Planner
 
 	model := modelFlag
 
-	var llm ai.LLM
 	switch ai.Provider(prov) {
 	case ai.ProviderOllama:
 		url := os.Getenv("OLLAMA_URL")
 		if url == "" {
 			url = cfg.AI.OllamaURL
 		}
-		llm = ai.NewOllamaProvider(url, nil)
 		if model == "" {
 			model = cfg.AI.OllamaModel
 		}
+		return ai.NewOllamaProvider(url, nil), model, nil
 	case ai.ProviderAnthropic, "":
-		llm = ai.NewAnthropicProvider(os.Getenv("ANTHROPIC_API_KEY"))
 		if model == "" {
 			model = cfg.AI.Model
 		}
+		return ai.NewAnthropicProvider(os.Getenv("ANTHROPIC_API_KEY")), model, nil
 	default:
-		return nil, fmt.Errorf("unknown ai provider %q (want anthropic|ollama)", prov)
+		return nil, "", fmt.Errorf("unknown ai provider %q (want anthropic|ollama)", prov)
 	}
-
-	p := ai.NewWithLLM(c, llm)
-	if model != "" {
-		p.SetModel(model)
-	}
-	return p, nil
 }
 
 func joinArgs(args []string) string {

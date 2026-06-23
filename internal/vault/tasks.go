@@ -25,8 +25,12 @@ var (
 	// next field/tag emoji (#, 📅, ⏳, ✅, 🔁), a block-ref caret, or end of line.
 	recurrenceRe = regexp.MustCompile(`🔁\s*([^#📅⏳✅🔁\^\n]+)`)
 	tagRe        = regexp.MustCompile(`#([A-Za-z0-9_\-\/]+)`)
-	idRe         = regexp.MustCompile(`\^(qi-[0-9a-f]{8})\s*$`)
-	anyBlockRe   = regexp.MustCompile(`\^[A-Za-z0-9_-]+\s*$`)
+	// parentRe captures the Dataview inline field linking a child task to its
+	// parent's qi block-ref id, e.g. "[parent:: qi-1a2b3c4d]". Extracted before
+	// tag parsing so it never leaks into Text/Tags. See docs/subtasks-design.md.
+	parentRe   = regexp.MustCompile(`\[parent::\s*(qi-[0-9a-f]{8})\]`)
+	idRe       = regexp.MustCompile(`\^(qi-[0-9a-f]{8})\s*$`)
+	anyBlockRe = regexp.MustCompile(`\^[A-Za-z0-9_-]+\s*$`)
 )
 
 // MintID returns a new unique task ID of the form "qi-" + 8 lowercase hex chars.
@@ -98,6 +102,15 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 		content = strings.TrimSpace(recurrenceRe.ReplaceAllString(content, ""))
 	}
 
+	// Extract the [parent:: qi-…] inline field before tag parsing so the link
+	// never leaks into Text. An unknown/dangling parent id is preserved as-is —
+	// the parent may live in another file or be created later (never auto-drop).
+	parentID := ""
+	if m := parentRe.FindStringSubmatch(content); len(m) == 2 {
+		parentID = m[1]
+		content = strings.TrimSpace(parentRe.ReplaceAllString(content, ""))
+	}
+
 	tags := make([]string, 0)
 	project := ""
 	for _, m := range tagRe.FindAllStringSubmatch(content, -1) {
@@ -117,6 +130,7 @@ func ParseTaskLine(line string) (domain.Task, bool, error) {
 		Due:         due,
 		Scheduled:   scheduled,
 		Recurrence:  recurrence,
+		ParentID:    parentID,
 		Completed:   completed,
 		CompletedAt: completedAt,
 	}, true, nil
@@ -184,6 +198,13 @@ func FormatTaskLine(task domain.Task) (string, error) {
 	// the task carries a completion date (CompleteTask stamps it).
 	if task.CompletedAt != nil {
 		parts = append(parts, "✅ "+task.CompletedAt.Format("2006-01-02"))
+	}
+
+	// Subtask link: the parent's qi id as a Dataview inline field. Canonical
+	// slot is after ✅ done-date and before the trailing ^qi-id block ref (which
+	// must stay last, anchored by idRe's `$`). See docs/subtasks-design.md.
+	if task.ParentID != "" {
+		parts = append(parts, "[parent:: "+task.ParentID+"]")
 	}
 
 	// Append qi block-ref ID as the very last token when the task carries one.
