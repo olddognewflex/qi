@@ -479,3 +479,47 @@ func TestListAllTasks_SkipsSyncConflicts(t *testing.T) {
 		t.Fatalf("unexpected task: %q", all[0].Text)
 	}
 }
+
+// TestSubtasksOf verifies that SubtasksOf returns only the children linked to a
+// parent via ParentID, ignores unrelated tasks, and returns nothing for an
+// empty parent id.
+func TestSubtasksOf(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	taskFile := filepath.Join(tasksDir, "inbox.md")
+	svc := TaskService{TaskFilePath: taskFile, TasksDir: tasksDir}
+
+	parent, err := svc.CreateTask(AddTaskInput{Text: "Ship release"})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	for _, child := range []string{"Cut changelog", "Tag v2"} {
+		if _, err := svc.CreateTask(AddTaskInput{Text: child, ParentID: parent.ID}); err != nil {
+			t.Fatalf("create child %q: %v", child, err)
+		}
+	}
+	// An unrelated top-level task must not be counted.
+	if _, err := svc.CreateTask(AddTaskInput{Text: "Unrelated"}); err != nil {
+		t.Fatalf("create unrelated: %v", err)
+	}
+
+	kids, err := svc.SubtasksOf(parent.ID)
+	if err != nil {
+		t.Fatalf("SubtasksOf: %v", err)
+	}
+	if len(kids) != 2 {
+		t.Fatalf("want 2 subtasks, got %d", len(kids))
+	}
+	for _, k := range kids {
+		if k.ParentID != parent.ID {
+			t.Errorf("child %q ParentID = %q, want %q", k.Text, k.ParentID, parent.ID)
+		}
+	}
+
+	if got, _ := svc.SubtasksOf(""); len(got) != 0 {
+		t.Errorf("empty parent id: want 0, got %d", len(got))
+	}
+	if got, _ := svc.SubtasksOf("qi-deadbeef"); len(got) != 0 {
+		t.Errorf("unknown parent id: want 0, got %d", len(got))
+	}
+}

@@ -241,6 +241,27 @@ func (s TaskService) ListAllTasks() ([]domain.Task, error) {
 	return all, nil
 }
 
+// SubtasksOf returns every task whose ParentID links it to parentID (i.e. the
+// children of the given parent), across all task files. Empty parentID returns
+// nothing. Used by `qi task breakdown` to refuse re-breaking a task that already
+// has subtasks.
+func (s TaskService) SubtasksOf(parentID string) ([]domain.Task, error) {
+	if strings.TrimSpace(parentID) == "" {
+		return nil, nil
+	}
+	all, err := s.ListAllTasks()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Task, 0)
+	for _, t := range all {
+		if t.ParentID == parentID {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (s TaskService) ListOpenTasks() ([]domain.Task, error) {
 	tasks, err := s.ListAllTasks()
 	if err != nil {

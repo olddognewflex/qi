@@ -214,6 +214,91 @@ func TestTaskAdd_BreakdownFlagParsing(t *testing.T) {
 	}
 }
 
+// Command-level: `qi task breakdown <fuzzy>` resolves a single fuzzy match and
+// dispatches it to breakdown with the configured level.
+func TestTaskBreakdown_SingleMatchDispatches(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{TaskFilePath: filepath.Join(dir, "inbox.md")}
+	svc := service.TaskService{TaskFilePath: cfg.TaskFilePath, TasksDir: dir}
+	if _, err := svc.CreateTask(service.AddTaskInput{Text: "Ship release"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var called bool
+	var gotParent domain.Task
+	var gotLevel string
+	orig := breakdownFn
+	breakdownFn = func(_ service.TaskService, parent domain.Task, level string, _ ai.LLM, _ string, _ bool, _ io.Reader, _ io.Writer) error {
+		called, gotParent, gotLevel = true, parent, level
+		return nil
+	}
+	t.Cleanup(func() { breakdownFn = orig })
+
+	cmd := newTaskCommand(cfg)
+	cmd.SetArgs([]string{"breakdown", "ship", "--level", "fine"})
+	cmd.SetOut(&bytes.Buffer{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !called {
+		t.Fatal("breakdown not dispatched for a single match")
+	}
+	if gotParent.Text != "Ship release" {
+		t.Errorf("parent = %q, want %q", gotParent.Text, "Ship release")
+	}
+	if gotLevel != "fine" {
+		t.Errorf("level = %q, want fine", gotLevel)
+	}
+}
+
+// Command-level: a task that already has subtasks is reported and left
+// unchanged — breakdown is never invoked (the already-broken-down guard).
+func TestTaskBreakdown_AlreadyBrokenDownGuard(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{TaskFilePath: filepath.Join(dir, "inbox.md")}
+	svc := service.TaskService{TaskFilePath: cfg.TaskFilePath, TasksDir: dir}
+	parent, err := svc.CreateTask(service.AddTaskInput{Text: "Ship release"})
+	if err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	if _, err := svc.CreateTask(service.AddTaskInput{Text: "Cut changelog", ParentID: parent.ID}); err != nil {
+		t.Fatalf("seed child: %v", err)
+	}
+
+	var called bool
+	orig := breakdownFn
+	breakdownFn = func(_ service.TaskService, _ domain.Task, _ string, _ ai.LLM, _ string, _ bool, _ io.Reader, _ io.Writer) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { breakdownFn = orig })
+
+	var out bytes.Buffer
+	cmd := newTaskCommand(cfg)
+	cmd.SetArgs([]string{"breakdown", "ship release"})
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if called {
+		t.Fatal("breakdown invoked on a task that already has subtasks")
+	}
+}
+
+// Command-level: an invalid --level is rejected before any matching or write.
+func TestTaskBreakdown_InvalidLevel(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Config{TaskFilePath: filepath.Join(dir, "inbox.md")}
+	cmd := newTaskCommand(cfg)
+	cmd.SetArgs([]string{"breakdown", "x", "--level", "deep"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "invalid --level") {
+		t.Fatalf("expected invalid-level error, got %v", err)
+	}
+}
+
 // A parent with no ID cannot be broken down (subtasks would have no link).
 func TestRunBreakdown_NoParentID(t *testing.T) {
 	svc, _ := newBreakdownFixture(t)
