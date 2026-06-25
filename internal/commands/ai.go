@@ -147,7 +147,7 @@ func buildLLM(providerFlag, modelFlag string) (ai.LLM, string, error) {
 		if model == "" {
 			model = cfg.AI.OllamaModel
 		}
-		return ai.NewOllamaProvider(url, nil), model, nil
+		return ai.NewOllamaProvider(url, os.Getenv("OLLAMA_API_KEY"), nil), model, nil
 	case ai.ProviderAnthropic, "":
 		if model == "" {
 			model = cfg.AI.Model

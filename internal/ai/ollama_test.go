@@ -32,7 +32,7 @@ func TestOllamaGenerateRequestShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOllamaProvider(srv.URL, nil)
+	p := NewOllamaProvider(srv.URL, "", nil)
 	resp, err := p.Generate(context.Background(), GenerateRequest{
 		Model:  "qwen3:14b",
 		System: "you are friendly",
@@ -92,7 +92,7 @@ func TestOllamaParsesToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOllamaProvider(srv.URL, nil)
+	p := NewOllamaProvider(srv.URL, "", nil)
 	resp, err := p.Generate(context.Background(), GenerateRequest{
 		Model:    "qwen3:14b",
 		Messages: []Message{{Role: RoleUser, Text: "capture hi"}},
@@ -121,7 +121,7 @@ func TestOllamaErrorPropagated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOllamaProvider(srv.URL, nil)
+	p := NewOllamaProvider(srv.URL, "", nil)
 	_, err := p.Generate(context.Background(), GenerateRequest{
 		Messages: []Message{{Role: RoleUser, Text: "hi"}},
 	})
@@ -143,7 +143,7 @@ func TestOllamaToolResultRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewOllamaProvider(srv.URL, nil)
+	p := NewOllamaProvider(srv.URL, "", nil)
 	_, err := p.Generate(context.Background(), GenerateRequest{
 		Messages: []Message{
 			{Role: RoleUser, Text: "capture please"},
@@ -172,5 +172,37 @@ func TestOllamaToolResultRoundTrip(t *testing.T) {
 	}
 	if got.Messages[2].Content != `{"path":"/tmp/a.md"}` {
 		t.Errorf("tool content = %q", got.Messages[2].Content)
+	}
+}
+
+func TestOllamaAuthHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		apiKey string
+		want   string
+	}{
+		{"cloud sends bearer", "secret-key", "Bearer secret-key"},
+		{"local sends none", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`))
+			}))
+			defer srv.Close()
+
+			p := NewOllamaProvider(srv.URL, tc.apiKey, nil)
+			if _, err := p.Generate(context.Background(), GenerateRequest{
+				Messages: []Message{{Role: RoleUser, Text: "hi"}},
+			}); err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Authorization = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

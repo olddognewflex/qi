@@ -24,19 +24,22 @@ const DefaultOllamaModel = "qwen3:14b"
 // this provider fabricates them on receive and drops them on send.
 type OllamaProvider struct {
 	baseURL string
+	apiKey  string
 	http    *http.Client
 }
 
 // NewOllamaProvider constructs a provider against baseURL. Pass "" to use
-// DefaultOllamaURL.
-func NewOllamaProvider(baseURL string, httpClient *http.Client) *OllamaProvider {
+// DefaultOllamaURL. apiKey is sent as an Authorization: Bearer header when
+// non-empty (required by Ollama Cloud at https://ollama.com); leave it empty
+// for a local daemon, which needs no auth.
+func NewOllamaProvider(baseURL, apiKey string, httpClient *http.Client) *OllamaProvider {
 	if baseURL == "" {
 		baseURL = DefaultOllamaURL
 	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &OllamaProvider{baseURL: baseURL, http: httpClient}
+	return &OllamaProvider{baseURL: baseURL, apiKey: apiKey, http: httpClient}
 }
 
 type ollamaToolWrapper struct {
@@ -158,6 +161,9 @@ func (p *OllamaProvider) Generate(ctx context.Context, req GenerateRequest) (*Ge
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
 
 	resp, err := p.http.Do(httpReq)
 	if err != nil {

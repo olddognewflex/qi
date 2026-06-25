@@ -259,7 +259,7 @@ func newSessionID() string {
 func ProviderFromEnv() LLM {
 	switch Provider(os.Getenv("QI_AI_PROVIDER")) {
 	case ProviderOllama:
-		return NewOllamaProvider(os.Getenv("OLLAMA_URL"), nil)
+		return NewOllamaProvider(os.Getenv("OLLAMA_URL"), os.Getenv("OLLAMA_API_KEY"), nil)
 	default:
 		return NewAnthropicProvider(os.Getenv("ANTHROPIC_API_KEY"))
 	}
