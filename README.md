@@ -305,7 +305,7 @@ env     = { GITHUB_TOKEN = "..." }
 [ai]
 provider     = "anthropic"          # or "ollama"
 model        = "claude-sonnet-4-6"  # used when provider=anthropic
-ollama_url   = "http://localhost:11434"
+ollama_url   = "http://localhost:11434"  # Ollama Cloud: "https://ollama.com" + export OLLAMA_API_KEY
 ollama_model = "qwen3:14b"
 
 # --- Opt-in local semantic search (`qi embed` / `qi search --semantic`) ---
@@ -370,7 +370,8 @@ A project's optional `path` is a base subdirectory within the vault: relative `t
 | `QI_TASK_FILE_PATH` | Override task file path |
 | `QI_AI_PROVIDER`    | `anthropic` or `ollama` (overrides `[ai].provider`) |
 | `ANTHROPIC_API_KEY` | Anthropic API key for `qi ai run` |
-| `OLLAMA_URL`        | Override Ollama base URL (default `http://localhost:11434`) |
+| `OLLAMA_URL`        | Override Ollama base URL (default `http://localhost:11434`; Ollama Cloud `https://ollama.com`) |
+| `OLLAMA_API_KEY`    | Bearer key for Ollama Cloud (`qi ai run`); leave unset for a local daemon |
 | `QI_QUEUE_TOKEN`    | Drain token for the cloud queue (preferred over config) |
 
 App Password (CalDAV): Google Account → Security → 2-Step Verification → App passwords. ⚠️ Plaintext — `chmod 600 ~/.config/qi/config.toml`, or skip the `password` key and store it in the macOS keychain instead with `qi calendar caldav-passwd <name>`.
