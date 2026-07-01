@@ -230,7 +230,8 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 		Short: "(Re)schedule task(s) to a date",
 		Long: "Set the scheduled date (⏳) of one or more open tasks. With one argument\n" +
 			"the date applies via the picker; with two, the first fuzzy-matches tasks.\n" +
-			"Date accepts YYYY-MM-DD, \"today\", \"tomorrow\", or \"+Nd\".",
+			"Date accepts YYYY-MM-DD, \"today\", \"tomorrow\", or \"+Nd\".\n" +
+			"\"+Nd\" offsets from each task's existing scheduled date (or today if unscheduled).",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := ""
@@ -240,7 +241,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				dateArg = args[1]
 			}
 
-			when, err := parseScheduleDate(dateArg)
+			spec, err := parseScheduleSpec(dateArg)
 			if err != nil {
 				return err
 			}
@@ -285,18 +286,16 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				}
 			}
 
-			target := when.Format("2006-01-02")
 			if schedDryRun {
 				for _, t := range picked {
-					fmt.Fprintf(os.Stdout, "would schedule: %s -> %s\n", t.Text, target)
+					fmt.Fprintf(os.Stdout, "would schedule: %s -> %s\n", t.Text, spec.resolve(t).Format("2006-01-02"))
 				}
 				fmt.Fprintf(os.Stdout, "\n%d task(s) would be rescheduled (dry-run, no writes)\n", len(picked))
 				return nil
 			}
 
-			rescheduled := rescheduleTasks(svc, picked, when)
-			for _, t := range rescheduled {
-				fmt.Fprintf(os.Stdout, "⏳ Scheduled %s: %s\n", target, t.Text)
+			for _, r := range rescheduleTasks(svc, picked, spec) {
+				fmt.Fprintf(os.Stdout, "⏳ Scheduled %s: %s\n", r.date.Format("2006-01-02"), r.task.Text)
 			}
 			return nil
 		},
@@ -392,17 +391,24 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	return taskCmd
 }
 
-// rescheduleTasks sets the scheduled date of each task, skipping (with a stderr
-// note) any that fail to write, and returns those successfully rescheduled.
-func rescheduleTasks(svc service.TaskService, tasks []domain.Task, when time.Time) []domain.Task {
-	done := make([]domain.Task, 0, len(tasks))
+// rescheduled pairs a successfully rescheduled task with its resolved date.
+type rescheduled struct {
+	task domain.Task
+	date time.Time
+}
+
+// rescheduleTasks sets each task's scheduled date to spec.resolve(task),
+// skipping (with a stderr note) any that fail to write, and returns those
+// successfully rescheduled with the concrete date applied.
+func rescheduleTasks(svc service.TaskService, tasks []domain.Task, spec scheduleSpec) []rescheduled {
+	done := make([]rescheduled, 0, len(tasks))
 	for _, t := range tasks {
-		w := when
+		w := spec.resolve(t)
 		if err := svc.RescheduleTask(t, &w); err != nil {
 			fmt.Fprintf(os.Stderr, "skip %q: %v\n", t.Text, err)
 			continue
 		}
-		done = append(done, t)
+		done = append(done, rescheduled{task: t, date: w})
 	}
 	return done
 }
@@ -419,29 +425,64 @@ func filterByProject(tasks []domain.Task, name string) []domain.Task {
 	return out
 }
 
-// parseScheduleDate parses a user date: YYYY-MM-DD, "today", "tomorrow", or "+Nd"
-// (N days from today). Times are local; the time-of-day is zeroed.
-func parseScheduleDate(s string) (time.Time, error) {
+// scheduleSpec is a parsed schedule target. When relative is true the target
+// is offsetDays from a task's existing scheduled date (falling back to today
+// when the task is unscheduled); otherwise abs holds an absolute date.
+type scheduleSpec struct {
+	abs        time.Time
+	relative   bool
+	offsetDays int
+}
+
+// resolve computes the concrete scheduled date for a task. Absolute specs
+// ignore the task; relative ("+Nd") specs offset from the task's current
+// scheduled date, or today when it has none. Time-of-day is zeroed (local).
+func (s scheduleSpec) resolve(t domain.Task) time.Time {
+	if !s.relative {
+		return s.abs
+	}
+	now := time.Now()
+	base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	if t.Scheduled != nil {
+		sd := t.Scheduled.In(time.Local)
+		base = time.Date(sd.Year(), sd.Month(), sd.Day(), 0, 0, 0, 0, time.Local)
+	}
+	return base.AddDate(0, 0, s.offsetDays)
+}
+
+// parseScheduleSpec parses a user date: YYYY-MM-DD, "today", "tomorrow", or
+// "+Nd". Times are local; the time-of-day is zeroed.
+func parseScheduleSpec(s string) (scheduleSpec, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	switch s {
 	case "today":
-		return today, nil
+		return scheduleSpec{abs: today}, nil
 	case "tomorrow":
-		return today.AddDate(0, 0, 1), nil
+		return scheduleSpec{abs: today.AddDate(0, 0, 1)}, nil
 	}
 	if strings.HasPrefix(s, "+") && strings.HasSuffix(s, "d") {
 		n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(s, "+"), "d"))
 		if err == nil {
-			return today.AddDate(0, 0, n), nil
+			return scheduleSpec{relative: true, offsetDays: n}, nil
 		}
 	}
 	parsed, err := time.ParseInLocation("2006-01-02", s, time.Local)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid date %q: use YYYY-MM-DD, today, tomorrow, or +Nd", s)
+		return scheduleSpec{}, fmt.Errorf("invalid date %q: use YYYY-MM-DD, today, tomorrow, or +Nd", s)
 	}
-	return parsed, nil
+	return scheduleSpec{abs: parsed}, nil
+}
+
+// parseScheduleDate resolves a date spec against an unscheduled task (i.e.
+// "+Nd" is N days from today). Retained for callers/tests wanting a plain date.
+func parseScheduleDate(s string) (time.Time, error) {
+	spec, err := parseScheduleSpec(s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return spec.resolve(domain.Task{}), nil
 }
 
 func completeTasks(svc service.TaskService, tasks []domain.Task) []domain.Task {
