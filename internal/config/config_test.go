@@ -399,6 +399,79 @@ func TestLoadFrom_EmbeddingsDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFrom_VdirCalendars(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[[vdir_calendars]]
+name = "work"
+path = "/srv/calendars/work"
+
+[[vdir_calendars]]
+name = "synced"
+path = "~/.local/share/vdirsyncer/calendars"
+discover = true
+
+[[vdir_calendars]]
+name = "no-path"
+
+[[vdir_calendars]]
+path = "/srv/calendars/nameless"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Entries missing name or path are skipped, like the other calendar kinds.
+	if len(cfg.VdirCalendars) != 2 {
+		t.Fatalf("len(VdirCalendars) = %d, want 2", len(cfg.VdirCalendars))
+	}
+
+	home, _ := os.UserHomeDir()
+	tests := []struct {
+		name     string
+		path     string
+		discover bool
+	}{
+		{"work", "/srv/calendars/work", false},
+		{"synced", filepath.Join(home, ".local/share/vdirsyncer/calendars"), true},
+	}
+	for i, tt := range tests {
+		got := cfg.VdirCalendars[i]
+		if got.Name != tt.name {
+			t.Errorf("VdirCalendars[%d].Name = %q, want %q", i, got.Name, tt.name)
+		}
+		if got.Path != tt.path {
+			t.Errorf("VdirCalendars[%d].Path = %q, want %q", i, got.Path, tt.path)
+		}
+		if got.Discover != tt.discover {
+			t.Errorf("VdirCalendars[%d].Discover = %v, want %v", i, got.Discover, tt.discover)
+		}
+	}
+}
+
+func TestLoadFrom_VdirCalendarsAbsent(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `vault_path = "/tmp/vault"`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.VdirCalendars) != 0 {
+		t.Errorf("len(VdirCalendars) = %d, want 0", len(cfg.VdirCalendars))
+	}
+}
+
 func TestConfigPath_XDGEnvVar(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 
