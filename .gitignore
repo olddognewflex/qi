@@ -19,6 +19,9 @@ vendor/
 go.work
 go.work.sum
 
+# direnv — holds live credentials (OLLAMA_API_KEY)
+.envrc
+
 # Build cache
 .cache/
 
