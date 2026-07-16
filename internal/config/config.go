@@ -25,6 +25,15 @@ type CalDAVCalendar struct {
 	Path     string
 }
 
+// VdirCalendar is a vdir-format calendar on disk, as synced by vdirsyncer.
+// Path is a single collection directory, or — when Discover is set — a root
+// holding one directory per collection (khal's `type = discover`).
+type VdirCalendar struct {
+	Name     string
+	Path     string
+	Discover bool
+}
+
 type GoogleOAuth struct {
 	ClientID     string
 	ClientSecret string
@@ -141,6 +150,7 @@ type Config struct {
 	DailyFileFormat string
 	ICSCalendars    []ICSCalendar
 	CalDAVCalendars []CalDAVCalendar
+	VdirCalendars   []VdirCalendar
 	GoogleOAuth     GoogleOAuth
 	GoogleCalendars []GoogleCalendar
 	MCPServers      []MCPServer
@@ -166,6 +176,12 @@ type caldavCalTOML struct {
 	Email    string `toml:"email"` // alias for username (legacy Google-only configs)
 	Password string `toml:"password"`
 	Path     string `toml:"path"`
+}
+
+type vdirCalTOML struct {
+	Name     string `toml:"name"`
+	Path     string `toml:"path"`
+	Discover bool   `toml:"discover"` // path is a root of collections, not one collection
 }
 
 type googleOAuthTOML struct {
@@ -248,6 +264,7 @@ type tomlFile struct {
 	DailyFileFormat string          `toml:"daily_file_format"`
 	ICSCalendars    []icsCalTOML    `toml:"ics_calendars"`
 	CalDAVCalendars []caldavCalTOML `toml:"caldav_calendars"`
+	VdirCalendars   []vdirCalTOML   `toml:"vdir_calendars"`
 	GoogleOAuth     googleOAuthTOML `toml:"google_oauth"`
 	GoogleCalendars []googleCalTOML `toml:"google_calendars"`
 	MCPServers      []mcpServerTOML `toml:"mcp_servers"`
@@ -354,6 +371,18 @@ func LoadFrom(path string) (Config, error) {
 			Username: username,
 			Password: c.Password, // may be empty; resolved at runtime via keychain
 			Path:     c.Path,
+		})
+	}
+
+	vdirCalendars := make([]VdirCalendar, 0, len(raw.VdirCalendars))
+	for _, c := range raw.VdirCalendars {
+		if c.Name == "" || c.Path == "" {
+			continue
+		}
+		vdirCalendars = append(vdirCalendars, VdirCalendar{
+			Name:     c.Name,
+			Path:     expandUserPath(c.Path),
+			Discover: c.Discover,
 		})
 	}
 
@@ -517,6 +546,7 @@ func LoadFrom(path string) (Config, error) {
 		DailyFileFormat: dailyFileFormat,
 		ICSCalendars:    icsCalendars,
 		CalDAVCalendars: caldavCalendars,
+		VdirCalendars:   vdirCalendars,
 		GoogleOAuth: GoogleOAuth{
 			ClientID:     raw.GoogleOAuth.ClientID,
 			ClientSecret: raw.GoogleOAuth.ClientSecret,
@@ -756,6 +786,23 @@ func (c Config) DailyNotePath(day time.Time) string {
 		resolveDateFormat(c.DailyDirFormat, day),
 		resolveDateFormat(c.DailyFileFormat, day)+".md",
 	)
+}
+
+// expandUserPath resolves a leading ~ against the home dir and makes the result
+// absolute, so a config path is usable regardless of the process working dir.
+func expandUserPath(path string) string {
+	if path == "" {
+		return path
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+		}
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 func DataDir() string {

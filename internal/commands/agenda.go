@@ -79,6 +79,22 @@ func buildAgendaService(cfg config.Config) service.AgendaService {
 		})
 	}
 
+	for _, cal := range cfg.VdirCalendars {
+		if !cal.Discover {
+			providers = append(providers, calendar.VdirProvider{
+				CalName: cal.Name,
+				Path:    cal.Path,
+			})
+			continue
+		}
+		discovered, err := calendar.DiscoverVdir(cal.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skipping vdir %q: %v\n", cal.Name, err)
+			continue
+		}
+		providers = append(providers, discovered...)
+	}
+
 	if cfg.GoogleOAuth.ClientID != "" && cfg.GoogleOAuth.ClientSecret != "" {
 		oauthCfg := calendar.GoogleOAuthConfig(cfg.GoogleOAuth.ClientID, cfg.GoogleOAuth.ClientSecret, "")
 		for _, cal := range cfg.GoogleCalendars {
