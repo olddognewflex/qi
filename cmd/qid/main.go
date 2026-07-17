@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 	"qi/internal/calendar"
 	"qi/internal/config"
 	"qi/internal/daemon"
+	daemonclient "qi/internal/daemon/client"
 	"qi/internal/domain"
 	"qi/internal/index"
 	"qi/internal/mcp"
@@ -32,6 +34,17 @@ import (
 	"qi/internal/tools/builtin"
 	"qi/internal/watcher"
 )
+
+// walkPatience bounds how long the watcher's vault dir enumeration may run
+// before qid flags it Blocked and logs remediation. Ten seconds is orders of
+// magnitude past an honest local walk (tens of dirs, stat-only) — exceeding it
+// means an open(2) is stuck, not slow.
+const walkPatience = 10 * time.Second
+
+// tccRemedy is the operator-facing hint for the launchd/TCC hang (issue #47).
+const tccRemedy = "vault dir open is stuck; under launchd this usually means qid lacks the macOS " +
+	"Files-and-Folders/Full Disk Access grant for the vault (re-granted binaries lose it on rebuild) — " +
+	"grant it in System Settings > Privacy & Security, then restart qid"
 
 func main() {
 	if err := run(); err != nil {
@@ -159,10 +172,45 @@ func run() error {
 	// sync reconcile; any main-vault markdown change upserts/deletes its single
 	// FTS row so `qi search` stays fresh without a manual `qi index rebuild`
 	// (issue #44).
+	// The entire setup — including the VaultDirs walk — runs OFF the startup
+	// path. A dir open can block indefinitely on this walk (TCC authorization
+	// for ~/Documents under launchd, iCloud-evicted dirs), and a wedged watcher
+	// must never keep qid from serving RPC. watcherStatus tracks the lifecycle
+	// for the `status` RPC, so `qi doctor` can tell a live watcher from one
+	// stuck awaiting a privacy grant — the socket dial alone provably cannot
+	// (a listening socket accepts from the kernel backlog pre-Serve).
+	watcherStatus := watcher.NewStatus()
 	if cfg.Sync.Watch {
-		taskDirs := watcher.DirsFor(cfg)
-		dirs := unionDirs(taskDirs, watcher.VaultDirs(cfg.VaultPath))
-		if len(dirs) > 0 {
+		watcherStatus.Set(watcher.StateStarting, "enumerating vault dirs")
+		go func() {
+			taskDirs := watcher.DirsFor(cfg)
+
+			// Enumerate with a patience threshold: past it, flag Blocked and log
+			// remediation, then KEEP waiting — the walk completes whenever the
+			// grant lands (or the dir materializes), and the watcher then starts.
+			walked := make(chan []string, 1)
+			go func() { walked <- watcher.VaultDirs(cfg.VaultPath) }()
+			var dirs []string
+			select {
+			case vaultDirs := <-walked:
+				dirs = unionDirs(taskDirs, vaultDirs)
+			case <-time.After(walkPatience):
+				watcherStatus.Set(watcher.StateBlocked, tccRemedy)
+				log.Warn("sync watcher: vault dir enumeration blocked", "after", walkPatience, "hint", tccRemedy)
+				select {
+				case vaultDirs := <-walked:
+					dirs = unionDirs(taskDirs, vaultDirs)
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+			if len(dirs) == 0 {
+				watcherStatus.Set(watcher.StateFailed, "no directories to watch")
+				return
+			}
+
 			debounce := time.Duration(cfg.Sync.DebounceMS) * time.Millisecond
 			w, werr := watcher.New(watcher.Options{
 				Dirs:     dirs,
@@ -171,15 +219,17 @@ func run() error {
 				Log:      log,
 			})
 			if werr != nil {
-				return fmt.Errorf("sync watcher: %w", werr)
+				watcherStatus.Set(watcher.StateFailed, werr.Error())
+				log.Warn("sync watcher: not started", "err", werr)
+				return
 			}
+			watcherStatus.Set(watcher.StateRunning, fmt.Sprintf("watching %d dirs", len(dirs)))
 			log.Info("sync watcher enabled", "dirs", dirs, "debounce_ms", cfg.Sync.DebounceMS)
-			go func() {
-				if err := w.Run(ctx); err != nil {
-					log.Warn("sync watcher stopped", "err", err)
-				}
-			}()
-		}
+			if err := w.Run(ctx); err != nil {
+				watcherStatus.Set(watcher.StateFailed, err.Error())
+				log.Warn("sync watcher stopped", "err", err)
+			}
+		}()
 	}
 
 	// Opt-in morning due-today notifier: when [notify] due_today = true, schedule
@@ -208,6 +258,14 @@ func run() error {
 	}
 
 	server := daemon.NewServer(registry, decider, queue, log)
+	// `status` reports subsystem liveness beyond what a socket dial can prove.
+	// Read-only; no policy gate.
+	server.Register("status", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		state, detail := watcherStatus.Get()
+		return json.Marshal(daemonclient.DaemonStatus{
+			Watcher: daemonclient.WatcherStatus{State: string(state), Detail: detail},
+		})
+	})
 	if err := server.Serve(ctx, ln); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
