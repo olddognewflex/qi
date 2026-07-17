@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -152,15 +153,21 @@ func run() error {
 
 	log.Info("qid listening", "socket", socketPath, "audit", auditPath, "tools", registry.Len())
 
-	// Opt-in fsnotify-driven auto-reconcile: when [sync] watch = true, watch the
-	// vault task dirs and run the existing sync reconcile (debounced) on change.
+	// Opt-in fsnotify-driven auto-reconcile + incremental FTS indexing: when
+	// [sync] watch = true, watch the whole vault tree plus the task projection
+	// dirs (which may live in other vaults). Task-dir changes run the existing
+	// sync reconcile; any main-vault markdown change upserts/deletes its single
+	// FTS row so `qi search` stays fresh without a manual `qi index rebuild`
+	// (issue #44).
 	if cfg.Sync.Watch {
-		if dirs := watcher.DirsFor(cfg); len(dirs) > 0 {
+		taskDirs := watcher.DirsFor(cfg)
+		dirs := unionDirs(taskDirs, watcher.VaultDirs(cfg.VaultPath))
+		if len(dirs) > 0 {
 			debounce := time.Duration(cfg.Sync.DebounceMS) * time.Millisecond
 			w, werr := watcher.New(watcher.Options{
 				Dirs:     dirs,
 				Debounce: debounce,
-				OnChange: makeReconciler(cfg, log),
+				OnChange: makeOnChange(cfg, taskDirs, log),
 				Log:      log,
 			})
 			if werr != nil {
@@ -208,12 +215,45 @@ func run() error {
 	return nil
 }
 
-// makeReconciler builds the watcher's OnChange callback: it opens the index,
-// runs the existing sync.Reconcile (never dry-run), and logs the outcome. The
-// reconcile is idempotent and TOCTOU-guarded, so it is safe to run concurrently
-// with a manual `qi sync`.
-func makeReconciler(cfg config.Config, log *slog.Logger) watcher.ReconcileFunc {
-	return func() {
+// unionDirs merges dir lists into a unique sorted set.
+func unionDirs(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	for _, l := range lists {
+		for _, d := range l {
+			seen[d] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for d := range seen {
+		out = append(out, d)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// makeOnChange builds the watcher's OnChange callback. Two jobs, gated by
+// which paths changed:
+//
+//   - a change in a task dir runs the existing sync.Reconcile (never dry-run) —
+//     gating matters because reconcile reads every canon+projection task file
+//     across ALL vaults, and a mere note save must not trigger reads of other
+//     (possibly iCloud-evicted) vaults' files;
+//   - every changed markdown path inside the MAIN vault gets its single FTS
+//     row upserted (or deleted, when the path is gone). Only main-vault paths:
+//     projection files in client vaults are outside Rebuild's walk, and rows
+//     Rebuild wouldn't recreate must not be planted in the index.
+//
+// The reconcile is idempotent and TOCTOU-guarded, so it is safe to run
+// concurrently with a manual `qi sync`. The FTS upsert reads only files that
+// just produced change events — present on disk, never an eviction stall.
+func makeOnChange(cfg config.Config, taskDirs []string, log *slog.Logger) watcher.OnChangeFunc {
+	inTaskDir := make(map[string]bool, len(taskDirs))
+	for _, d := range taskDirs {
+		inTaskDir[d] = true
+	}
+	vaultPrefix := cfg.VaultPath + string(os.PathSeparator)
+
+	return func(paths []string) {
 		idx, err := index.Open()
 		if err != nil {
 			log.Warn("sync watcher: open index", "err", err)
@@ -221,6 +261,36 @@ func makeReconciler(cfg config.Config, log *slog.Logger) watcher.ReconcileFunc {
 		}
 		defer idx.Close()
 
+		needReconcile := false
+		indexed, dropped := 0, 0
+		for _, p := range paths {
+			if inTaskDir[filepath.Dir(p)] {
+				needReconcile = true
+			}
+			if !strings.HasPrefix(p, vaultPrefix) {
+				continue
+			}
+			if _, statErr := os.Stat(p); statErr == nil {
+				if err := idx.UpsertFile(p); err != nil {
+					log.Warn("sync watcher: index upsert failed", "path", p, "err", err)
+				} else {
+					indexed++
+				}
+			} else {
+				if err := idx.DeleteFile(p); err != nil {
+					log.Warn("sync watcher: index delete failed", "path", p, "err", err)
+				} else {
+					dropped++
+				}
+			}
+		}
+		if indexed > 0 || dropped > 0 {
+			log.Debug("sync watcher: index updated", "upserted", indexed, "deleted", dropped)
+		}
+
+		if !needReconcile {
+			return
+		}
 		rep, err := sync.Reconcile(cfg, idx, false)
 		if err != nil {
 			log.Warn("sync watcher: reconcile failed", "err", err)
