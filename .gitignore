@@ -39,6 +39,9 @@ qi.db
 ~/.local/share/qi/
 client_secret_*.json
 
+# direnv — holds live credentials
+.envrc
+
 # oh-my-claudecode local state
 .omc/
 
