@@ -5,12 +5,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"qi/internal/config"
+	"qi/internal/daemon"
+	"qi/internal/daemon/client"
 	"qi/internal/index"
+	"qi/internal/tools"
 )
 
 // healthyVault builds a config pointing at a temp vault with all expected
@@ -265,5 +270,103 @@ func TestDoctor_IndexMarkerAdvancedByUpsert(t *testing.T) {
 	}
 	if !strings.Contains(out, "[ok  ] index — fresh (2 notes indexed") {
 		t.Fatalf("upsert should restore freshness with 2 rows:\n%s", out)
+	}
+}
+
+// shortStateHome points XDG_STATE_HOME at a short mkdirtemp dir: unix socket
+// paths are capped (~104 bytes on darwin) and t.TempDir() paths blow past it.
+func shortStateHome(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "qi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Setenv("XDG_STATE_HOME", dir)
+}
+
+// startStatusDaemon runs a real daemon.Server on the doctor's expected socket
+// path (under the test's isolated XDG_STATE_HOME), with a `status` method
+// reporting the given watcher state. Mirrors qid's wiring in miniature.
+func startStatusDaemon(t *testing.T, state, detail string) {
+	t.Helper()
+	shortStateHome(t)
+	sockPath, err := daemon.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := daemon.Listen(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := daemon.NewServer(tools.NewRegistry(), nil, nil, nil)
+	srv.Register("status", func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal(client.DaemonStatus{
+			Watcher: client.WatcherStatus{State: state, Detail: detail},
+		})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+}
+
+func TestDoctor_WatcherRunning(t *testing.T) {
+	cfg := healthyVault(t)
+	startStatusDaemon(t, "running", "watching 24 dirs")
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] qid watcher — watching 24 dirs") {
+		t.Fatalf("expected running watcher line:\n%s", out)
+	}
+}
+
+// TestDoctor_WatcherBlockedWarns is the issue #47 detection test: a healthy
+// daemon whose watcher is stuck awaiting a privacy grant must be surfaced as a
+// warning — the socket check alone reports ok and provably cannot catch this.
+func TestDoctor_WatcherBlockedWarns(t *testing.T) {
+	cfg := healthyVault(t)
+	startStatusDaemon(t, "blocked", "vault dir open is stuck; grant Full Disk Access")
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("blocked watcher should warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] qid socket") {
+		t.Fatalf("socket should still be ok (that is the point):\n%s", out)
+	}
+	if !strings.Contains(out, "[warn] qid watcher — blocked") {
+		t.Fatalf("expected blocked watcher warning:\n%s", out)
+	}
+	if !strings.Contains(out, "grant Full Disk Access") {
+		t.Fatalf("expected remediation detail:\n%s", out)
+	}
+}
+
+func TestDoctor_WatcherStatusRPCMissing(t *testing.T) {
+	cfg := healthyVault(t)
+	// A daemon WITHOUT the status method (predates the RPC).
+	shortStateHome(t)
+	sockPath, err := daemon.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := daemon.Listen(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := daemon.NewServer(tools.NewRegistry(), nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("missing status RPC should warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn] qid watcher — unknown (daemon predates status RPC)") {
+		t.Fatalf("expected predates-RPC warning:\n%s", out)
 	}
 }

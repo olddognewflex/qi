@@ -297,3 +297,35 @@ func (c *Client) DenyApproval(ctx context.Context, id, reason string) (approval.
 	}
 	return p, nil
 }
+
+// WatcherStatus is the watcher slice of the qid `status` RPC: which lifecycle
+// state qid's vault watcher is in ("disabled", "starting", "blocked",
+// "running", "failed" — watcher.State values) and a human-readable detail.
+// "blocked" is the diagnostic `qi doctor` exists to catch: dir enumeration
+// stuck (macOS TCC grant missing under launchd) while the socket still dials
+// fine.
+type WatcherStatus struct {
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// DaemonStatus is the full `status` RPC payload. Shared by qid (marshal) and
+// this client (unmarshal) so the wire shape cannot drift.
+type DaemonStatus struct {
+	Watcher WatcherStatus `json:"watcher"`
+}
+
+// Status is a typed wrapper around the `status` method. A CodeMethodNotFound
+// error means the daemon predates the status RPC — callers should treat that
+// as "unknown", not unhealthy.
+func (c *Client) Status(ctx context.Context) (DaemonStatus, error) {
+	raw, err := c.Call(ctx, "status", nil)
+	if err != nil {
+		return DaemonStatus{}, err
+	}
+	var s DaemonStatus
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return DaemonStatus{}, fmt.Errorf("decode status: %w", err)
+	}
+	return s, nil
+}
