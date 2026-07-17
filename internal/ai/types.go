@@ -84,10 +84,16 @@ type LLM interface {
 	Generate(ctx context.Context, req GenerateRequest) (*GenerateResponse, error)
 }
 
-// Provider identifies a configured backend.
+// Provider identifies a configured backend. Anthropic and Ollama have
+// native wire implementations; the rest share OpenAIProvider's
+// chat-completions wire with per-provider endpoints (see providers.go).
 type Provider string
 
 const (
 	ProviderAnthropic Provider = "anthropic"
 	ProviderOllama    Provider = "ollama"
+	ProviderOpenAI    Provider = "openai"
+	ProviderKimi      Provider = "kimi"
+	ProviderOpenCode  Provider = "opencode"
+	ProviderZAI       Provider = "zai"
 )

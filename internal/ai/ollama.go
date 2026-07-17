@@ -173,7 +173,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req GenerateRequest) (*Ge
 
 	if resp.StatusCode != http.StatusOK {
 		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("ollama: %s: %s", resp.Status, string(buf))
+		return nil, &ProviderError{Provider: "ollama", StatusCode: resp.StatusCode, Body: string(buf)}
 	}
 
 	var out ollamaChatResponse

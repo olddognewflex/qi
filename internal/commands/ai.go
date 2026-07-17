@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -95,7 +94,7 @@ func newAIRunCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&socketFlag, "socket", "", "qid socket path override")
-	cmd.Flags().StringVar(&providerFlag, "provider", "", "LLM provider: anthropic|ollama (overrides config)")
+	cmd.Flags().StringVar(&providerFlag, "provider", "", "LLM provider: anthropic|ollama|openai|kimi|opencode|zai (overrides config)")
 	cmd.Flags().StringVar(&modelFlag, "model", "", "model id (overrides provider default + config)")
 	return cmd
 }
@@ -120,41 +119,158 @@ func buildPlanner(c *client.Client, providerFlag, modelFlag string) (*ai.Planner
 	return p, nil
 }
 
-// buildLLM resolves an ai.LLM provider and its model from (in priority order)
-// the flag, the QI_AI_PROVIDER env var, the [ai] config section, then the
-// anthropic default. It does NOT touch qid, so non-planner AI paths (e.g.
-// `qi task add --breakdown`) can reuse the same provider selection without a
-// daemon. The returned model may be empty, in which case the provider applies
-// its own default.
+// buildLLM resolves an ai.LLM and its model. It does NOT touch qid, so
+// non-planner AI paths (e.g. `qi task add --breakdown`) can reuse the same
+// provider selection without a daemon. Selection, in priority order:
+//
+//  1. --provider flag / QI_AI_PROVIDER env — pins a single provider
+//  2. [[ai.providers]] failover chain in config.toml (first = primary)
+//  3. legacy [ai] provider/model keys
+//  4. anthropic (final default)
+//
+// The returned model may be empty, in which case the provider applies its
+// own default. With a failover chain the model is always empty — each chain
+// entry stamps its own — so --model without --provider is rejected there.
 func buildLLM(providerFlag, modelFlag string) (ai.LLM, string, error) {
 	cfg, _ := config.Load()
-	prov := strings.ToLower(strings.TrimSpace(providerFlag))
-	if prov == "" {
-		prov = strings.ToLower(os.Getenv("QI_AI_PROVIDER"))
+
+	pinned, err := ai.ParseProvider(providerFlag)
+	if err != nil {
+		return nil, "", err
 	}
-	if prov == "" {
-		prov = strings.ToLower(cfg.AI.Provider)
+	if pinned == "" {
+		if pinned, err = ai.ParseProvider(os.Getenv("QI_AI_PROVIDER")); err != nil {
+			return nil, "", err
+		}
 	}
 
-	model := modelFlag
+	if pinned == "" && len(cfg.AI.Providers) > 0 {
+		if modelFlag != "" {
+			return nil, "", errors.New("--model is ambiguous with an [[ai.providers]] chain; pin a provider with --provider")
+		}
+		return buildFallbackLLM(cfg)
+	}
 
-	switch ai.Provider(prov) {
+	if pinned == "" {
+		if pinned, err = ai.ParseProvider(cfg.AI.Provider); err != nil {
+			return nil, "", err
+		}
+	}
+	if pinned == "" {
+		pinned = ai.ProviderAnthropic
+	}
+
+	entry, err := buildEntry(cfg, pinned, providerOverridesFor(cfg, pinned), modelFlag)
+	if err != nil {
+		return nil, "", err
+	}
+	return entry.LLM, entry.Model, nil
+}
+
+// buildFallbackLLM assembles the [[ai.providers]] chain. Unusable entries
+// (unknown name, missing API key or model) are skipped with a stderr warning
+// rather than failing the whole chain — a missing backup credential must not
+// take down the primary.
+func buildFallbackLLM(cfg config.Config) (ai.LLM, string, error) {
+	entries := make([]ai.FallbackEntry, 0, len(cfg.AI.Providers))
+	for _, pc := range cfg.AI.Providers {
+		prov, err := ai.ParseProvider(pc.Provider)
+		if err != nil || prov == "" {
+			fmt.Fprintf(os.Stderr, "qi ai: skipping [[ai.providers]] entry: %v\n", err)
+			continue
+		}
+		entry, err := buildEntry(cfg, prov, pc, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "qi ai: skipping provider %s: %v\n", pc.Provider, err)
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	fb, err := ai.NewFallbackLLM(entries, func(from, to ai.FallbackEntry, err error) {
+		fmt.Fprintf(os.Stderr, "qi ai: provider %s failed (%v); falling back to %s\n", from.Name, err, to.Name)
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("no usable [[ai.providers]] entries: %w", err)
+	}
+	return fb, "", nil
+}
+
+// providerOverridesFor finds the [[ai.providers]] entry matching a pinned
+// provider so --provider still honors its configured url/model/key env.
+// Returns a zero value when there is none.
+func providerOverridesFor(cfg config.Config, prov ai.Provider) config.AIProviderConfig {
+	for _, pc := range cfg.AI.Providers {
+		if p, err := ai.ParseProvider(pc.Provider); err == nil && p == prov {
+			return pc
+		}
+	}
+	return config.AIProviderConfig{}
+}
+
+// buildEntry constructs one provider. modelOverride (the --model flag) wins
+// over the [[ai.providers]] entry's model, which wins over the legacy [ai]
+// keys. Anthropic and Ollama tolerate an empty model (provider default);
+// the OpenAI-compatible providers require one, and require their API key
+// env var to be set.
+func buildEntry(cfg config.Config, prov ai.Provider, pc config.AIProviderConfig, modelOverride string) (ai.FallbackEntry, error) {
+	model := modelOverride
+	if model == "" {
+		model = pc.Model
+	}
+	entry := ai.FallbackEntry{Name: string(prov)}
+
+	switch prov {
 	case ai.ProviderOllama:
-		url := os.Getenv("OLLAMA_URL")
+		url := pc.URL
+		if url == "" {
+			url = os.Getenv("OLLAMA_URL")
+		}
 		if url == "" {
 			url = cfg.AI.OllamaURL
 		}
 		if model == "" {
 			model = cfg.AI.OllamaModel
 		}
-		return ai.NewOllamaProvider(url, os.Getenv("OLLAMA_API_KEY"), nil), model, nil
-	case ai.ProviderAnthropic, "":
+		entry.LLM = ai.NewOllamaProvider(url, os.Getenv("OLLAMA_API_KEY"), nil)
+		entry.Model = model
+		return entry, nil
+	case ai.ProviderAnthropic:
 		if model == "" {
 			model = cfg.AI.Model
 		}
-		return ai.NewAnthropicProvider(os.Getenv("ANTHROPIC_API_KEY")), model, nil
+		apiKey := ""
+		if pc.APIKeyEnv != "" {
+			if apiKey = os.Getenv(pc.APIKeyEnv); apiKey == "" {
+				return entry, fmt.Errorf("%s not set", pc.APIKeyEnv)
+			}
+		}
+		// An empty apiKey lets the SDK fall back to ANTHROPIC_API_KEY.
+		entry.LLM = ai.NewAnthropicProvider(apiKey)
+		entry.Model = model
+		return entry, nil
 	default:
-		return nil, "", fmt.Errorf("unknown ai provider %q (want anthropic|ollama)", prov)
+		preset, ok := ai.PresetFor(prov)
+		if !ok {
+			return entry, fmt.Errorf("unknown ai provider %q", prov)
+		}
+		url := pc.URL
+		if url == "" {
+			url = preset.BaseURL
+		}
+		keyEnv := pc.APIKeyEnv
+		if keyEnv == "" {
+			keyEnv = preset.KeyEnv
+		}
+		apiKey := os.Getenv(keyEnv)
+		if apiKey == "" {
+			return entry, fmt.Errorf("%s not set", keyEnv)
+		}
+		if model == "" {
+			return entry, fmt.Errorf("model is required for provider %q", prov)
+		}
+		entry.LLM = ai.NewOpenAIProvider(string(prov), url, apiKey, nil)
+		entry.Model = model
+		return entry, nil
 	}
 }
 
