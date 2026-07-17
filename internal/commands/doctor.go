@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,8 +15,10 @@ import (
 	"github.com/spf13/cobra"
 	"qi/internal/config"
 	"qi/internal/daemon"
+	"qi/internal/daemon/client"
 	"qi/internal/index"
 	"qi/internal/remotequeue"
+	"qi/internal/watcher"
 )
 
 // checkStatus is the outcome of a single doctor check. Only statusFail makes
@@ -80,6 +83,7 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 			checkVault(rep, cfg)
 			checkDataless(rep, cfg)
 			checkSocket(rep)
+			checkWatcher(cmd.Context(), rep, cfg)
 			checkIndex(rep, cfg)
 			checkWorker(cmd.Context(), rep, cfg)
 
@@ -178,6 +182,61 @@ func checkSocket(rep *report) {
 	}
 	_ = conn.Close()
 	rep.check(statusOK, "qid socket", sockPath)
+}
+
+// checkWatcher asks a live qid whether its vault watcher actually started.
+// The socket dial in checkSocket cannot prove this: a listening socket
+// accepts connections from the kernel backlog even when the daemon is wedged
+// pre-Serve, and a healthy daemon can still have a watcher stuck awaiting a
+// macOS privacy grant (issue #47). Skipped silently when no daemon is
+// reachable — checkSocket already reported that.
+func checkWatcher(ctx context.Context, rep *report, cfg config.Config) {
+	sockPath, err := daemon.SocketPath()
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(sockPath); err != nil {
+		return
+	}
+	cl, err := client.Dial(sockPath, 200*time.Millisecond)
+	if err != nil {
+		return
+	}
+	defer cl.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	st, err := cl.Status(ctx)
+	if err != nil {
+		var ce *client.CallError
+		if errors.As(err, &ce) && ce.Code == daemon.CodeMethodNotFound {
+			rep.check(statusWarn, "qid watcher", "unknown (daemon predates status RPC)")
+			rep.detail("rebuild and restart qid")
+			return
+		}
+		// A daemon wedged pre-Serve accepts the dial but never answers: the
+		// 2s deadline turns that silence into a diagnosis.
+		rep.check(statusWarn, "qid watcher", "daemon accepted connection but did not answer")
+		rep.detail("%v", err)
+		rep.detail("qid may be wedged before Serve (see issue #47); restart it and check ~/Library/Logs/qid.log")
+		return
+	}
+
+	switch st.Watcher.State {
+	case string(watcher.StateRunning):
+		rep.check(statusOK, "qid watcher", st.Watcher.Detail)
+	case string(watcher.StateDisabled):
+		rep.check(statusOK, "qid watcher", "disabled ([sync] watch not set)")
+	case string(watcher.StateBlocked):
+		rep.check(statusWarn, "qid watcher", "blocked")
+		rep.detail("%s", st.Watcher.Detail)
+	case string(watcher.StateStarting):
+		rep.check(statusWarn, "qid watcher", "still starting")
+		rep.detail("%s", st.Watcher.Detail)
+	default: // failed or unknown
+		rep.check(statusWarn, "qid watcher", string(st.Watcher.State))
+		rep.detail("%s", st.Watcher.Detail)
+	}
 }
 
 func checkIndex(rep *report, cfg config.Config) {
