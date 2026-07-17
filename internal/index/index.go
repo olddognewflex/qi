@@ -2,6 +2,7 @@ package index
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func initSchema(db *sql.DB) error {
 	// note_embeddings stores per-note semantic vectors for opt-in `qi search
 	// --semantic`. DERIVED state (invariant #1): fully rebuildable from the
 	// markdown via `qi embed`, never the source of truth.
-	_, err := db.Exec(`
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS note_embeddings (
 			path       TEXT PRIMARY KEY,
 			model      TEXT NOT NULL,
@@ -87,7 +88,39 @@ func initSchema(db *sql.DB) error {
 			vector     BLOB NOT NULL,
 			updated_at TEXT NOT NULL
 		);
+	`); err != nil {
+		return err
+	}
+	// index_meta holds index bookkeeping, currently only last_indexed: the
+	// wall-clock instant the FTS table last absorbed a vault change (full
+	// Rebuild or incremental upsert/delete). `qi doctor` compares vault file
+	// mtimes against it — the db FILE's mtime is useless for that, because
+	// CommitSyncState bumps it on every task write (issue #44).
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS index_meta (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
 	`)
+	return err
+}
+
+// execer abstracts *sql.DB / *sql.Tx for stampLastIndexed.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// metaLastIndexed is the index_meta key holding the RFC3339Nano timestamp of
+// the last FTS write. Nano precision matters: file mtimes carry sub-second
+// resolution, and doctor's newest-mtime-vs-marker compare would misreport
+// same-second writes if the marker were truncated.
+const metaLastIndexed = "last_indexed"
+
+func stampLastIndexed(e execer) error {
+	_, err := e.Exec(`
+		INSERT INTO index_meta(key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, metaLastIndexed, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -200,7 +233,102 @@ func (idx *Indexer) Rebuild(vaultPath string) error {
 		return fmt.Errorf("walk vault: %w", err)
 	}
 
+	if err := stampLastIndexed(tx); err != nil {
+		return fmt.Errorf("stamp last_indexed: %w", err)
+	}
 	return tx.Commit()
+}
+
+// UpsertFile (re)indexes a single markdown file, replacing any existing FTS
+// row for its path. It reads exactly the one file — never walks the vault —
+// so it is safe to run on every save even when other vault files are
+// iCloud-evicted (reading THOSE is what stalls; a file that just produced a
+// change event is present on disk).
+func (idx *Indexer) UpsertFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	content := string(data)
+	title := extractFirstHeading(content)
+	if title == "" {
+		title = filepath.Base(path)
+	}
+
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM notes WHERE path = ?", path); err != nil {
+		return fmt.Errorf("delete stale row %s: %w", path, err)
+	}
+	if _, err := tx.Exec("INSERT INTO notes(title, body, path) VALUES (?, ?, ?)", title, content, path); err != nil {
+		return fmt.Errorf("insert %s: %w", path, err)
+	}
+	if err := stampLastIndexed(tx); err != nil {
+		return fmt.Errorf("stamp last_indexed: %w", err)
+	}
+	return tx.Commit()
+}
+
+// DeleteFile removes a vanished file's FTS row (and any semantic vector, so
+// `qi search --semantic` doesn't ghost-rank a deleted note).
+func (idx *Indexer) DeleteFile(path string) error {
+	tx, err := idx.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM notes WHERE path = ?", path); err != nil {
+		return fmt.Errorf("delete note %s: %w", path, err)
+	}
+	if _, err := tx.Exec("DELETE FROM note_embeddings WHERE path = ?", path); err != nil {
+		return fmt.Errorf("delete embedding %s: %w", path, err)
+	}
+	if err := stampLastIndexed(tx); err != nil {
+		return fmt.Errorf("stamp last_indexed: %w", err)
+	}
+	return tx.Commit()
+}
+
+// Stats reports the index's last FTS write time and current row count without
+// opening it read-write: no schema init, nothing written, so `qi doctor` stays
+// genuinely read-only. A missing db, missing tables (legacy db predating
+// index_meta), or absent marker all come back as a zero time — the caller
+// treats that as "freshness unknown", not an error.
+func Stats() (lastIndexed time.Time, rows int, err error) {
+	db, err := sql.Open("sqlite", "file:"+dbPath()+"?mode=ro")
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("open db read-only: %w", err)
+	}
+	defer db.Close()
+
+	var raw string
+	switch err := db.QueryRow(
+		"SELECT value FROM index_meta WHERE key = ?", metaLastIndexed,
+	).Scan(&raw); {
+	case err == nil:
+		if t, perr := time.Parse(time.RFC3339Nano, raw); perr == nil {
+			lastIndexed = t
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		// marker never written — leave zero
+	case strings.Contains(err.Error(), "no such table"):
+		// legacy db predating index_meta — leave zero
+	default:
+		return time.Time{}, 0, fmt.Errorf("read last_indexed: %w", err)
+	}
+
+	if err := db.QueryRow("SELECT COUNT(*) FROM notes").Scan(&rows); err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return lastIndexed, 0, nil
+		}
+		return lastIndexed, 0, fmt.Errorf("count notes: %w", err)
+	}
+	return lastIndexed, rows, nil
 }
 
 // defaultSearchLimit is the user-facing result cap when none is requested,

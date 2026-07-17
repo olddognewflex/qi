@@ -3,6 +3,7 @@ package index
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"qi/internal/domain"
@@ -186,4 +187,143 @@ func TestExtractSnippet_NoMatch(t *testing.T) {
 
 func containsIgnoreCase(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0)
+}
+
+func TestUpsertFile_InsertUpdateAndStats(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	vault := t.TempDir()
+	path := filepath.Join(vault, "note.md")
+	os.WriteFile(path, []byte("# Cherry\n\nCherries are small.\n"), 0o644)
+
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	// Insert.
+	if err := idx.UpsertFile(path); err != nil {
+		t.Fatalf("upsert (insert): %v", err)
+	}
+	results, err := idx.Search("cherry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Note.Title != "Cherry" {
+		t.Fatalf("after insert: results = %+v, want one Cherry", results)
+	}
+
+	// Update: same path must REPLACE the row, not add a second one.
+	os.WriteFile(path, []byte("# Cherry\n\nCherries are sweet and small.\n"), 0o644)
+	if err := idx.UpsertFile(path); err != nil {
+		t.Fatalf("upsert (update): %v", err)
+	}
+	results, err = idx.Search("cherry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("after update: %d rows for one path, want 1", len(results))
+	}
+	if want := "sweet"; !strings.Contains(results[0].Match, want) {
+		t.Errorf("snippet %q does not reflect updated body (want %q)", results[0].Match, want)
+	}
+
+	// Stats: marker set, one row.
+	last, rows, err := Stats()
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if last.IsZero() {
+		t.Error("last_indexed marker not stamped by UpsertFile")
+	}
+	if rows != 1 {
+		t.Errorf("rows = %d, want 1", rows)
+	}
+}
+
+func TestDeleteFile_RemovesRowAndEmbedding(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	vault := t.TempDir()
+	path := filepath.Join(vault, "gone.md")
+	os.WriteFile(path, []byte("# Durian\n\nPungent.\n"), 0o644)
+
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	if err := idx.UpsertFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertEmbedding(path, "test-model", []float32{1, 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := idx.DeleteFile(path); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	results, err := idx.Search("durian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("deleted note still in FTS: %+v", results)
+	}
+	embs, err := idx.EmbeddingsFor("test-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embs) != 0 {
+		t.Errorf("deleted note still has embedding rows: %d", len(embs))
+	}
+}
+
+func TestStats_LegacyDBWithoutMeta(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+
+	// Fresh schema but no marker ever stamped: zero time, zero rows, no error.
+	last, rows, err := Stats()
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if !last.IsZero() {
+		t.Errorf("last = %v, want zero when never stamped", last)
+	}
+	if rows != 0 {
+		t.Errorf("rows = %d, want 0", rows)
+	}
+}
+
+func TestRebuild_StampsLastIndexed(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	vault := t.TempDir()
+	os.WriteFile(filepath.Join(vault, "x.md"), []byte("# X\n"), 0o644)
+
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if err := idx.Rebuild(vault); err != nil {
+		t.Fatal(err)
+	}
+
+	last, rows, err := Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.IsZero() {
+		t.Error("Rebuild did not stamp last_indexed")
+	}
+	if rows != 1 {
+		t.Errorf("rows = %d, want 1", rows)
+	}
 }

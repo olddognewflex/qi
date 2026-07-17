@@ -182,21 +182,33 @@ func checkSocket(rep *report) {
 
 func checkIndex(rep *report, cfg config.Config) {
 	dbPath := index.DBPath()
-	fi, err := os.Stat(dbPath)
-	if err != nil {
+	if _, err := os.Stat(dbPath); err != nil {
 		rep.check(statusWarn, "index", "not built")
 		rep.detail("run qi index rebuild")
 		return
 	}
-	newest, count := newestMarkdown(cfg.VaultPath)
+	// Freshness compares vault file mtimes against the index's last_indexed
+	// marker — NOT the db file's mtime, which task-sync writes bump without
+	// touching the FTS table (issue #44). Stats opens read-only, keeping this
+	// check genuinely mutation-free.
+	lastIndexed, rows, err := index.Stats()
+	if err != nil {
+		rep.check(statusWarn, "index", "unreadable")
+		rep.detail("%v", err)
+		return
+	}
+	newest, files := newestMarkdown(cfg.VaultPath)
 	switch {
-	case count == 0:
+	case files == 0:
 		rep.check(statusOK, "index", "no markdown files to index")
-	case newest.After(fi.ModTime()):
+	case lastIndexed.IsZero():
+		rep.check(statusWarn, "index", "freshness unknown (index predates tracking)")
+		rep.detail("run qi index rebuild")
+	case newest.After(lastIndexed):
 		rep.check(statusWarn, "index", "stale")
-		rep.detail("vault changed since last rebuild; run qi index rebuild")
+		rep.detail("vault changed since last index write; run qi index rebuild")
 	default:
-		rep.check(statusOK, "index", fmt.Sprintf("fresh (%d files indexed)", count))
+		rep.check(statusOK, "index", fmt.Sprintf("fresh (%d notes indexed, %d files on disk)", rows, files))
 	}
 }
 
