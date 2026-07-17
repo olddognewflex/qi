@@ -52,61 +52,14 @@ func newAgendaCommand(cfg config.Config) *cobra.Command {
 	return agendaCmd
 }
 
+// buildAgendaService wires the shared calendar provider set (calendar.BuildProviders
+// — the same one qid uses) into an AgendaService, reporting entries that could not
+// be built on stderr in the CLI's idiom.
 func buildAgendaService(cfg config.Config) service.AgendaService {
-	providers := []calendar.Provider{
-		calendar.LocalProvider{PathFor: cfg.DailyNotePath},
+	providers, warnings := calendar.BuildProviders(cfg)
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, w.Error())
 	}
-
-	for _, cal := range cfg.ICSCalendars {
-		providers = append(providers, calendar.ICSProvider{
-			CalName: cal.Name,
-			URL:     cal.URL,
-		})
-	}
-
-	for _, cal := range cfg.CalDAVCalendars {
-		pw, err := resolveCalDAVPassword(cal)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "skipping caldav %q: %v\n", cal.Name, err)
-			continue
-		}
-		providers = append(providers, calendar.CalDAVProvider{
-			CalName:  cal.Name,
-			Endpoint: cal.Endpoint,
-			Username: cal.Username,
-			Password: pw,
-			Path:     cal.Path,
-		})
-	}
-
-	for _, cal := range cfg.VdirCalendars {
-		if !cal.Discover {
-			providers = append(providers, calendar.VdirProvider{
-				CalName: cal.Name,
-				Path:    cal.Path,
-			})
-			continue
-		}
-		discovered, err := calendar.DiscoverVdir(cal.Path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "skipping vdir %q: %v\n", cal.Name, err)
-			continue
-		}
-		providers = append(providers, discovered...)
-	}
-
-	if cfg.GoogleOAuth.ClientID != "" && cfg.GoogleOAuth.ClientSecret != "" {
-		oauthCfg := calendar.GoogleOAuthConfig(cfg.GoogleOAuth.ClientID, cfg.GoogleOAuth.ClientSecret, "")
-		for _, cal := range cfg.GoogleCalendars {
-			providers = append(providers, calendar.GoogleProvider{
-				CalName:     cal.Name,
-				Account:     cal.Account,
-				CalendarID:  cal.CalendarID,
-				OAuthConfig: oauthCfg,
-			})
-		}
-	}
-
 	return service.AgendaService{Providers: providers}
 }
 
@@ -144,7 +97,3 @@ func printEvents(cmd *cobra.Command, events []domain.Event, showDate bool) {
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s%s  %s%s\n", e.Start.Format("15:04"), endStr, e.Title, source)
 	}
 }
-
-
-
-

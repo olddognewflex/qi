@@ -60,7 +60,7 @@ func run() error {
 		TaskFilePath: cfg.TaskFilePath,
 		TasksDir:     filepath.Dir(cfg.TaskFilePath),
 	}
-	agendaSvc := service.AgendaService{Providers: buildAgendaProviders(cfg, log)}
+	agendaSvc := buildAgendaService(cfg, log)
 
 	if err := builtin.RegisterTaskAdd(registry, tasksSvc); err != nil {
 		return fmt.Errorf("register task.add: %w", err)
@@ -307,12 +307,13 @@ func (indexSearcher) Search(query string) ([]domain.SearchResult, error) {
 	return idx.Search(query)
 }
 
-// buildAgendaProviders mirrors what `qi agenda` builds at CLI time but lives
-// here so qid's skill layer has the same calendar sources. Only the local
-// daily-notes provider is wired by default; future stages can add ICS,
-// CalDAV, and Google providers here based on cfg.
-func buildAgendaProviders(cfg config.Config, log *slog.Logger) []calendar.Provider {
-	providers := []calendar.Provider{calendar.LocalProvider{PathFor: cfg.DailyNotePath}}
-	_ = log
-	return providers
+// buildAgendaService wires the shared calendar provider set — calendar.BuildProviders,
+// the same builder `qi agenda` uses — into the AgendaService behind the agenda.today
+// builtin and the review skills, logging any entry that could not be built.
+func buildAgendaService(cfg config.Config, log *slog.Logger) service.AgendaService {
+	providers, warnings := calendar.BuildProviders(cfg)
+	for _, w := range warnings {
+		log.Warn("skipping calendar", "kind", w.Kind, "calendar", w.Name, "err", w.Err)
+	}
+	return service.AgendaService{Providers: providers}
 }

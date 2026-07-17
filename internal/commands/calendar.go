@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 
@@ -106,7 +105,7 @@ func newCalendarCommand(cfg config.Config) *cobra.Command {
 			if target == nil {
 				return fmt.Errorf("no [[caldav_calendars]] entry named %q in config.toml", name)
 			}
-			pw, err := resolveCalDAVPassword(*target)
+			pw, err := calendar.ResolveCalDAVPassword(*target)
 			if err != nil {
 				return err
 			}
@@ -179,18 +178,4 @@ func findCalDAVEntry(cfg config.Config, name string) *config.CalDAVCalendar {
 		}
 	}
 	return nil
-}
-
-func resolveCalDAVPassword(cal config.CalDAVCalendar) (string, error) {
-	if cal.Password != "" {
-		return cal.Password, nil
-	}
-	pw, err := calendar.GetCalDAVPassword(cal.Name)
-	if err != nil {
-		if errors.Is(err, calendar.ErrSecretNotFound) {
-			return "", fmt.Errorf("no password in config and none in keychain (run `qi calendar caldav-passwd %s`)", cal.Name)
-		}
-		return "", err
-	}
-	return pw, nil
 }
