@@ -139,7 +139,13 @@ func WalkVault(vaultPath string, fn func(path string, content string) error) err
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".obsidian" {
+			// Skip ALL hidden dirs (.git, .obsidian, .omc, .trash, ...), matching
+			// the stat-only walkers in doctor (newestMarkdown) and the qid watcher
+			// (VaultDirs). Diverging filters made the FTS row count, doctor's file
+			// count, and the incremental watch set disagree — and left hidden-dir
+			// rows the watcher would never re-index (issue #46). Hidden-dir
+			// markdown is tool state, not notes; it does not belong in search.
+			if path != vaultPath && strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil

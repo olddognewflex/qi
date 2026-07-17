@@ -138,4 +138,31 @@ func TestWalkVault(t *testing.T) {
 	}
 }
 
+// TestWalkVault_SkipsAllHiddenDirs pins the issue #46 fix: markdown inside ANY
+// hidden dir (.omc, .trash, ... — not just .git/.obsidian) is tool state, not
+// notes, and must be invisible to the walk. Doctor's newestMarkdown and the qid
+// watcher's VaultDirs already skip all hidden dirs; WalkVault diverging made
+// the FTS row count disagree with both and left rows the watcher would never
+// re-index.
+func TestWalkVault_SkipsAllHiddenDirs(t *testing.T) {
+	vault := t.TempDir()
+	os.WriteFile(filepath.Join(vault, "note.md"), []byte("# Note\n"), 0o644)
+	for _, hidden := range []string{".omc/wiki", ".obsidian/plugins", ".trash"} {
+		os.MkdirAll(filepath.Join(vault, hidden), 0o755)
+		os.WriteFile(filepath.Join(vault, hidden, "log.md"), []byte("# Hidden\n"), 0o644)
+	}
+
+	var found []string
+	err := WalkVault(vault, func(path, content string) error {
+		found = append(found, filepath.Base(path))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0] != "note.md" {
+		t.Fatalf("expected only note.md, got %v", found)
+	}
+}
+
 
