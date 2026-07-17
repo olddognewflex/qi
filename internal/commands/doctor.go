@@ -67,9 +67,10 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 		Use:   "doctor",
 		Short: "Run health checks (config, vault, qid, index, worker)",
 		Long: "Inspects the local qi setup and reports the health of each component:\n" +
-			"config file, vault directories, the qid socket, the search index, and\n" +
-			"(when enabled) cloud-queue Worker reachability. Read-only — it mutates\n" +
-			"nothing. Exits non-zero if any check fails.",
+			"config file, vault directories, iCloud-evicted vault files (macOS), the\n" +
+			"qid socket, the search index, and (when enabled) cloud-queue Worker\n" +
+			"reachability. Read-only — it mutates nothing. Exits non-zero if any\n" +
+			"check fails.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true, // a failed check is not a usage error
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -77,6 +78,7 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 
 			checkConfig(rep, cfg)
 			checkVault(rep, cfg)
+			checkDataless(rep, cfg)
 			checkSocket(rep)
 			checkIndex(rep, cfg)
 			checkWorker(cmd.Context(), rep, cfg)
@@ -136,6 +138,23 @@ func checkVault(rep *report, cfg config.Config) {
 	} else {
 		rep.check(statusWarn, "vault subdirs", "missing: "+strings.Join(missing, ", "))
 		rep.detail("created lazily on first write")
+	}
+}
+
+// checkDataless reports vault files whose contents macOS has evicted to iCloud.
+// It is macOS-only (see dataless_other.go) and stat-only: it must never read a
+// vault file, because that read is what triggers the slow re-download it warns
+// about.
+func checkDataless(rep *report, cfg config.Config) {
+	if !datalessSupported {
+		return
+	}
+	scan := scanDataless(cfg.VaultPath, fileBlocks)
+	status, summary := datalessStatus(scan)
+	rep.check(status, "vault data", summary)
+	if status == statusWarn {
+		rep.detail("contents evicted by iCloud; reads re-download and can stall or fail offline")
+		rep.detail("%s", datalessRemedy)
 	}
 }
 
