@@ -159,10 +159,17 @@ func run() error {
 	// sync reconcile; any main-vault markdown change upserts/deletes its single
 	// FTS row so `qi search` stays fresh without a manual `qi index rebuild`
 	// (issue #44).
+	// The entire setup — including the VaultDirs walk — runs OFF the startup
+	// path. A dir open can block indefinitely on this walk (TCC authorization
+	// for ~/Documents under launchd, iCloud-evicted dirs), and a wedged watcher
+	// must never keep qid from serving RPC.
 	if cfg.Sync.Watch {
-		taskDirs := watcher.DirsFor(cfg)
-		dirs := unionDirs(taskDirs, watcher.VaultDirs(cfg.VaultPath))
-		if len(dirs) > 0 {
+		go func() {
+			taskDirs := watcher.DirsFor(cfg)
+			dirs := unionDirs(taskDirs, watcher.VaultDirs(cfg.VaultPath))
+			if len(dirs) == 0 {
+				return
+			}
 			debounce := time.Duration(cfg.Sync.DebounceMS) * time.Millisecond
 			w, werr := watcher.New(watcher.Options{
 				Dirs:     dirs,
@@ -171,15 +178,14 @@ func run() error {
 				Log:      log,
 			})
 			if werr != nil {
-				return fmt.Errorf("sync watcher: %w", werr)
+				log.Warn("sync watcher: not started", "err", werr)
+				return
 			}
 			log.Info("sync watcher enabled", "dirs", dirs, "debounce_ms", cfg.Sync.DebounceMS)
-			go func() {
-				if err := w.Run(ctx); err != nil {
-					log.Warn("sync watcher stopped", "err", err)
-				}
-			}()
-		}
+			if err := w.Run(ctx); err != nil {
+				log.Warn("sync watcher stopped", "err", err)
+			}
+		}()
 	}
 
 	// Opt-in morning due-today notifier: when [notify] due_today = true, schedule
