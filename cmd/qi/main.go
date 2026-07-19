@@ -1,13 +1,15 @@
 package main
 
 import (
-	"log"
+	"fmt"
+	"os"
 
 	"qi/internal/commands"
 )
 
 func main() {
 	if err := commands.NewRootCommand().Execute(); err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
