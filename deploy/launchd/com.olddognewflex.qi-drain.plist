@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  qi remote-drain timer — template.
+
+  Do NOT load this file as-is: the __HOME__ tokens must be expanded to an
+  absolute path first (launchd does not expand ~ or $HOME). See
+  ../../docs/remote-capture-setup.md for the one-liner that installs it.
+
+  Deliberately NO EnvironmentVariables block. A LaunchAgent plist in
+  ~/Library/LaunchAgents is 0644 (world-readable on a multi-user Mac), so the
+  DRAIN token must NOT live here. qi reads [remote_queue].token (and vault_path)
+  from ~/.config/qi/config.toml, which is 0600. This follows cloud-queue-spec
+  §2e: "read it from config.toml (0600) and drop it from the plist."
+
+  It is a periodic one-shot (StartInterval), not a daemon — no KeepAlive. A
+  firing missed while the Mac slept runs once on wake, which is the desired
+  catch-up behavior.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.olddognewflex.qi-drain</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.local/bin/qi</string>
+    <string>remote-drain</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StartInterval</key>
+  <integer>300</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.local/state/qi/drain.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.local/state/qi/drain.err.log</string>
+</dict>
+</plist>
