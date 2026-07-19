@@ -191,17 +191,50 @@ qi task list        # the task appears with its ^qi-id
 
 ### Share Sheet variant (capture from any app)
 
-To capture selected text or a link from Safari, Mail, Notes, etc.:
+Extend the same *qi capture* Shortcut so it works both ways: launched directly
+(prompts for text) **and** from the Share Sheet (uses the selected text/link).
+The trick is to funnel both input sources into one variable the POST references.
 
-1. In the Shortcut, open its **settings** (ⓘ) → enable **Show in Share Sheet**;
-   set *Share Sheet Types* to **Text** (and **URLs** if you want links).
-2. At the **top** of the actions, add **If** → *Shortcut Input* **has any value**:
-   - **If** branch: use **Shortcut Input** as the `text` in step 3 (skip the
-     *Ask for Input* in step 2).
-   - **Otherwise** branch: fall back to **Ask for Input** as above, so the same
-     Shortcut works both from the Share Sheet and when launched directly.
-3. Now, in any app, select text → **Share** → **qi capture**. The selection is
-   enqueued and drained into the vault with a proper id.
+1. **Enable Share Sheet input.** Open the Shortcut → tap **ⓘ** (settings) →
+   enable **Show in Share Sheet** → tap **Share Sheet Types** and turn off
+   everything except **Text** (add **URLs** if you want to capture links too).
+
+2. **Branch on the launch source.** At the **top** of the actions (above the
+   existing *Ask for Input*), add an **If** action set to:
+   *Shortcut Input* **has any value**. You now have `If / Otherwise / End If`.
+
+3. **Feed both branches into one variable** named `taskText`:
+   - **If** branch (came from the Share Sheet): add **Set Variable** →
+     `taskText` = **Shortcut Input**.
+   - **Otherwise** branch (launched directly): move the existing **Ask for
+     Input** here, then add **Set Variable** → `taskText` = that **Provided
+     Input**.
+
+4. **Point the request at `taskText`.** In **Get Contents of URL**, set the JSON
+   `text` field's value to the **`taskText`** variable (replacing the direct
+   *Ask for Input* reference).
+
+The final action order:
+
+```
+If  [Shortcut Input]  has any value
+    Set Variable  taskText = Shortcut Input
+Otherwise
+    Ask for Input  (Text, "Task?")
+    Set Variable  taskText = Provided Input
+End If
+Get Contents of URL   (POST /enqueue, text = taskText)
+Get Dictionary Value  id  in  Contents of URL
+Show Notification     "Captured " + id
+```
+
+5. **Use it.** In any app, select text (or a link) → **Share** → **qi capture**.
+   The selection is enqueued and drained into the vault with a proper id, no
+   prompt. Launching the Shortcut directly still prompts as before.
+
+> Referencing **Shortcut Input** directly in the body (skipping `taskText`) works
+> from the Share Sheet but sends an empty `text` on a direct launch — the
+> variable is what makes one Shortcut serve both paths.
 
 ### Notes & limits
 
