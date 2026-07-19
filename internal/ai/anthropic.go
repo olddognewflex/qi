@@ -12,7 +12,7 @@ import (
 
 // DefaultAnthropicModel is the model the Anthropic provider falls back to
 // when GenerateRequest.Model is empty.
-const DefaultAnthropicModel = "claude-sonnet-4-6"
+const DefaultAnthropicModel = "claude-sonnet-5"
 
 // AnthropicProvider implements LLM against the official Anthropic SDK.
 type AnthropicProvider struct {

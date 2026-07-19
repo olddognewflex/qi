@@ -241,7 +241,7 @@ vault_path = "/tmp/vault"
 
 [ai]
 provider = "ollama"
-model = "claude-sonnet-4-6"
+model = "claude-sonnet-5"
 ollama_url = "http://localhost:11434"
 ollama_model = "qwen3:14b"
 `)
@@ -255,7 +255,7 @@ ollama_model = "qwen3:14b"
 	if cfg.AI.OllamaModel != "qwen3:14b" {
 		t.Errorf("ollama_model = %q", cfg.AI.OllamaModel)
 	}
-	if cfg.AI.Model != "claude-sonnet-4-6" {
+	if cfg.AI.Model != "claude-sonnet-5" {
 		t.Errorf("model = %q", cfg.AI.Model)
 	}
 }

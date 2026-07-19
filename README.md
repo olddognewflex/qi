@@ -304,7 +304,7 @@ env     = { GITHUB_TOKEN = "..." }
 
 [ai]
 provider     = "anthropic"          # or "ollama"
-model        = "claude-sonnet-4-6"  # used when provider=anthropic
+model        = "claude-sonnet-5"    # used when provider=anthropic
 ollama_url   = "http://localhost:11434"  # Ollama Cloud: "https://ollama.com" + export OLLAMA_API_KEY
 ollama_model = "qwen3:14b"
 
