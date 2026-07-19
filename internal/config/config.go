@@ -119,14 +119,30 @@ type NotifyConfig struct {
 	At       string
 }
 
-// AIConfig selects the LLM provider and per-provider defaults used by
-// `qi ai run`. The provider string is matched case-insensitively against
-// ai.ProviderAnthropic / ai.ProviderOllama.
+// AIConfig selects the LLM provider(s) used by `qi ai run`. Two shapes:
+// the legacy single-provider keys (Provider/Model/...), and an ordered
+// [[ai.providers]] failover chain (Providers) — first entry is primary,
+// the rest are backups tried when a provider reports a usage limit or is
+// unreachable. When Providers is non-empty it wins over the legacy keys;
+// provider names are parsed by ai.ParseProvider.
 type AIConfig struct {
 	Provider    string
 	Model       string
 	OllamaURL   string
 	OllamaModel string
+	Providers   []AIProviderConfig
+}
+
+// AIProviderConfig is one [[ai.providers]] entry. Model is required for the
+// OpenAI-compatible providers (openai/kimi/opencode/zai), which have no
+// sensible cross-service default. URL and APIKeyEnv override the built-in
+// endpoint and API-key env var (see ai.PresetFor); Ollama reads URL with
+// the same meaning as the legacy ollama_url.
+type AIProviderConfig struct {
+	Provider  string
+	Model     string
+	URL       string
+	APIKeyEnv string
 }
 
 // EmbeddingsConfig configures opt-in local semantic search. When Enabled,
@@ -203,10 +219,37 @@ type mcpServerTOML struct {
 }
 
 type aiTOML struct {
-	Provider    string `toml:"provider"`
-	Model       string `toml:"model"`
-	OllamaURL   string `toml:"ollama_url"`
-	OllamaModel string `toml:"ollama_model"`
+	Provider    string           `toml:"provider"`
+	Model       string           `toml:"model"`
+	OllamaURL   string           `toml:"ollama_url"`
+	OllamaModel string           `toml:"ollama_model"`
+	Providers   []aiProviderTOML `toml:"providers"`
+}
+
+type aiProviderTOML struct {
+	Provider  string `toml:"provider"`
+	Model     string `toml:"model"`
+	URL       string `toml:"url"`
+	APIKeyEnv string `toml:"api_key_env"`
+}
+
+// aiProviders copies [[ai.providers]] entries through, skipping ones with
+// no provider name (matching the skip-don't-fail handling of incomplete
+// calendar entries).
+func aiProviders(raw []aiProviderTOML) []AIProviderConfig {
+	out := make([]AIProviderConfig, 0, len(raw))
+	for _, p := range raw {
+		if strings.TrimSpace(p.Provider) == "" {
+			continue
+		}
+		out = append(out, AIProviderConfig{
+			Provider:  p.Provider,
+			Model:     p.Model,
+			URL:       p.URL,
+			APIKeyEnv: p.APIKeyEnv,
+		})
+	}
+	return out
 }
 
 type launchTOML struct {
@@ -558,6 +601,7 @@ func LoadFrom(path string) (Config, error) {
 			Model:       raw.AI.Model,
 			OllamaURL:   raw.AI.OllamaURL,
 			OllamaModel: raw.AI.OllamaModel,
+			Providers:   aiProviders(raw.AI.Providers),
 		},
 		Clients:  clients,
 		Projects: projects,

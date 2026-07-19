@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -62,6 +63,12 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req GenerateRequest) (
 		System:    []anthropic.TextBlockParam{systemBlock},
 	})
 	if err != nil {
+		// Surface API-level failures as ProviderError so the fallback
+		// chain can classify them without importing the SDK.
+		var apierr *anthropic.Error
+		if errors.As(err, &apierr) {
+			return nil, &ProviderError{Provider: "anthropic", StatusCode: apierr.StatusCode, Body: apierr.Error()}
+		}
 		return nil, err
 	}
 

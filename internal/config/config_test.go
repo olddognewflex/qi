@@ -1230,3 +1230,50 @@ vault_path = "/vaults/acme"
 		t.Errorf("abs.NotesPath = %q", abs.NotesPath)
 	}
 }
+
+func TestLoadFrom_AIProviderChain(t *testing.T) {
+	t.Setenv("QI_VAULT_PATH", "")
+	t.Setenv("QI_TASK_FILE_PATH", "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeTOML(t, cfgPath, `
+vault_path = "/tmp/vault"
+
+[ai]
+provider = "ollama"
+ollama_model = "qwen3:14b"
+
+[[ai.providers]]
+provider = "ollama"
+model = "qwen3:14b"
+
+[[ai.providers]]
+provider = "kimi"
+model = "kimi-k2.5"
+url = "https://example.test/v1"
+api_key_env = "MY_KIMI_KEY"
+
+[[ai.providers]]
+model = "orphan-without-provider"
+`)
+
+	cfg, err := config.LoadFrom(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AI.Providers) != 2 {
+		t.Fatalf("Providers = %+v, want 2 (nameless entry skipped)", cfg.AI.Providers)
+	}
+	if cfg.AI.Providers[0].Provider != "ollama" || cfg.AI.Providers[0].Model != "qwen3:14b" {
+		t.Errorf("first = %+v", cfg.AI.Providers[0])
+	}
+	second := cfg.AI.Providers[1]
+	if second.Provider != "kimi" || second.Model != "kimi-k2.5" ||
+		second.URL != "https://example.test/v1" || second.APIKeyEnv != "MY_KIMI_KEY" {
+		t.Errorf("second = %+v", second)
+	}
+	// Legacy keys still load alongside the chain.
+	if cfg.AI.Provider != "ollama" || cfg.AI.OllamaModel != "qwen3:14b" {
+		t.Errorf("legacy AI = %+v", cfg.AI)
+	}
+}
