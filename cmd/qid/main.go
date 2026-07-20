@@ -66,54 +66,8 @@ func run() error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	registry := tools.NewRegistry()
-	if err := builtin.RegisterCapture(registry, cfg.InboxPath); err != nil {
-		return fmt.Errorf("register capture: %w", err)
-	}
-
-	tasksSvc := service.TaskService{
-		TaskFilePath: cfg.TaskFilePath,
-		TasksDir:     filepath.Dir(cfg.TaskFilePath),
-	}
-	agendaSvc := buildAgendaService(cfg, log)
-
-	if err := builtin.RegisterTaskAdd(registry, tasksSvc); err != nil {
-		return fmt.Errorf("register task.add: %w", err)
-	}
-	if err := builtin.RegisterTaskList(registry, tasksSvc); err != nil {
-		return fmt.Errorf("register task.list: %w", err)
-	}
-	if err := builtin.RegisterNoteSearch(registry, indexSearcher{}); err != nil {
-		return fmt.Errorf("register note.search: %w", err)
-	}
-	if err := builtin.RegisterAgendaToday(registry, agendaSvc); err != nil {
-		return fmt.Errorf("register agenda.today: %w", err)
-	}
-
-	if err := skills.RegisterDailyReview(registry, tasksSvc, agendaSvc, cfg.InboxPath); err != nil {
-		return fmt.Errorf("register daily-review: %w", err)
-	}
-
-	if err := skills.RegisterProcessInbox(registry, cfg.InboxPath); err != nil {
-		return fmt.Errorf("register process-inbox: %w", err)
-	}
-	notesSvc := service.NoteService{NotesDir: cfg.NotesPath}
-	inboxArchive := filepath.Join(cfg.InboxPath, "archive")
-	if err := skills.RegisterProcessInboxApply(registry, cfg.InboxPath, inboxArchive, tasksSvc, notesSvc); err != nil {
-		return fmt.Errorf("register process-inbox-apply: %w", err)
-	}
-
-	if err := skills.RegisterWeeklyReview(registry, tasksSvc, cfg.InboxPath, inboxArchive, cfg.DailyNotePath); err != nil {
-		return fmt.Errorf("register weekly-review: %w", err)
-	}
-	if err := skills.RegisterWeeklyReviewApply(registry, notesSvc); err != nil {
-		return fmt.Errorf("register weekly-review-apply: %w", err)
-	}
-
-	if err := skills.RegisterQuickTask(registry, tasksSvc); err != nil {
-		return fmt.Errorf("register quick-task: %w", err)
-	}
-	if err := skills.RegisterSessionLog(registry, cfg.DailyNotePath); err != nil {
-		return fmt.Errorf("register session-log: %w", err)
+	if err := registerTools(registry, cfg, log); err != nil {
+		return err
 	}
 
 	socketPath := socketFlag
@@ -236,6 +190,10 @@ func run() error {
 	// a once-a-day macOS notification (at [notify] at, default 08:00) listing
 	// tasks due/scheduled today. Read-only, no policy gate. Off by default.
 	if cfg.Notify.DueToday {
+		tasksSvc := service.TaskService{
+			TaskFilePath: cfg.TaskFilePath,
+			TasksDir:     filepath.Dir(cfg.TaskFilePath),
+		}
 		notifier := notify.NewNotifier(log)
 		s, nerr := notify.New(notify.Options{
 			At:     cfg.Notify.At,
@@ -270,6 +228,63 @@ func run() error {
 		return fmt.Errorf("serve: %w", err)
 	}
 	log.Info("qid stopped")
+	return nil
+}
+
+// registerTools wires every compiled-in builtin and deterministic skill into
+// the registry, in the exact order qid serves them. run() and the anti-drift
+// test (TestRegisteredToolsDeclareMutationExplicitly) both call it, so the test
+// exercises precisely the tool set qid exposes — there is no second copy of the
+// wiring to drift out of sync. When adding a tool, register it HERE and classify
+// it in expectedMutating (main_test.go): a vault-writing tool MUST declare
+// Mutating: true so internal/policy routes non-cli callers through the approval
+// queue (invariant #3).
+func registerTools(registry *tools.Registry, cfg config.Config, log *slog.Logger) error {
+	tasksSvc := service.TaskService{
+		TaskFilePath: cfg.TaskFilePath,
+		TasksDir:     filepath.Dir(cfg.TaskFilePath),
+	}
+	agendaSvc := buildAgendaService(cfg, log)
+	notesSvc := service.NoteService{NotesDir: cfg.NotesPath}
+	inboxArchive := filepath.Join(cfg.InboxPath, "archive")
+
+	if err := builtin.RegisterCapture(registry, cfg.InboxPath); err != nil {
+		return fmt.Errorf("register capture: %w", err)
+	}
+	if err := builtin.RegisterTaskAdd(registry, tasksSvc); err != nil {
+		return fmt.Errorf("register task.add: %w", err)
+	}
+	if err := builtin.RegisterTaskList(registry, tasksSvc); err != nil {
+		return fmt.Errorf("register task.list: %w", err)
+	}
+	if err := builtin.RegisterNoteSearch(registry, indexSearcher{}); err != nil {
+		return fmt.Errorf("register note.search: %w", err)
+	}
+	if err := builtin.RegisterAgendaToday(registry, agendaSvc); err != nil {
+		return fmt.Errorf("register agenda.today: %w", err)
+	}
+
+	if err := skills.RegisterDailyReview(registry, tasksSvc, agendaSvc, cfg.InboxPath); err != nil {
+		return fmt.Errorf("register daily-review: %w", err)
+	}
+	if err := skills.RegisterProcessInbox(registry, cfg.InboxPath); err != nil {
+		return fmt.Errorf("register process-inbox: %w", err)
+	}
+	if err := skills.RegisterProcessInboxApply(registry, cfg.InboxPath, inboxArchive, tasksSvc, notesSvc); err != nil {
+		return fmt.Errorf("register process-inbox-apply: %w", err)
+	}
+	if err := skills.RegisterWeeklyReview(registry, tasksSvc, cfg.InboxPath, inboxArchive, cfg.DailyNotePath); err != nil {
+		return fmt.Errorf("register weekly-review: %w", err)
+	}
+	if err := skills.RegisterWeeklyReviewApply(registry, notesSvc); err != nil {
+		return fmt.Errorf("register weekly-review-apply: %w", err)
+	}
+	if err := skills.RegisterQuickTask(registry, tasksSvc); err != nil {
+		return fmt.Errorf("register quick-task: %w", err)
+	}
+	if err := skills.RegisterSessionLog(registry, cfg.DailyNotePath); err != nil {
+		return fmt.Errorf("register session-log: %w", err)
+	}
 	return nil
 }
 
