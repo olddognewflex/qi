@@ -12,6 +12,8 @@ import (
 )
 
 func newAgendaCommand(cfg config.Config) *cobra.Command {
+	var asJSON bool
+
 	agendaCmd := &cobra.Command{
 		Use:   "agenda",
 		Short: "Show calendar events",
@@ -27,6 +29,9 @@ func newAgendaCommand(cfg config.Config) *cobra.Command {
 				return err
 			}
 			printAgendaWarnings(cmd, warnings)
+			if asJSON {
+				return printJSON(cmd, eventsToJSON(events))
+			}
 			printEvents(cmd, events, false)
 			return nil
 		},
@@ -42,11 +47,17 @@ func newAgendaCommand(cfg config.Config) *cobra.Command {
 				return err
 			}
 			printAgendaWarnings(cmd, warnings)
+			if asJSON {
+				return printJSON(cmd, eventsToJSON(events))
+			}
 			printEvents(cmd, events, true)
 			return nil
 		},
 	}
 
+	// Persistent so the bare `agenda` (which mirrors today's RunE) and both
+	// subcommands share one --json flag.
+	agendaCmd.PersistentFlags().BoolVar(&asJSON, "json", false, "output as JSON (stable schema for scripts/agents)")
 	agendaCmd.RunE = todayCmd.RunE
 	agendaCmd.AddCommand(todayCmd, weekCmd)
 	return agendaCmd

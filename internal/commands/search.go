@@ -28,6 +28,7 @@ func newSearchCommand(cfg config.Config) *cobra.Command {
 	var kinds []string
 	var limit int
 	var semantic bool
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -66,7 +67,7 @@ func newSearchCommand(cfg config.Config) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("semantic search: %w", err)
 				}
-				if len(results) == 0 {
+				if len(results) == 0 && !asJSON {
 					fmt.Fprintln(cmd.OutOrStdout(), "No matches. (Run `qi embed` to build the embeddings index.)")
 					return nil
 				}
@@ -75,17 +76,37 @@ func newSearchCommand(cfg config.Config) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("search: %w", err)
 				}
-				if len(results) == 0 {
+				if len(results) == 0 && !asJSON {
 					fmt.Fprintln(cmd.OutOrStdout(), "No matches.")
 					return nil
 				}
 			}
 
-			for _, r := range results {
-				rel, err := filepath.Rel(cfg.VaultPath, r.Note.Path)
+			// Path relative to the vault root, matching the human output and
+			// keeping the JSON schema vault-relative (not machine-absolute).
+			toRel := func(p string) string {
+				rel, err := filepath.Rel(cfg.VaultPath, p)
 				if err != nil {
-					rel = r.Note.Path
+					return p
 				}
+				return rel
+			}
+
+			if asJSON {
+				out := make([]searchResultJSON, 0, len(results))
+				for _, r := range results {
+					out = append(out, searchResultJSON{
+						Kind:  r.Kind,
+						Path:  toRel(r.Note.Path),
+						Match: strings.TrimSpace(r.Match),
+						Rank:  r.Rank,
+					})
+				}
+				return printJSON(cmd, out)
+			}
+
+			for _, r := range results {
+				rel := toRel(r.Note.Path)
 				if semantic {
 					fmt.Fprintf(cmd.OutOrStdout(), "[%s]\t%s  (%.2f)\n  %s\n\n", r.Kind, rel, r.Rank, strings.TrimSpace(r.Match))
 				} else {
@@ -98,5 +119,6 @@ func newSearchCommand(cfg config.Config) *cobra.Command {
 	cmd.Flags().StringSliceVarP(&kinds, "kind", "k", nil, "limit to kinds (comma-separated): note,task,daily,inbox,other")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 20, "max results")
 	cmd.Flags().BoolVarP(&semantic, "semantic", "s", false, "rank by embedding cosine similarity (requires `qi embed`)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON (stable schema for scripts/agents)")
 	return cmd
 }
