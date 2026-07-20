@@ -84,7 +84,7 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 			checkVault(rep, cfg)
 			checkDataless(rep, cfg)
 			checkSocket(rep)
-			checkWatcher(cmd.Context(), rep, cfg)
+			checkDaemon(cmd.Context(), rep, cfg)
 			checkIndex(rep, cfg)
 			checkAIModel(rep, cfg)
 			checkWorker(cmd.Context(), rep, cfg)
@@ -173,7 +173,7 @@ func checkSocket(rep *report) {
 	}
 	if _, err := os.Stat(sockPath); err != nil {
 		rep.check(statusWarn, "qid socket", "daemon not running")
-		rep.detail("no socket at %s (start qid)", sockPath)
+		rep.detail("no socket at %s (run qi daemon start)", sockPath)
 		return
 	}
 	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
@@ -186,13 +186,15 @@ func checkSocket(rep *report) {
 	rep.check(statusOK, "qid socket", sockPath)
 }
 
-// checkWatcher asks a live qid whether its vault watcher actually started.
-// The socket dial in checkSocket cannot prove this: a listening socket
+// checkDaemon asks a live qid what state it is in: whether its vault watcher
+// actually started, and whether it is still running the qid binary on disk.
+// The socket dial in checkSocket cannot prove either: a listening socket
 // accepts connections from the kernel backlog even when the daemon is wedged
-// pre-Serve, and a healthy daemon can still have a watcher stuck awaiting a
-// macOS privacy grant (issue #47). Skipped silently when no daemon is
+// pre-Serve, a healthy daemon can still have a watcher stuck awaiting a
+// macOS privacy grant (issue #47), and a daemon rebuilt underneath keeps
+// serving the old code silently. Skipped silently when no daemon is
 // reachable — checkSocket already reported that.
-func checkWatcher(ctx context.Context, rep *report, cfg config.Config) {
+func checkDaemon(ctx context.Context, rep *report, cfg config.Config) {
 	sockPath, err := daemon.SocketPath()
 	if err != nil {
 		return
@@ -239,6 +241,18 @@ func checkWatcher(ctx context.Context, rep *report, cfg config.Config) {
 		rep.check(statusWarn, "qid watcher", string(st.Watcher.State))
 		rep.detail("%s", st.Watcher.Detail)
 	}
+
+	// A daemon running code that no longer exists on disk warns, never fails:
+	// it is environmental drift the user resolves at their own pace. An unknown
+	// verdict (old daemon, unlocatable binary) also warns rather than passing
+	// silently, matching the watcher branches above — warn never affects the
+	// exit code, so the doctor contract is unchanged either way.
+	staleness, summary := daemonStaleness(st.Exe, "", st.StartedAt)
+	if staleness == daemon.StalenessCurrent {
+		rep.check(statusOK, "qid binary", summary)
+		return
+	}
+	rep.check(statusWarn, "qid binary", summary)
 }
 
 func checkIndex(rep *report, cfg config.Config) {

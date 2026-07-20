@@ -46,6 +46,7 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newDailyCommand(cfg))
 	root.AddCommand(newPlanCommand(cfg))
 	root.AddCommand(newAICommand())
+	root.AddCommand(markSkipConfig(newDaemonCommand()))
 	root.AddCommand(newSyncCommand(cfg))
 	root.AddCommand(newLaunchCommand(cfg))
 	root.AddCommand(newRemoteDrainCommand(cfg))

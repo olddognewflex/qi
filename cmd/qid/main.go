@@ -82,13 +82,31 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
-	}()
+	// Close unlinks the socket file: net.Listen("unix", …) sets unlinkOnClose,
+	// so closing is the whole teardown. Do NOT add an os.Remove here — Serve's
+	// ctx.Done goroutine closes the listener early, but this defer runs only
+	// after wg.Wait(), mcpMgr.Close() (which waits on MCP stdio subprocesses —
+	// seconds), and audit.Close(). By then `qi daemon restart` has already seen
+	// the socket go quiet and bound a NEW qid at the same path, and the Remove
+	// would delete the successor's socket. A daemon that dies without running
+	// this defer at all (SIGKILL) leaves a stale socket file, which the next
+	// Listen already handles via its stale-dial probe (internal/daemon/socket.go).
+	defer func() { _ = ln.Close() }()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	startedAt := time.Now()
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Warn("cannot resolve own executable path", "err", err)
+	}
+
+	// The serve context is the signal context plus one more cancel, so the
+	// `daemon.shutdown` RPC ends the daemon through exactly the same path a
+	// SIGTERM does: Serve closes the listener (unlinking the socket) and waits
+	// for in-flight conns before returning.
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, shutdown := context.WithCancel(signalCtx)
+	defer shutdown()
 
 	mcpMgr := mcp.NewManager(registry, log)
 	defer func() { _ = mcpMgr.Close() }()
@@ -221,14 +239,66 @@ func run() error {
 	server.Register("status", func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
 		state, detail := watcherStatus.Get()
 		return json.Marshal(daemonclient.DaemonStatus{
-			Watcher: daemonclient.WatcherStatus{State: string(state), Detail: detail},
+			Watcher:   daemonclient.WatcherStatus{State: string(state), Detail: detail},
+			Exe:       exePath,
+			Pid:       os.Getpid(),
+			StartedAt: startedAt,
 		})
 	})
+	server.Register("daemon.shutdown", makeShutdownHandler(shutdown, log))
 	if err := server.Serve(ctx, ln); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 	log.Info("qid stopped")
 	return nil
+}
+
+// shutdownGrace delays the serve-context cancel so the handler's response is
+// written before Serve tears the connection down. It is best-effort only — see
+// makeShutdownHandler.
+const shutdownGrace = 100 * time.Millisecond
+
+// makeShutdownHandler builds the `daemon.shutdown` RPC: it cancels the serve
+// context, which runs the same graceful drain (close listener, wait for
+// in-flight conns, unlink socket) as SIGTERM.
+//
+// It is a control-plane operation, not a vault mutation, so it does NOT route
+// through internal/policy or the approval queue — it is hard-denied for every
+// caller but "cli". An unset or unrecognized caller is denied, so an AI planner
+// or MCP session can never stop the daemon (invariant #3's spirit: non-cli
+// callers get no unilateral authority).
+//
+// Ordering: the cancel runs asynchronously after a short grace so the JSON-RPC
+// reply lands first. That is best-effort — ServeConn closes the conn from its
+// own ctx.Done goroutine, racing writeResponse — so correctness relies on the
+// CLIENT treating a truncated reply to this method as success (see
+// client.Shutdown).
+func makeShutdownHandler(cancel context.CancelFunc, log *slog.Logger) daemon.Method {
+	return func(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+		var p struct {
+			Caller string `json:"caller"`
+		}
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, fmt.Errorf("parse params: %w", err)
+			}
+		}
+		if p.Caller != policy.CallerCLI {
+			// Log the refusal: nothing else records it (this method bypasses the
+			// approval audit log by design), so a non-cli caller repeatedly
+			// trying to stop the daemon would otherwise be invisible.
+			log.Warn("shutdown refused", "caller", p.Caller)
+			return nil, fmt.Errorf("daemon.shutdown is restricted to the cli caller (got %q)", p.Caller)
+		}
+		log.Info("shutdown requested via rpc")
+		go func() {
+			time.Sleep(shutdownGrace)
+			cancel()
+		}()
+		return json.Marshal(struct {
+			Status string `json:"status"`
+		}{Status: "stopping"})
+	}
 }
 
 // registerTools wires every compiled-in builtin and deterministic skill into

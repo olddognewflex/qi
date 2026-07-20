@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"qi/internal/approval"
@@ -310,9 +312,14 @@ type WatcherStatus struct {
 }
 
 // DaemonStatus is the full `status` RPC payload. Shared by qid (marshal) and
-// this client (unmarshal) so the wire shape cannot drift.
+// this client (unmarshal) so the wire shape cannot drift. Exe, Pid and
+// StartedAt are absent from older daemons and decode to zero values — callers
+// must render those as "unknown" rather than treating them as an error.
 type DaemonStatus struct {
-	Watcher WatcherStatus `json:"watcher"`
+	Watcher   WatcherStatus `json:"watcher"`
+	Exe       string        `json:"exe"`
+	Pid       int           `json:"pid"`
+	StartedAt time.Time     `json:"started_at"`
 }
 
 // Status is a typed wrapper around the `status` method. A CodeMethodNotFound
@@ -328,4 +335,83 @@ func (c *Client) Status(ctx context.Context) (DaemonStatus, error) {
 		return DaemonStatus{}, fmt.Errorf("decode status: %w", err)
 	}
 	return s, nil
+}
+
+// Shutdown asks qid to stop gracefully. It sends the cli caller identity: qid
+// hard-denies the method for anyone else, so an AI planner or MCP session can
+// never kill the daemon. A CodeMethodNotFound error means the daemon predates
+// the RPC.
+//
+// The daemon cancels its serve context shortly after replying, which closes
+// this connection. That write/close ordering is a race the server cannot fully
+// close, so a truncated reply is treated as success here — the request was
+// delivered and shutdown is what it asked for. Callers confirm the outcome by
+// polling the socket (daemon.WaitGone), not by this reply.
+func (c *Client) Shutdown(ctx context.Context) error {
+	_, err := c.Call(ctx, "daemon.shutdown", struct {
+		Caller string `json:"caller"`
+	}{Caller: CallerCLI})
+	if err != nil && isConnClosed(err) {
+		return nil
+	}
+	return err
+}
+
+// isConnClosed reports whether err is the connection going away mid-call
+// rather than a real protocol or handler failure.
+func isConnClosed(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
+}
+
+// WaitReady polls the status RPC until the daemon answers or timeout elapses.
+// Waiting for the socket file, or even for a dial to succeed, is not enough: a
+// listener accepts from the kernel backlog before qid reaches Serve. Only an
+// answered RPC proves readiness. A daemon that predates the status RPC answers
+// method-not-found, which counts as ready and yields a zero DaemonStatus.
+func WaitReady(ctx context.Context, socketPath string, timeout time.Duration) (DaemonStatus, error) {
+	deadline := time.Now().Add(timeout)
+	lastErr := errors.New("no probe completed")
+	for {
+		// Check the budget BEFORE probing, and cap each probe by what is left
+		// of it: a dial plus a status call can cost over a second, so probing
+		// first would overrun the caller's timeout by that much.
+		if err := ctx.Err(); err != nil {
+			return DaemonStatus{}, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return DaemonStatus{}, fmt.Errorf("qid not ready after %s: %w", timeout, lastErr)
+		}
+
+		st, err := probeStatus(ctx, socketPath, remaining)
+		if err == nil {
+			return st, nil
+		}
+		var ce *CallError
+		if errors.As(err, &ce) && ce.Code == daemon.CodeMethodNotFound {
+			return DaemonStatus{}, nil
+		}
+		lastErr = err
+
+		select {
+		case <-ctx.Done():
+			return DaemonStatus{}, ctx.Err()
+		case <-time.After(min(50*time.Millisecond, time.Until(deadline))):
+		}
+	}
+}
+
+func probeStatus(ctx context.Context, socketPath string, budget time.Duration) (DaemonStatus, error) {
+	c, err := Dial(socketPath, min(200*time.Millisecond, budget))
+	if err != nil {
+		return DaemonStatus{}, err
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(ctx, min(time.Second, budget))
+	defer cancel()
+	return c.Status(ctx)
 }
