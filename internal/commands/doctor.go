@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"qi/internal/ai"
 	"qi/internal/config"
 	"qi/internal/daemon"
 	"qi/internal/daemon/client"
@@ -68,12 +69,12 @@ func (r *report) detail(format string, args ...any) {
 func newDoctorCommand(cfg config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Run health checks (config, vault, qid, index, worker)",
+		Short: "Run health checks (config, vault, qid, index, ai model, worker)",
 		Long: "Inspects the local qi setup and reports the health of each component:\n" +
 			"config file, vault directories, iCloud-evicted vault files (macOS), the\n" +
-			"qid socket, the search index, and (when enabled) cloud-queue Worker\n" +
-			"reachability. Read-only — it mutates nothing. Exits non-zero if any\n" +
-			"check fails.",
+			"qid socket, the search index, the resolved AI model, and (when enabled)\n" +
+			"cloud-queue Worker reachability. Read-only — it mutates nothing. Exits\n" +
+			"non-zero if any check fails.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true, // a failed check is not a usage error
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -85,6 +86,7 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 			checkSocket(rep)
 			checkWatcher(cmd.Context(), rep, cfg)
 			checkIndex(rep, cfg)
+			checkAIModel(rep, cfg)
 			checkWorker(cmd.Context(), rep, cfg)
 
 			fmt.Fprintln(rep.w)
@@ -301,6 +303,80 @@ func newestMarkdown(root string) (time.Time, int) {
 		return nil
 	})
 	return newest, count
+}
+
+// checkAIModel reports the AI model `qi ai run` would resolve for its
+// primary provider, without constructing a provider client or making any
+// network call — purely config inspection plus each provider's own
+// built-in default (the same ones internal/ai.Generate falls back to when
+// GenerateRequest.Model is empty). It warns, never fails: a stale or empty
+// model id is a config nit the user can fix at their own pace, not a
+// broken install. Issue #55.
+func checkAIModel(rep *report, cfg config.Config) {
+	provider, model, note := resolveAIModel(cfg)
+	if strings.TrimSpace(model) == "" {
+		rep.check(statusWarn, "ai model", fmt.Sprintf("no model configured for provider %q", provider))
+		rep.detail("set [ai].model (or a model on each [[ai.providers]] entry)")
+		return
+	}
+	summary := fmt.Sprintf("%s (provider: %s)", model, provider)
+	if note != "" {
+		summary += " — " + note
+	}
+	rep.check(statusOK, "ai model", summary)
+}
+
+// resolveAIModel mirrors buildLLM's provider/model precedence (see ai.go)
+// purely for reporting: it never constructs a provider or performs I/O.
+// When an [[ai.providers]] failover chain is configured, it reports on the
+// chain's primary (first) entry — the one `qi ai run` tries first. Returns
+// the resolved provider name, its model id (empty when the provider
+// requires an explicit model but none is configured), and an optional note.
+func resolveAIModel(cfg config.Config) (provider, model, note string) {
+	if len(cfg.AI.Providers) > 0 {
+		pc := cfg.AI.Providers[0]
+		prov, err := ai.ParseProvider(pc.Provider)
+		if err != nil || prov == "" {
+			return pc.Provider, "", fmt.Sprintf("primary of %d chained providers; unrecognized provider name", len(cfg.AI.Providers))
+		}
+		note = fmt.Sprintf("primary of %d chained providers", len(cfg.AI.Providers))
+		return string(prov), defaultAIModel(prov, pc.Model), note
+	}
+
+	prov, err := ai.ParseProvider(cfg.AI.Provider)
+	if err != nil || prov == "" {
+		prov = ai.ProviderAnthropic
+	}
+	if envProvider := os.Getenv("QI_AI_PROVIDER"); envProvider != "" {
+		if p, err := ai.ParseProvider(envProvider); err == nil && p != "" {
+			prov = p
+		}
+	}
+
+	configured := cfg.AI.Model
+	if prov == ai.ProviderOllama {
+		configured = cfg.AI.OllamaModel
+	}
+	return string(prov), defaultAIModel(prov, configured), ""
+}
+
+// defaultAIModel applies a provider's own built-in fallback for an unset
+// model, matching AnthropicProvider.Generate / OllamaProvider.Generate.
+// The OpenAI-compatible providers (openai/kimi/opencode/zai) have no
+// built-in default — a model is required — so an empty configured value
+// stays empty.
+func defaultAIModel(prov ai.Provider, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	switch prov {
+	case ai.ProviderAnthropic:
+		return ai.DefaultAnthropicModel
+	case ai.ProviderOllama:
+		return ai.DefaultOllamaModel
+	default:
+		return ""
+	}
 }
 
 func checkWorker(ctx context.Context, rep *report, cfg config.Config) {
