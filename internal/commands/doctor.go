@@ -17,6 +17,7 @@ import (
 	"qi/internal/config"
 	"qi/internal/daemon"
 	"qi/internal/daemon/client"
+	"qi/internal/embed"
 	"qi/internal/index"
 	"qi/internal/remotequeue"
 	"qi/internal/watcher"
@@ -86,6 +87,7 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 			checkSocket(rep)
 			checkDaemon(cmd.Context(), rep, cfg)
 			checkIndex(rep, cfg)
+			checkEmbeddings(rep, cfg)
 			checkAIModel(rep, cfg)
 			checkWorker(cmd.Context(), rep, cfg)
 
@@ -285,6 +287,73 @@ func checkIndex(rep *report, cfg config.Config) {
 	default:
 		rep.check(statusOK, "index", fmt.Sprintf("fresh (%d notes indexed, %d files on disk)", rows, files))
 	}
+}
+
+// checkEmbeddings reports the freshness of the opt-in semantic index. The
+// watcher keeps FTS current per-file but never re-embeds (embedding is a network
+// call to Ollama — deliberately kept off the debounced hot path), so an edited
+// note's vector goes stale until the next manual `qi embed`. That drift is
+// otherwise invisible (checkIndex only tracks FTS); this surfaces it. It also
+// flags a model change (vectors built with a different model than search will
+// query with), the companion to SemanticSearch's hard dim-mismatch reject.
+// Warn-only: stale/absent embeddings are an opt-in feature the user rebuilds at
+// their own pace, never a failed install.
+func checkEmbeddings(rep *report, cfg config.Config) {
+	if !cfg.Embeddings.Enabled {
+		rep.check(statusOK, "embeddings", "disabled ([embeddings] enabled not set)")
+		return
+	}
+	if _, err := os.Stat(index.DBPath()); err != nil {
+		rep.check(statusWarn, "embeddings", "not built")
+		rep.detail("run qi embed")
+		return
+	}
+	count, newest, models, err := index.EmbeddingStats()
+	if err != nil {
+		rep.check(statusWarn, "embeddings", "unreadable")
+		rep.detail("%v", err)
+		return
+	}
+	if count == 0 {
+		rep.check(statusWarn, "embeddings", "enabled but none built")
+		rep.detail("run qi embed")
+		return
+	}
+
+	wantModel := cfg.Embeddings.Model
+	if wantModel == "" {
+		wantModel = embed.DefaultModel
+	}
+	if other := modelsOtherThan(models, wantModel); len(other) > 0 {
+		rep.check(statusWarn, "embeddings", fmt.Sprintf("built with %s, config wants %s", strings.Join(other, ", "), wantModel))
+		rep.detail("embed model changed since last build; run qi embed to rebuild (search errors on the dim mismatch otherwise)")
+		return
+	}
+
+	newestNote, _ := newestMarkdown(cfg.VaultPath)
+	switch {
+	case newest.IsZero():
+		rep.check(statusWarn, "embeddings", "freshness unknown (no timestamp)")
+		rep.detail("run qi embed")
+	case newestNote.After(newest):
+		rep.check(statusWarn, "embeddings", "stale")
+		rep.detail("vault changed since last embed; incremental indexing does not re-embed — run qi embed")
+	default:
+		rep.check(statusOK, "embeddings", fmt.Sprintf("fresh (%d vectors, model %s)", count, wantModel))
+	}
+}
+
+// modelsOtherThan returns the models in the list that are not want (the
+// configured embed model). Non-empty means the stored vectors were built with a
+// different model than search will query with.
+func modelsOtherThan(models []string, want string) []string {
+	var out []string
+	for _, m := range models {
+		if m != want {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // newestMarkdown returns the latest modification time across markdown files in

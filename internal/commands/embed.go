@@ -23,7 +23,11 @@ func newEmbedCommand(cfg config.Config) *cobra.Command {
 		Short: "Build local embeddings for semantic search (opt-in)",
 		Long: "Embed every vault note via Ollama and store the vectors in the local\n" +
 			"SQLite index for `qi search --semantic`. Derived state — fully rebuildable.\n" +
-			"Requires [embeddings] enabled = true in config.toml.",
+			"Requires [embeddings] enabled = true in config.toml.\n\n" +
+			"This is a full rebuild. Unlike the FTS index, embeddings are NOT kept\n" +
+			"fresh incrementally: editing a note leaves its vector stale until you\n" +
+			"re-run `qi embed`. `qi doctor` reports that staleness (and any embed-model\n" +
+			"change) so the drift is visible.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !cfg.Embeddings.Enabled {

@@ -1,6 +1,7 @@
 package index
 
 import (
+	"database/sql"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -41,8 +42,10 @@ func decodeVector(buf []byte) []float32 {
 	return vec
 }
 
-// cosine returns the cosine similarity of a and b in [-1, 1]. Mismatched lengths
-// compare over the shorter prefix; a zero-norm vector yields 0 (no direction).
+// cosine returns the cosine similarity of a and b in [-1, 1]. Callers must pass
+// equal-length vectors (SemanticSearch rejects a dim mismatch up front rather
+// than let a stale-model vector rank as garbage); the shorter-prefix guard here
+// is a defensive backstop, and a zero-norm vector yields 0 (no direction).
 func cosine(a, b []float32) float64 {
 	n := len(a)
 	if len(b) < n {
@@ -63,7 +66,9 @@ func cosine(a, b []float32) float64 {
 
 // UpsertEmbedding stores (or replaces) the vector for path under model.
 func (idx *Indexer) UpsertEmbedding(path, model string, vec []float32) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	// Nano precision (parity with the FTS last_indexed marker) so doctor's
+	// newest-note-mtime-vs-embedding compare doesn't misjudge same-second edits.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := idx.db.Exec(`
 		INSERT INTO note_embeddings(path, model, dim, vector, updated_at)
 		VALUES (?, ?, ?, ?, ?)
@@ -86,6 +91,48 @@ func (idx *Indexer) ClearEmbeddings() error {
 		return fmt.Errorf("clear embeddings: %w", err)
 	}
 	return nil
+}
+
+// EmbeddingStats reports the stored semantic-vector count, the newest vector
+// updated_at, and the distinct models present — opened read-only (like Stats)
+// so `qi doctor` stays genuinely mutation-free. A missing db or a missing
+// note_embeddings table (semantic search never used) comes back as zeros, which
+// the caller treats as "not built", not an error.
+func EmbeddingStats() (count int, newest time.Time, models []string, err error) {
+	db, err := sql.Open("sqlite", "file:"+dbPath()+"?mode=ro")
+	if err != nil {
+		return 0, time.Time{}, nil, fmt.Errorf("open db read-only: %w", err)
+	}
+	defer db.Close()
+
+	var raw sql.NullString
+	switch err := db.QueryRow("SELECT COUNT(*), MAX(updated_at) FROM note_embeddings").Scan(&count, &raw); {
+	case err == nil:
+		if raw.Valid {
+			if t, perr := time.Parse(time.RFC3339Nano, raw.String); perr == nil {
+				newest = t
+			}
+		}
+	case strings.Contains(err.Error(), "no such table"):
+		// legacy db, or semantic search never used — leave zeros
+		return 0, time.Time{}, nil, nil
+	default:
+		return 0, time.Time{}, nil, fmt.Errorf("read embedding stats: %w", err)
+	}
+
+	rows, err := db.Query("SELECT DISTINCT model FROM note_embeddings ORDER BY model")
+	if err != nil {
+		return count, newest, nil, fmt.Errorf("query embedding models: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return count, newest, models, fmt.Errorf("scan model: %w", err)
+		}
+		models = append(models, m)
+	}
+	return count, newest, models, rows.Err()
 }
 
 // EmbeddingsFor loads all stored vectors for the given model.
@@ -139,8 +186,16 @@ func (idx *Indexer) SemanticSearch(model string, query []float32, opts SearchOpt
 		kind  string
 		score float64
 	}
+	qdim := len(query)
 	ranked := make([]scored, 0, len(embeddings))
 	for _, e := range embeddings {
+		// Reject a dimension mismatch loudly instead of cosine-comparing the
+		// shorter prefix (which silently returns garbage rankings). The realistic
+		// cause is the embed model being changed without re-running `qi embed`;
+		// stored vectors and the freshly-embedded query then differ in length.
+		if len(e.Vector) != qdim {
+			return nil, fmt.Errorf("semantic index dimension mismatch (%s: stored %d, query %d): the embedding model changed since `qi embed` — run `qi embed` to rebuild", e.Path, len(e.Vector), qdim)
+		}
 		kind := classifyKind(e.Path)
 		if keep != nil && !keep[kind] {
 			continue

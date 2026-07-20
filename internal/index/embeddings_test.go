@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"qi/internal/domain"
@@ -141,6 +142,71 @@ func TestSemanticSearchRanksByCosine(t *testing.T) {
 	}
 	if filtered[0].Kind != domain.SearchKindDaily {
 		t.Errorf("kind = %q, want daily", filtered[0].Kind)
+	}
+}
+
+func TestSemanticSearchRejectsDimMismatch(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+
+	// Stored vector has dim 3 (built under an old model).
+	idx.UpsertEmbedding("/v/a.md", "m", []float32{1, 2, 3})
+
+	// Query embedded with a new model → dim 4. Prefix-comparing would silently
+	// return a bogus ranking; we require a loud error instead.
+	_, err = idx.SemanticSearch("m", []float32{1, 2, 3, 4}, SearchOptions{})
+	if err == nil {
+		t.Fatal("expected a dimension-mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "dimension mismatch") {
+		t.Errorf("error = %q, want it to mention dimension mismatch", err)
+	}
+}
+
+func TestEmbeddingStats(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idx.UpsertEmbedding("/v/a.md", "modelA", []float32{1, 2, 3})
+	idx.UpsertEmbedding("/v/b.md", "modelA", []float32{4, 5, 6})
+	idx.Close() // close so the read-only EmbeddingStats opens cleanly
+
+	count, newest, models, err := EmbeddingStats()
+	if err != nil {
+		t.Fatalf("EmbeddingStats: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+	if newest.IsZero() {
+		t.Error("newest should be set")
+	}
+	if len(models) != 1 || models[0] != "modelA" {
+		t.Errorf("models = %v, want [modelA]", models)
+	}
+}
+
+func TestEmbeddingStatsEmpty(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	idx, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx.Close()
+
+	count, newest, models, err := EmbeddingStats()
+	if err != nil {
+		t.Fatalf("EmbeddingStats: %v", err)
+	}
+	if count != 0 || !newest.IsZero() || len(models) != 0 {
+		t.Errorf("empty store: count=%d newest=%v models=%v", count, newest, models)
 	}
 }
 
