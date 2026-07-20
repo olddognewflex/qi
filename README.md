@@ -151,7 +151,7 @@ bin/qi task list
 bin/qi search "parser"
 
 # Start qid for AI / MCP features:
-bin/qid &
+bin/qi daemon start
 
 # Talk to qid:
 bin/qi ai tools list
@@ -198,6 +198,9 @@ qi launch harness [--project <tag> | --client <name>]   # alias: qi launch ai
 
 qi config edit                # open the config file in $EDITOR
 
+qi daemon status              # is qid running, and is its binary stale?
+qi daemon start|stop|restart  # qid lifecycle (works without a vault config)
+
 qi doctor                     # health check: config, vault, qid socket, index, worker
 qi remote-status              # pending + deadletter counts in the cloud queue (read-only)
 qi remote-drain [--limit 100] [--show-failed]   # pull queued remote items into the vault (see Remote capture)
@@ -215,9 +218,17 @@ next free slots of the daily note's `## Schedule`, preserving hand-authored entr
 skipping already-scheduled titles, so re-running it is idempotent. Planned blocks surface
 in `qi agenda` automatically.
 
+`qi daemon` controls qid. `start` is idempotent and spawns qid detached, appending its
+output to `qid.log` beside the socket; `stop` asks qid to shut down gracefully; `restart`
+does both. The qid binary is resolved sibling-first (`--qid-bin`, then `$QI_QID_BIN`, then a
+`qid` next to your `qi`, then `$PATH`), so after a rebuild `qi daemon restart` picks up the
+matching build rather than an older one on your path. `qi daemon status` reports that
+directly: it flags the daemon as **stale** when the binary was rebuilt after the daemon
+started.
+
 `qi doctor` reports per-component status and exits non-zero only on a hard **fail** (missing
-config-derived vault, unreachable Worker); optional/lazy components (no daemon, unbuilt index)
-report **warn** and don't fail. `qi remote-status` is a no-op when `[remote_queue]` is disabled.
+config-derived vault, unreachable Worker); optional/lazy components (no daemon, unbuilt index,
+a stale qid binary) report **warn** and don't fail. `qi remote-status` is a no-op when `[remote_queue]` is disabled.
 
 `--due` writes the Obsidian Tasks due marker (`📅 YYYY-MM-DD`); `--schedule` writes the
 scheduled marker (`⏳ YYYY-MM-DD`); `--repeat` writes the recurrence marker (`🔁 <rule>`).

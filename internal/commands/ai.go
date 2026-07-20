@@ -498,7 +498,7 @@ func dialClient(socketFlag string) (*client.Client, error) {
 	c, err := client.Dial(path, dialTimeout)
 	if err != nil {
 		if errors.Is(err, client.ErrDaemonUnavailable) {
-			fmt.Fprintf(os.Stderr, "qid not reachable at %s; start it with `qid &`\n", path)
+			fmt.Fprintf(os.Stderr, "qid not reachable at %s; start it with `qi daemon start`\n", path)
 		}
 		return nil, err
 	}
