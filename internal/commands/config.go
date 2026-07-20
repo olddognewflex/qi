@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -32,12 +31,11 @@ func newConfigEditCommand() *cobra.Command {
 
 			path := config.ConfigPath()
 
+			// Seed a commented starter template (not an empty file) the first
+			// time, so a new user opens something they can actually fill in.
 			if _, err := os.Stat(path); os.IsNotExist(err) {
-				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-					return fmt.Errorf("creating config dir: %w", err)
-				}
-				if err := os.WriteFile(path, nil, 0644); err != nil {
-					return fmt.Errorf("creating config file: %w", err)
+				if _, err := config.WriteStarterConfig(config.DefaultVaultPath(), false); err != nil {
+					return err
 				}
 			}
 
