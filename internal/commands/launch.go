@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"qi/internal/config"
@@ -21,6 +23,8 @@ func newLaunchCommand(cfg config.Config) *cobra.Command {
 func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 	var project string
 	var client string
+	var printOnly bool
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:     "harness [-- harness-args...]",
@@ -33,7 +37,8 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 			"  client  → harness [client.launch] > [launch] > env; cwd = client dev_root\n" +
 			"  neither → global [launch] > env; cwd = current dir\n" +
 			"QI_VAULT_PATH is exported (the matched vault, else the global vault).\n" +
-			"Extra args after -- are passed through to the harness.",
+			"Extra args after -- are passed through to the harness.\n" +
+			"With --print, resolve and show the harness/vault/cwd without executing.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --client is sugar for resolving a client by name; it is validated
@@ -52,6 +57,9 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if printOnly {
+				return printLaunchTarget(cmd, tgt, args, asJSON)
+			}
 			if tgt.FromEnv && tgt.Label != "" {
 				// Matched from $WORK_CONTEXT — note it so the resolved harness
 				// isn't a surprise (especially before an exec handoff).
@@ -62,7 +70,69 @@ func newLaunchHarnessCommand(cfg config.Config) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&project, "project", "", "project or client to resolve the harness for (defaults to $WORK_CONTEXT)")
 	cmd.Flags().StringVar(&client, "client", "", "client to resolve the harness for (validated; cwd = client dev_root)")
+	cmd.Flags().BoolVar(&printOnly, "print", false, "print the resolved harness/vault/cwd without executing")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "with --print, emit the resolution as JSON")
 	return cmd
+}
+
+// launchResolutionJSON is the stable JSON shape of a resolved launch target for
+// `qi launch harness --print --json`.
+type launchResolutionJSON struct {
+	Matched  string   `json:"matched"`               // human label, e.g. `project "BHQ"`; empty for the global default
+	FromEnv  bool     `json:"from_env"`              // the target name came from $WORK_CONTEXT
+	Harness  string   `json:"harness"`               // executable that would be launched
+	Args     []string `json:"args,omitempty"`        // configured args prepended before passthrough
+	Passthru []string `json:"passthrough,omitempty"` // args after --
+	Detach   bool     `json:"detach"`                // GUI spawn (true) vs exec-replace (false)
+	Vault    string   `json:"vault"`                 // QI_VAULT_PATH that would be exported
+	Cwd      string   `json:"cwd"`                   // working dir; "" means the current dir is inherited
+}
+
+// printLaunchTarget renders a resolved launch target without executing it, as a
+// human summary or (with asJSON) a stable JSON object. It does NOT resolve the
+// harness against PATH — that is runHarness's job at exec time — so --print
+// reports the configured intent even when the binary is missing.
+func printLaunchTarget(cmd *cobra.Command, tgt config.LaunchTarget, passthrough []string, asJSON bool) error {
+	if asJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(launchResolutionJSON{
+			Matched:  tgt.Label,
+			FromEnv:  tgt.FromEnv,
+			Harness:  tgt.Harness.Harness,
+			Args:     tgt.Harness.Args,
+			Passthru: passthrough,
+			Detach:   tgt.Harness.Detach,
+			Vault:    tgt.VaultPath,
+			Cwd:      tgt.WorkDir,
+		})
+	}
+
+	out := cmd.OutOrStdout()
+	matched := tgt.Label
+	if matched == "" {
+		matched = "global default"
+	}
+	if tgt.FromEnv {
+		matched += " (from $WORK_CONTEXT)"
+	}
+	fmt.Fprintf(out, "matched:  %s\n", matched)
+	harness := tgt.Harness.Harness
+	if len(tgt.Harness.Args) > 0 {
+		harness += " " + strings.Join(tgt.Harness.Args, " ")
+	}
+	if len(passthrough) > 0 {
+		harness += " " + strings.Join(passthrough, " ")
+	}
+	fmt.Fprintf(out, "harness:  %s\n", harness)
+	fmt.Fprintf(out, "detach:   %t\n", tgt.Harness.Detach)
+	fmt.Fprintf(out, "vault:    %s\n", tgt.VaultPath)
+	cwd := tgt.WorkDir
+	if cwd == "" {
+		cwd = "(current dir)"
+	}
+	fmt.Fprintf(out, "cwd:      %s\n", cwd)
+	return nil
 }
 
 // runHarness launches lc.Harness with QI_VAULT_PATH=vaultPath exported. workDir

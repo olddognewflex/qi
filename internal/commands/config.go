@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,8 +16,33 @@ func newConfigCommand() *cobra.Command {
 		Use:   "config",
 		Short: "Manage qi configuration",
 	}
-	configCmd.AddCommand(newConfigEditCommand())
+	configCmd.AddCommand(newConfigEditCommand(), newConfigShowCommand())
 	return configCmd
+}
+
+// newConfigShowCommand implements `qi config show`: the fully-resolved config
+// as JSON, secrets redacted. It re-loads the config itself (rather than taking
+// the value wired at construction) so a broken config surfaces the same clear
+// load error here as everywhere else, instead of printing a hollow zero-value.
+func newConfigShowCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the fully-resolved config as JSON (secrets redacted)",
+		Long: "Resolve the config exactly as qi would at runtime — env overrides,\n" +
+			"client/project flattening, derived paths — and print it as JSON with\n" +
+			"secrets (passwords, tokens, client secrets, MCP env values) redacted.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			view := config.RedactView(cfg, config.ConfigPath())
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(view)
+		},
+	}
 }
 
 func newConfigEditCommand() *cobra.Command {

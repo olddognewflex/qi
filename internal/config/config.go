@@ -13,8 +13,8 @@ import (
 )
 
 type ICSCalendar struct {
-	Name string
-	URL  string
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 type CalDAVCalendar struct {
@@ -29,9 +29,9 @@ type CalDAVCalendar struct {
 // Path is a single collection directory, or — when Discover is set — a root
 // holding one directory per collection (khal's `type = discover`).
 type VdirCalendar struct {
-	Name     string
-	Path     string
-	Discover bool
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Discover bool   `json:"discover"`
 }
 
 type GoogleOAuth struct {
@@ -40,9 +40,9 @@ type GoogleOAuth struct {
 }
 
 type GoogleCalendar struct {
-	Name       string
-	Account    string
-	CalendarID string
+	Name       string `json:"name"`
+	Account    string `json:"account"`
+	CalendarID string `json:"calendar_id"`
 }
 
 type MCPServer struct {
@@ -86,9 +86,9 @@ type ProjectConfig struct {
 // `qi launch harness`. Resolved via Config.ResolveLaunchTarget: project override
 // > client default > global [launch] > $AI_HARNESS/$AI_EDITOR.
 type LaunchConfig struct {
-	Harness string   // executable resolved via PATH
-	Args    []string // prepended before any pass-through args
-	Detach  bool     // true for GUI apps (spawn + return); false replaces qi (TUI)
+	Harness string   `json:"harness"`        // executable resolved via PATH
+	Args    []string `json:"args,omitempty"` // prepended before any pass-through args
+	Detach  bool     `json:"detach"`         // true for GUI apps (spawn + return); false replaces qi (TUI)
 }
 
 // RemoteQueueConfig configures the cloud queue that `qi remote-drain` pulls
@@ -106,8 +106,8 @@ type RemoteQueueConfig struct {
 // on change. DebounceMS coalesces bursts of writes; 0 lets the watcher apply its
 // default (see internal/watcher.DefaultDebounce).
 type SyncConfig struct {
-	Watch      bool
-	DebounceMS int
+	Watch      bool `json:"watch"`
+	DebounceMS int  `json:"debounce_ms"`
 }
 
 // NotifyConfig configures qid's opt-in morning due-today notification. When
@@ -115,8 +115,8 @@ type SyncConfig struct {
 // (HH:MM, 24h) listing tasks due/scheduled for that day. An empty At lets the
 // scheduler apply its default (see internal/notify.DefaultAt). Read-only.
 type NotifyConfig struct {
-	DueToday bool
-	At       string
+	DueToday bool   `json:"due_today"`
+	At       string `json:"at,omitempty"`
 }
 
 // AIConfig selects the LLM provider(s) used by `qi ai run`. Two shapes:
@@ -126,11 +126,11 @@ type NotifyConfig struct {
 // unreachable. When Providers is non-empty it wins over the legacy keys;
 // provider names are parsed by ai.ParseProvider.
 type AIConfig struct {
-	Provider    string
-	Model       string
-	OllamaURL   string
-	OllamaModel string
-	Providers   []AIProviderConfig
+	Provider    string             `json:"provider,omitempty"`
+	Model       string             `json:"model,omitempty"`
+	OllamaURL   string             `json:"ollama_url,omitempty"`
+	OllamaModel string             `json:"ollama_model,omitempty"`
+	Providers   []AIProviderConfig `json:"providers,omitempty"`
 }
 
 // AIProviderConfig is one [[ai.providers]] entry. Model is required for the
@@ -138,11 +138,13 @@ type AIConfig struct {
 // sensible cross-service default. URL and APIKeyEnv override the built-in
 // endpoint and API-key env var (see ai.PresetFor); Ollama reads URL with
 // the same meaning as the legacy ollama_url.
+// APIKeyEnv is the NAME of an environment variable, not a secret, so it is safe
+// to surface in `qi config show`.
 type AIProviderConfig struct {
-	Provider  string
-	Model     string
-	URL       string
-	APIKeyEnv string
+	Provider  string `json:"provider"`
+	Model     string `json:"model,omitempty"`
+	URL       string `json:"url,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
 }
 
 // EmbeddingsConfig configures opt-in local semantic search. When Enabled,
@@ -151,9 +153,9 @@ type AIProviderConfig struct {
 // Empty Model/OllamaURL let the embed/search consumers apply their defaults
 // (see internal/embed.DefaultModel / DefaultOllamaURL).
 type EmbeddingsConfig struct {
-	Enabled   bool
-	Model     string
-	OllamaURL string
+	Enabled   bool   `json:"enabled"`
+	Model     string `json:"model,omitempty"`
+	OllamaURL string `json:"ollama_url,omitempty"`
 }
 
 type Config struct {
