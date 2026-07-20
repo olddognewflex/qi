@@ -114,6 +114,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd.Flags().Lookup("breakdown").NoOptDefVal = ai.DefaultBreakdownLevel
 
 	var listProject, listStatus, listDate, listBefore, listAfter string
+	var listJSON bool
 
 	listCmd := &cobra.Command{
 		Use:   "list",
@@ -143,6 +144,9 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if listJSON {
+				return printJSON(cmd, tasksToJSON(tasks))
+			}
 			if len(tasks) == 0 {
 				fmt.Fprintln(os.Stdout, "No matching tasks.")
 				return nil
@@ -158,6 +162,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	listCmd.Flags().StringVar(&listDate, "date", "", "scheduled/due date: today, overdue, or YYYY-MM-DD")
 	listCmd.Flags().StringVar(&listBefore, "before", "", "scheduled/due strictly before date (YYYY-MM-DD, today, tomorrow, +Nd)")
 	listCmd.Flags().StringVar(&listAfter, "after", "", "scheduled/due strictly after date (YYYY-MM-DD, today, tomorrow, +Nd)")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "output as JSON (stable schema for scripts/agents)")
 
 	doneCmd := &cobra.Command{
 		Use:   "done [fuzzy]",
