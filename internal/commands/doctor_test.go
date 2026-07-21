@@ -273,6 +273,121 @@ func TestDoctor_IndexMarkerAdvancedByUpsert(t *testing.T) {
 	}
 }
 
+// seedEmbedding opens the index (under the test's XDG_DATA_HOME) and stores one
+// vector, so checkEmbeddings has something to inspect.
+func seedEmbedding(t *testing.T, path, model string, vec []float32) {
+	t.Helper()
+	idx, err := index.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
+	if err := idx.UpsertEmbedding(path, model, vec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestModelsOtherThan(t *testing.T) {
+	if got := modelsOtherThan([]string{"m"}, "m"); len(got) != 0 {
+		t.Errorf("matching model should yield none, got %v", got)
+	}
+	got := modelsOtherThan([]string{"old", "m", "older"}, "m")
+	if len(got) != 2 || got[0] != "old" || got[1] != "older" {
+		t.Errorf("want [old older], got %v", got)
+	}
+}
+
+func TestDoctor_EmbeddingsDisabled(t *testing.T) {
+	cfg := healthyVault(t) // Embeddings.Enabled defaults false
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] embeddings — disabled") {
+		t.Fatalf("expected disabled embeddings line:\n%s", out)
+	}
+}
+
+func TestDoctor_EmbeddingsFresh(t *testing.T) {
+	cfg := healthyVault(t)
+	cfg.Embeddings = config.EmbeddingsConfig{Enabled: true, Model: "m"}
+	note := filepath.Join(cfg.NotesPath, "a.md")
+	if err := os.WriteFile(note, []byte("# A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rebuildIndex(t, cfg.VaultPath)
+	seedEmbedding(t, note, "m", []float32{1, 2, 3}) // updated_at now, after the note write
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("doctor failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok  ] embeddings — fresh (1 vectors, model m)") {
+		t.Fatalf("expected fresh embeddings line:\n%s", out)
+	}
+}
+
+func TestDoctor_EmbeddingsStale(t *testing.T) {
+	cfg := healthyVault(t)
+	cfg.Embeddings = config.EmbeddingsConfig{Enabled: true, Model: "m"}
+	note := filepath.Join(cfg.NotesPath, "a.md")
+	if err := os.WriteFile(note, []byte("# A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedEmbedding(t, note, "m", []float32{1, 2, 3})
+
+	// A note edited after the embed: its vector is now stale.
+	later := filepath.Join(cfg.NotesPath, "b.md")
+	if err := os.WriteFile(later, []byte("# B\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	touchLater(t, later)
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("stale embeddings should warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn] embeddings — stale") {
+		t.Fatalf("expected stale embeddings warning:\n%s", out)
+	}
+}
+
+func TestDoctor_EmbeddingsModelMismatch(t *testing.T) {
+	cfg := healthyVault(t)
+	cfg.Embeddings = config.EmbeddingsConfig{Enabled: true, Model: "new-model"}
+	note := filepath.Join(cfg.NotesPath, "a.md")
+	if err := os.WriteFile(note, []byte("# A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Vectors stored under a DIFFERENT model than the config now wants.
+	seedEmbedding(t, note, "old-model", []float32{1, 2, 3})
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("model mismatch should warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn] embeddings — built with old-model, config wants new-model") {
+		t.Fatalf("expected model-mismatch warning:\n%s", out)
+	}
+}
+
+func TestDoctor_EmbeddingsEnabledNoneBuilt(t *testing.T) {
+	cfg := healthyVault(t)
+	cfg.Embeddings = config.EmbeddingsConfig{Enabled: true, Model: "m"}
+	if err := os.WriteFile(filepath.Join(cfg.NotesPath, "a.md"), []byte("# A\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rebuildIndex(t, cfg.VaultPath) // FTS built, but no embeddings
+
+	out, err := runDoctor(t, cfg)
+	if err != nil {
+		t.Fatalf("none-built should warn, not fail: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[warn] embeddings — enabled but none built") {
+		t.Fatalf("expected none-built warning:\n%s", out)
+	}
+}
+
 // shortStateHome points XDG_STATE_HOME at a short mkdirtemp dir: unix socket
 // paths are capped (~104 bytes on darwin) and t.TempDir() paths blow past it.
 func shortStateHome(t *testing.T) {
