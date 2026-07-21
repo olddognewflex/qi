@@ -38,7 +38,11 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add <text>",
 		Short: "Add a task",
-		Args:  cobra.ExactArgs(1),
+		Example: "  qi task add \"Ship the release\" --due 2026-08-01\n" +
+			"  qi task add \"Water plants\" --schedule tomorrow --repeat \"every 3 days\"\n" +
+			"  qi task add \"Weekly review\" --repeat \"every week\" --project ops\n" +
+			"  qi task add \"Send invoice\" --client acme --due 2026-08-15",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var parsedDue *time.Time
 			if due != "" {
@@ -119,6 +123,10 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List tasks (filter by project, status, and/or date)",
+		Example: "  qi task list --date today\n" +
+			"  qi task list --status all --project ops\n" +
+			"  qi task list --before +7d          # due/scheduled within a week\n" +
+			"  qi task list --json                # stable JSON for scripts/agents",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filter := service.TaskFilter{
 				Project: listProject,
@@ -237,6 +245,9 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			"the date applies via the picker; with two, the first fuzzy-matches tasks.\n" +
 			"Date accepts YYYY-MM-DD, \"today\", \"tomorrow\", or \"+Nd\".\n" +
 			"\"+Nd\" offsets from each task's existing scheduled date (or today if unscheduled).",
+		Example: "  qi task schedule invoice tomorrow\n" +
+			"  qi task schedule \"call bank\" 2026-08-01\n" +
+			"  qi task schedule report +2d        # 2 days past its current schedule",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := ""

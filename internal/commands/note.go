@@ -2,13 +2,10 @@ package commands
 
 import (
 	"fmt"
-	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"qi/internal/config"
@@ -20,25 +17,13 @@ import (
 func newNoteCommand(cfg config.Config) *cobra.Command {
 	noteSvc := service.NoteService{NotesDir: cfg.NotesPath}
 
+	// Bare `qi note` shows help, like every other command group. It used to
+	// silently create an untitled inbox note and open Obsidian — an undocumented
+	// side effect where users expect help (#61). Use `qi note new` to create.
 	noteCmd := &cobra.Command{
 		Use:   "note",
 		Short: "Manage notes",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := os.MkdirAll(cfg.InboxPath, 0o755); err != nil {
-				return fmt.Errorf("create inbox dir: %w", err)
-			}
-			filename := fmt.Sprintf("untitled-%s.md", time.Now().Format("20060102-150405"))
-			full := filepath.Join(cfg.InboxPath, filename)
-			if err := os.WriteFile(full, []byte{}, 0o644); err != nil {
-				return fmt.Errorf("create note: %w", err)
-			}
-			vaultName := filepath.Base(cfg.VaultPath)
-			rel := "00-inbox/" + url.QueryEscape(filename)
-			uri := "obsidian://open?vault=" + url.QueryEscape(vaultName) +
-				"&file=" + rel
-			return openURL(uri)
-		},
 	}
 
 	var newProject string
@@ -46,7 +31,10 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 	newCmd := &cobra.Command{
 		Use:   "new <title>",
 		Short: "Create a new note",
-		Args:  cobra.ExactArgs(1),
+		Example: "  qi note new \"Retro notes\"\n" +
+			"  qi note new \"API design\" --body \"first thoughts...\"\n" +
+			"  qi note new \"Kickoff\" --client acme",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body, _ := cmd.Flags().GetString("body")
 
@@ -76,7 +64,10 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 	searchCmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Search notes via FTS index",
-		Args:  cobra.ExactArgs(1),
+		// Duplicates `qi search <query> --kind note`; kept working but deprecated
+		// so there is one canonical unified-search path (#61).
+		Deprecated: "use \"qi search <query> --kind note\"",
+		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			idx, err := index.Open()
 			if err != nil {

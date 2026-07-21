@@ -37,6 +37,10 @@ func newSearchCommand(cfg config.Config) *cobra.Command {
 			"(note / task / daily / inbox / other) derived from the vault subdir.\n" +
 			"Filter with --kind and cap results with --limit. With --semantic, rank by\n" +
 			"cosine similarity against local embeddings (requires `qi embed`).",
+		Example: "  qi search \"quarterly plan\"\n" +
+			"  qi search meeting --kind note --limit 5\n" +
+			"  qi search \"how did I fix the socket bug\" --semantic\n" +
+			"  qi search deploy --json",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, k := range kinds {
