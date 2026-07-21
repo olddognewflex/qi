@@ -74,7 +74,7 @@ vault/
 
 Machine-local (never synced, not in vault):
 - `$XDG_DATA_HOME/qi/qi.db` (or `~/.local/share/qi/qi.db`) — SQLite note index.
-- `$XDG_RUNTIME_DIR/qi/qid.sock` → `$XDG_STATE_HOME/qi/qid.sock` → `~/.local/state/qi/qid.sock` — qid unix socket (first that resolves; 0600). `--socket` overrides on both qid and the clients.
+- `$XDG_RUNTIME_DIR/qi/qid.sock` → `$XDG_STATE_HOME/qi/qid.sock` → `~/.local/state/qi/qid.sock` — qid unix socket (first that resolves; 0600). `--socket` overrides on both qid and the clients. `daemon.Listen` length-checks the path against the platform `sockaddr_un.sun_path` limit (`maxSocketPathLen`: 103 darwin / 107 elsewhere, via the `socket_darwin.go` / `socket_other.go` split) and returns a clear over-limit error *before* `net.Listen`, which otherwise fails with a bare `bind: invalid argument` that reads like a permissions bug (#68).
 - `audit.log` next to the socket — append-only JSONL approval audit log.
 
 ## Git hooks
