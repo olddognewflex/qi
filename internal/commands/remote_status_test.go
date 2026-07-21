@@ -31,7 +31,7 @@ func statsWorker(t *testing.T, pending, deadletter int) *httptest.Server {
 
 func runStatus(t *testing.T, cfg config.Config) string {
 	t.Helper()
-	cmd := newRemoteStatusCommand(cfg)
+	cmd := newRemoteStatusCommand(cfg, "status")
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
