@@ -3,6 +3,8 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"qi/internal/daemon"
+	"qi/internal/daemon/client"
+	"qi/internal/tools"
 )
 
 // findCommand returns the direct subcommand of parent whose Use begins with
@@ -122,6 +126,197 @@ func TestDaemonStaleness(t *testing.T) {
 	})
 }
 
+// shortSock returns a socket path under a short temp dir — macOS caps sun_path
+// at ~104 bytes and t.TempDir() alone can exceed it.
+func shortSock(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "qid69")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "q.sock")
+}
+
+// startStoppable brings up an in-process qid stand-in on sock that answers
+// `status` (pid 0, so waitProcessGone short-circuits) and `daemon.shutdown`
+// (cancels its own serve, closing the listener). Enough for stop's round-trip.
+func startStoppable(t *testing.T, sock string) {
+	t.Helper()
+	ln, err := daemon.Listen(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := daemon.NewServer(tools.NewRegistry(), nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	srv.Register("status", func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.Marshal(client.DaemonStatus{Pid: 0})
+	})
+	srv.Register("daemon.shutdown", func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		cancel()
+		return json.RawMessage(`{"status":"stopping"}`), nil
+	})
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx, ln) }()
+	waitAlive(t, sock)
+}
+
+func waitAlive(t *testing.T, sock string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if daemon.Alive(sock) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("socket %s never came alive", sock)
+}
+
+// superviseRelaunch mimics a KeepAlive supervisor: once sock goes quiet it waits
+// a beat (so stop's own WaitGone observes the quiet first, uninterfered), then
+// binds a bare accepting listener so waitRespawn sees qid "back". Returns a stop
+// func to tear the relaunched listener down.
+func superviseRelaunch(t *testing.T, sock string) func() {
+	t.Helper()
+	lnCh := make(chan net.Listener, 1)
+	go func() {
+		if !daemon.WaitGone(sock, 3*time.Second) {
+			lnCh <- nil
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+		ln, err := daemon.Listen(sock)
+		if err != nil {
+			lnCh <- nil
+			return
+		}
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				_ = c.Close()
+			}
+		}()
+		lnCh <- ln
+	}()
+	return func() {
+		if ln := <-lnCh; ln != nil {
+			_ = ln.Close()
+		}
+	}
+}
+
+// stubSupervisor replaces the launchd probe for the duration of a test, so the
+// real launchctl call (which would see the developer's own loaded qid agent)
+// never contaminates a stop.
+func stubSupervisor(t *testing.T, label string, supervised, known bool) {
+	t.Helper()
+	old := supervisorProbe
+	supervisorProbe = func(context.Context) (string, bool, bool) { return label, supervised, known }
+	t.Cleanup(func() { supervisorProbe = old })
+}
+
+func TestWaitRespawn(t *testing.T) {
+	t.Run("returns true when the socket comes back alive", func(t *testing.T) {
+		sock := shortSock(t)
+		startStoppable(t, sock) // a live listener is up
+		if !waitRespawn(sock, time.Second) {
+			t.Fatal("waitRespawn should detect the live socket")
+		}
+	})
+	t.Run("returns false when the socket stays quiet", func(t *testing.T) {
+		sock := shortSock(t)
+		start := time.Now()
+		if waitRespawn(sock, 300*time.Millisecond) {
+			t.Fatal("waitRespawn should not fire on an absent socket")
+		}
+		if time.Since(start) < 250*time.Millisecond {
+			t.Fatal("waitRespawn returned early; it should watch the whole window")
+		}
+	})
+}
+
+// TestDaemonStopDetectsLaunchdAgent covers the primary, timing-independent
+// signal: a loaded launchd agent. The probe reports supervised, so stop warns
+// immediately (no respawn poll needed) and splices the label into the remedy.
+func TestDaemonStopDetectsLaunchdAgent(t *testing.T) {
+	sock := shortSock(t)
+	startStoppable(t, sock)
+	stubSupervisor(t, "com.olddognewflex.qid", true, true)
+
+	env := &daemonEnv{socket: sock}
+	var out bytes.Buffer
+	respawned, err := env.stop(context.Background(), &out)
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if !respawned {
+		t.Fatalf("a loaded launchd agent must be reported; out=%q", out.String())
+	}
+	if strings.Contains(out.String(), "qid stopped") {
+		t.Errorf("must not claim a clean stop under a supervisor: %q", out.String())
+	}
+	for _, want := range []string{"com.olddognewflex.qid", "launchctl", "bootout"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("warning missing %q: %q", want, out.String())
+		}
+	}
+}
+
+// TestDaemonStopWarnsOnGenericRespawn covers the fallback path: when the probe
+// can't introspect the supervisor (non-macOS, or launchctl unavailable — known
+// is false), stop watches for the respawn instead and warns generically.
+func TestDaemonStopWarnsOnGenericRespawn(t *testing.T) {
+	sock := shortSock(t)
+	startStoppable(t, sock)
+	stubSupervisor(t, "", false, false) // undetermined → respawn-poll fallback
+
+	oldWindow := supervisorRecheckWindow
+	supervisorRecheckWindow = 2 * time.Second
+	t.Cleanup(func() { supervisorRecheckWindow = oldWindow })
+
+	teardown := superviseRelaunch(t, sock)
+	t.Cleanup(teardown)
+
+	env := &daemonEnv{socket: sock}
+	var out bytes.Buffer
+	respawned, err := env.stop(context.Background(), &out)
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if !respawned {
+		t.Fatalf("expected respawn to be detected; out=%q", out.String())
+	}
+	if strings.Contains(out.String(), "qid stopped") {
+		t.Errorf("must not claim a clean stop when relaunched: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "supervisor") {
+		t.Errorf("warning missing supervisor note: %q", out.String())
+	}
+}
+
+// TestDaemonRestartSkipsStartWhenSupervised guards the restart branch: when a
+// supervisor owns qid, restart must not attempt its own start. A deliberately
+// bogus --qid-bin would surface any start attempt as a not-found error, so
+// restart returning nil (with no "qid started") proves start was skipped.
+func TestDaemonRestartSkipsStartWhenSupervised(t *testing.T) {
+	sock := shortSock(t)
+	startStoppable(t, sock)
+	stubSupervisor(t, "com.olddognewflex.qid", true, true)
+
+	env := &daemonEnv{socket: sock, qidBin: filepath.Join(t.TempDir(), "nonexistent-qid")}
+	var out bytes.Buffer
+	if err := env.restart(context.Background(), &out); err != nil {
+		t.Fatalf("restart must not fail (nor attempt a start) under a supervisor: %v", err)
+	}
+	if strings.Contains(out.String(), "qid started") {
+		t.Errorf("restart should not have started qid: %q", out.String())
+	}
+}
+
 func TestDaemonStatusReportsNotRunning(t *testing.T) {
 	env := &daemonEnv{socket: filepath.Join(t.TempDir(), "absent.sock")}
 	var out bytes.Buffer
@@ -136,7 +331,7 @@ func TestDaemonStatusReportsNotRunning(t *testing.T) {
 func TestDaemonStopIsNoOpWhenNotRunning(t *testing.T) {
 	env := &daemonEnv{socket: filepath.Join(t.TempDir(), "absent.sock")}
 	var out bytes.Buffer
-	if err := env.stop(context.Background(), &out); err != nil {
+	if _, err := env.stop(context.Background(), &out); err != nil {
 		t.Fatalf("stop must be a no-op when the daemon is down: %v", err)
 	}
 	if !strings.Contains(out.String(), "not running") {
