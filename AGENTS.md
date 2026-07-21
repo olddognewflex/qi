@@ -24,7 +24,7 @@ Go CLI productivity tool over an Obsidian-compatible markdown vault. Three binar
 5. Vault parsing and formatting belongs in `internal/vault`.
 6. Domain types belong in `internal/domain`.
 7. AI features must be explicit and opt-in. No silent LLM usage in normal commands.
-8. Any AI-proposed mutation must require user confirmation before writing — enforced by the qid policy gate + approval queue, not by convention.
+8. Any AI-proposed mutation must require user confirmation before writing — routed by the qid policy gate + approval queue for any caller that identifies as AI. Caller identity is client-asserted, so the real boundary is the 0600 socket, not the label (see *The daemon trust model*).
 
 ---
 
@@ -69,7 +69,14 @@ Every tool call flows through one registry and one policy gate. The **caller ide
 - read-only tools — run immediately regardless of caller.
 - `ai-planner:<id>` (the `qi ai run` planner) and `mcp:<id>` (an external AI client via `qi-mcp`) — any **mutating** call routes through the approval queue. A human approves or denies with `qi ai approve <id>` / `qi ai deny <id>`. Every transition is written to the append-only audit log.
 
-No code path may let a non-cli caller mutate state without passing through `internal/policy` + `internal/approval`.
+No code path may let a caller *identifying as* non-cli mutate state without passing through `internal/policy` + `internal/approval`.
+
+**Where the boundary actually is.** The gate is structurally real *inside qid*, but it rests on two conventions worth stating plainly:
+
+- **Caller identity is client-asserted.** `caller` is a JSON field the client sends (`internal/daemon/server.go`), trusted verbatim. `qi ai tools call --caller cli` is a documented flag — so any same-UID process can dial the socket and claim `"cli"`. The gate defends against honest AI clients and against *other* users on the machine; it does **not** defend against compromised same-user code. The real trust boundary is the **0600 unix-domain socket** (owner-only), not the caller label.
+- **The audit log is a history record, not a tamper-evident trail.** No hash chain, and it is writable by the same user, so it records what honest clients did — it does not prove a malicious same-user process didn't do something else.
+
+This is the correct, defensible model for a single-user local daemon. State it accurately: the gate is *enforced for honest clients, bounded by 0600 socket permissions* — not "unbypassable."
 
 ---
 
