@@ -11,6 +11,7 @@ BINDIR  = $(PREFIX)/bin
 # self-signed code-signing certificate in Keychain Access (Certificate
 # Assistant > Create a Certificate > Code Signing), then:
 #   make install QI_SIGN_IDENTITY="<certificate name>"
+# Full walkthrough (cert creation, TCC grant, verification): docs/macos-launchd.md
 QI_SIGN_IDENTITY ?=
 
 tidy:
@@ -32,6 +33,8 @@ install: build
 	install bin/qi bin/qid bin/qi-mcp $(BINDIR)/
 ifneq ($(QI_SIGN_IDENTITY),)
 	codesign --force --sign "$(QI_SIGN_IDENTITY)" $(BINDIR)/qi $(BINDIR)/qid $(BINDIR)/qi-mcp
+	codesign --verify --strict $(BINDIR)/qi $(BINDIR)/qid $(BINDIR)/qi-mcp
+	@echo "signed qi, qid, qi-mcp with \"$(QI_SIGN_IDENTITY)\" (TCC grant now survives rebuilds)"
 else
 	@if [ "$$(uname)" = "Darwin" ]; then \
 		echo "note: unsigned install — if qid runs under launchd and the vault is in"; \

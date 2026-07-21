@@ -144,6 +144,13 @@ go build -o bin/qi     ./cmd/qi
 go build -o bin/qid    ./cmd/qid
 go build -o bin/qi-mcp ./cmd/qi-mcp
 
+# Or install all three to ~/.local/bin:
+make install
+# On macOS, if you run qid under launchd against a vault in ~/Documents,
+# sign with a stable identity so the TCC grant survives rebuilds — see
+# docs/macos-launchd.md:
+#   make install QI_SIGN_IDENTITY="qi-local"
+
 # Stateless CLI works without qid:
 bin/qi capture "Remember to fix the parser"
 bin/qi task add "Fix the parser" --project qi --due 2026-05-01
