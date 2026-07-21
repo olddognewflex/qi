@@ -107,6 +107,12 @@ func fakeQidMain(sock string) {
 // and the default temp dir alone can exceed it.
 func spawnEnv(t *testing.T, mode string) *daemonEnv {
 	t.Helper()
+	// The spawned fake qid has no supervisor. Stub the probe to say so
+	// (known, not supervised) so stop reports a clean "qid stopped" without the
+	// respawn-poll — and so the real launchctl probe never sees the developer's
+	// own loaded qid agent and turns these round-trips into supervisor warnings.
+	stubSupervisor(t, "", false, true)
+
 	dir, err := os.MkdirTemp("/tmp", "qid-spawn")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
@@ -116,7 +122,7 @@ func spawnEnv(t *testing.T, mode string) *daemonEnv {
 	t.Setenv(fakeQidModeEnv, mode)
 	t.Cleanup(func() {
 		env := &daemonEnv{socket: sock, qidBin: os.Args[0]}
-		_ = env.stop(context.Background(), io.Discard)
+		_, _ = env.stop(context.Background(), io.Discard)
 		_ = os.RemoveAll(dir)
 	})
 	return &daemonEnv{socket: sock, qidBin: os.Args[0]}
@@ -183,7 +189,7 @@ func TestDaemonStartStopRoundTrip(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := env.stop(context.Background(), &out); err != nil {
+	if _, err := env.stop(context.Background(), &out); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if !strings.Contains(out.String(), "qid stopped") {
@@ -211,7 +217,7 @@ func TestDaemonRestartLeavesASurvivingDaemon(t *testing.T) {
 
 	for i := range 5 {
 		out.Reset()
-		if err := env.stop(context.Background(), &out); err != nil {
+		if _, err := env.stop(context.Background(), &out); err != nil {
 			t.Fatalf("restart %d stop: %v", i, err)
 		}
 		if err := env.start(context.Background(), &out); err != nil {
@@ -250,7 +256,7 @@ func TestDaemonRestartSurvivesLingeringPredecessor(t *testing.T) {
 		t.Fatalf("wait ready: %v", err)
 	}
 
-	if err := env.stop(context.Background(), &out); err != nil {
+	if _, err := env.stop(context.Background(), &out); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if alive, known := processAlive(predecessor.Pid); known && alive {

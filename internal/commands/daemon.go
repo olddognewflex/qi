@@ -21,6 +21,15 @@ var (
 	daemonStartTimeout  = 5 * time.Second
 	daemonStopTimeout   = 5 * time.Second
 	daemonStatusTimeout = 2 * time.Second
+	// supervisorRecheckWindow is how long `stop` watches for qid to come back
+	// after a clean shutdown — the signature of a process supervisor (a launchd
+	// agent with KeepAlive, systemd Restart=always) that owns qid's lifecycle
+	// and relaunched it. Without this, `stop` truthfully reports "qid stopped"
+	// for the instant the socket is quiet, then the supervisor respawns qid a
+	// beat later and the report is a lie (issue #69). launchd typically
+	// relaunches within ~1s; a throttled agent past this window is missed and
+	// still reported stopped.
+	supervisorRecheckWindow = 2 * time.Second
 )
 
 // daemonEnv holds the flags shared by the daemon subcommands. The subcommands
@@ -67,7 +76,8 @@ func newDaemonCommand() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return env.stop(cmd.Context(), cmd.OutOrStdout())
+			_, err := env.stop(cmd.Context(), cmd.OutOrStdout())
+			return err
 		},
 	})
 	root.AddCommand(&cobra.Command{
@@ -76,10 +86,7 @@ func newDaemonCommand() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := env.stop(cmd.Context(), cmd.OutOrStdout()); err != nil {
-				return err
-			}
-			return env.start(cmd.Context(), cmd.OutOrStdout())
+			return env.restart(cmd.Context(), cmd.OutOrStdout())
 		},
 	})
 	return root
@@ -148,6 +155,22 @@ func (e *daemonEnv) status(ctx context.Context, out io.Writer) error {
 	_, staleSummary := daemonStaleness(st.Exe, e.qidBin, st.StartedAt)
 	fmt.Fprintf(out, "binary:    %s\n", staleSummary)
 	return nil
+}
+
+// restart stops qid and starts it again. If a supervisor relaunched qid during
+// the stop (respawned), it returns without starting: restart can neither keep a
+// supervised daemon down nor choose its binary, and racing a second start would
+// just print a misleading "already running". stop has already explained the
+// situation and pointed at the launchctl remedy.
+func (e *daemonEnv) restart(ctx context.Context, out io.Writer) error {
+	respawned, err := e.stop(ctx, out)
+	if err != nil {
+		return err
+	}
+	if respawned {
+		return nil
+	}
+	return e.start(ctx, out)
 }
 
 // start spawns qid detached and waits until it answers the status RPC. It is
@@ -231,19 +254,21 @@ func exitReason(err error) string {
 
 // stop asks the running daemon to shut down and waits for the socket to go
 // quiet. There is no pid file, so a daemon that ignores the RPC is reported as
-// an error rather than signalled or hunted down by name.
-func (e *daemonEnv) stop(ctx context.Context, out io.Writer) error {
+// an error rather than signalled or hunted down by name. It returns whether a
+// process supervisor relaunched qid within supervisorRecheckWindow — in which
+// case the stop did not stick and stop has said so.
+func (e *daemonEnv) stop(ctx context.Context, out io.Writer) (respawned bool, err error) {
 	sock, err := e.socketPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !daemon.Alive(sock) {
 		fmt.Fprintf(out, "qid not running (socket %s)\n", sock)
-		return nil
+		return false, nil
 	}
 	cl, err := client.Dial(sock, dialTimeout)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer cl.Close()
 
@@ -264,20 +289,82 @@ func (e *daemonEnv) stop(ctx context.Context, out io.Writer) error {
 	if err := cl.Shutdown(callCtx); err != nil {
 		var ce *client.CallError
 		if errors.As(err, &ce) && ce.Code == daemon.CodeMethodNotFound {
-			return fmt.Errorf("running qid predates the daemon.shutdown RPC; stop that process manually, then run 'qi daemon start'")
+			return false, fmt.Errorf("running qid predates the daemon.shutdown RPC; stop that process manually, then run 'qi daemon start'")
 		}
-		return fmt.Errorf("shutdown: %w", err)
+		return false, fmt.Errorf("shutdown: %w", err)
 	}
 
 	deadline := time.Now().Add(daemonStopTimeout)
 	if !daemon.WaitGone(sock, time.Until(deadline)) {
-		return fmt.Errorf("qid still answering on %s after %s", sock, daemonStopTimeout)
+		return false, fmt.Errorf("qid still answering on %s after %s", sock, daemonStopTimeout)
 	}
 	if err := waitProcessGone(pid, time.Until(deadline)); err != nil {
-		return err
+		return false, err
+	}
+
+	// The socket is quiet and the process is gone — but a process supervisor
+	// (launchd KeepAlive, systemd Restart=always) notices qid died and relaunches
+	// it. Reporting "qid stopped" while a supervisor brings it back is the trap
+	// this guards against (issue #69).
+	//
+	// Prefer asking the supervisor directly: a loaded launchd agent is a
+	// timing-independent signal, where a respawn-poll can miss a throttled
+	// relaunch (launchd's ThrottleInterval can delay it up to ~10s). Fall back to
+	// watching for the respawn only when we cannot introspect the supervisor
+	// (non-macOS, or launchctl unavailable) — which also covers systemd et al.
+	if label, supervised, known := supervisorProbe(ctx); known {
+		if supervised {
+			fmt.Fprint(out, supervisorRelaunchWarning(label))
+			return true, nil
+		}
+		fmt.Fprintln(out, "qid stopped")
+		return false, nil
+	}
+	if waitRespawn(sock, supervisorRecheckWindow) {
+		fmt.Fprint(out, supervisorRelaunchWarning(""))
+		return true, nil
 	}
 	fmt.Fprintln(out, "qid stopped")
-	return nil
+	return false, nil
+}
+
+// supervisorProbe detects a launchd-style supervisor for qid. A package var so
+// tests can stub out the real launchctl call — which, run in-process, would
+// otherwise see the developer's own loaded qid agent and contaminate every stop
+// test.
+var supervisorProbe = qidSupervisor
+
+// waitRespawn reports whether qid becomes reachable again within budget after a
+// clean stop — the observable signature of a supervisor that owns qid's
+// lifecycle. Supervisor-agnostic fallback for when supervisorProbe cannot
+// introspect the supervisor. Returns false if the socket stays quiet for the
+// whole window.
+func waitRespawn(sock string, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for {
+		if daemon.Alive(sock) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// supervisorRelaunchWarning is what `stop`/`restart` print when a supervisor
+// owns qid. When the launchd label is known it is spliced into the remedy
+// commands; otherwise the user is told how to find it.
+func supervisorRelaunchWarning(label string) string {
+	if label == "" {
+		label = "<label>  # find it: launchctl list | grep qid"
+	}
+	return fmt.Sprintf(`warning: a process supervisor owns qid's lifecycle and relaunches it, so
+         'qi daemon stop' cannot keep it down and 'qi daemon restart' cannot
+         choose its binary. On macOS this is a launchd agent (KeepAlive):
+           keep it down:     launchctl bootout gui/%[1]d/%[2]s
+           restart it fresh: launchctl kickstart -k gui/%[1]d/%[2]s
+`, os.Getuid(), label)
 }
 
 // waitProcessGone polls for the daemon process to actually exit after its
