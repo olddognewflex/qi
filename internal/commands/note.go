@@ -18,7 +18,7 @@ import (
 )
 
 func newNoteCommand(cfg config.Config) *cobra.Command {
-	noteSvc := service.NoteService{NotesDir: cfg.NotesPath}
+	noteSvc := service.NewNoteService(cfg.NotesPath)
 
 	noteCmd := &cobra.Command{
 		Use:   "note",
@@ -56,7 +56,7 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			svc := service.NoteService{NotesDir: notesDir}
+			svc := service.NewNoteService(notesDir)
 			note, err := svc.AddNote(args[0], body)
 			if err != nil {
 				return err
