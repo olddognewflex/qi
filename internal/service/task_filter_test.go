@@ -1,7 +1,9 @@
 package service
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -200,5 +202,132 @@ func TestListTasks_ComposedAND(t *testing.T) {
 	}
 	if len(all) != 2 {
 		t.Fatalf("want 2 work-today tasks (open+done), got %d: %v", len(all), all)
+	}
+}
+
+func TestListTasks_ActionableOn_keeps_only_tasks_without_future_dates(t *testing.T) {
+	// Given
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.Local)
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	svc := TaskService{TaskFilePath: filepath.Join(tasksDir, "inbox.md"), TasksDir: tasksDir}
+	yesterday := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	tomorrow := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	inputs := []AddTaskInput{
+		{Text: "undated"},
+		{Text: "due yesterday", Due: &yesterday},
+		{Text: "scheduled today", Scheduled: &today},
+		{Text: "due and scheduled today", Due: &today, Scheduled: &today},
+		{Text: "completed due today", Due: &today},
+		{Text: "due tomorrow", Due: &tomorrow},
+		{Text: "scheduled tomorrow", Scheduled: &tomorrow},
+		{Text: "due today but scheduled tomorrow", Due: &today, Scheduled: &tomorrow},
+		{Text: "scheduled today but due tomorrow", Due: &tomorrow, Scheduled: &today},
+	}
+	for _, input := range inputs {
+		if err := svc.AddTask(input); err != nil {
+			t.Fatalf("add %q: %v", input.Text, err)
+		}
+	}
+	open, err := svc.ListOpenTasks()
+	if err != nil {
+		t.Fatalf("list before complete: %v", err)
+	}
+	for _, task := range open {
+		if task.Text == "completed due today" {
+			if err := svc.CompleteTask(task); err != nil {
+				t.Fatalf("complete: %v", err)
+			}
+		}
+	}
+
+	// When
+	got, err := svc.ListTasks(TaskFilter{Status: "all", ActionableOn: &today, Now: now})
+	// Then
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("want 4 actionable tasks, got %d: %v", len(got), got)
+	}
+	for i, want := range []string{"undated", "due yesterday", "scheduled today", "due and scheduled today"} {
+		if got[i].Text != want {
+			t.Errorf("task %d = %q, want %q", i, got[i].Text, want)
+		}
+	}
+}
+
+func TestListTasks_ActionableOn_sorts_priority_descending(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	svc := TaskService{TaskFilePath: filepath.Join(tasksDir, "inbox.md"), TasksDir: tasksDir}
+	oversizedPriority := strings.Repeat("9", maxNumericPriorityLength+1)
+	for _, text := range []string{
+		"low [priority:: 1]",
+		"scientific text [priority:: 1e3]",
+		"high first [priority:: 10]",
+		"unprioritized",
+		"alpha text [priority:: alpha]",
+		"oversized text [priority:: " + oversizedPriority + "]",
+		"infinity text [priority:: infinity]",
+		"nan text [priority:: nan]",
+		"high second [priority:: 10]",
+		"medium [priority:: 2]",
+	} {
+		if err := svc.AddTask(AddTaskInput{Text: text}); err != nil {
+			t.Fatalf("add %q: %v", text, err)
+		}
+	}
+	cutoff := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+
+	// When
+	got, err := svc.ListTasks(TaskFilter{ActionableOn: &cutoff})
+	// Then
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	for i, want := range []string{
+		"nan text [priority:: nan]",
+		"infinity text [priority:: infinity]",
+		"alpha text [priority:: alpha]",
+		"oversized text [priority:: " + oversizedPriority + "]",
+		"scientific text [priority:: 1e3]",
+		"high first [priority:: 10]",
+		"high second [priority:: 10]",
+		"medium [priority:: 2]",
+		"low [priority:: 1]",
+		"unprioritized",
+	} {
+		if got[i].Text != want {
+			t.Errorf("task %d = %q, want %q", i, got[i].Text, want)
+		}
+	}
+}
+
+func TestListTasks_ActionableOn_sorts_recurring_tasks_by_following_priority(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, "10-tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "- [ ] Low recurring 🔁 every week [priority:: 2]\n" +
+		"- [ ] High recurring 🔁 every week [priority:: 10]\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "inbox.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write tasks: %v", err)
+	}
+	svc := TaskService{TaskFilePath: filepath.Join(tasksDir, "inbox.md"), TasksDir: tasksDir}
+	cutoff := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+
+	// When
+	got, err := svc.ListTasks(TaskFilter{ActionableOn: &cutoff})
+	// Then
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 2 || got[0].Text != "High recurring [priority:: 10]" || got[1].Text != "Low recurring [priority:: 2]" {
+		t.Fatalf("unexpected recurring priority order: %v", got)
 	}
 }
