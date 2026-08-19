@@ -5,6 +5,7 @@ package approval
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -75,7 +76,7 @@ func OpenAudit(path string) (*Audit, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("audit mkdir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("audit open: %w", err)
 	}
@@ -93,7 +94,51 @@ func OpenAudit(path string) (*Audit, error) {
 	if err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
+	if err := repairAuditTail(f); err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
 	return &Audit{f: f, path: path, reserved: make(map[string]int64), recordCount: len(entries)}, nil
+}
+
+func repairAuditTail(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("audit inspect tail: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	readSize := min(info.Size(), int64(MaxAuditRecordBytes+1))
+	start := info.Size() - readSize
+	data := make([]byte, readSize)
+	if _, err := file.ReadAt(data, start); err != nil {
+		return fmt.Errorf("audit read tail: %w", err)
+	}
+	if data[len(data)-1] == '\n' {
+		return nil
+	}
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	tailStart := lastNewline + 1
+	var entry AuditEntry
+	valid := json.Unmarshal(data[tailStart:], &entry) == nil &&
+		(entry.Outcome == nil || len(entry.Outcome.Result) <= MaxTerminalResultBytes)
+	if valid {
+		if info.Size() == MaxAuditLogBytes {
+			return fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
+		}
+		if _, err := file.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("audit terminate tail: %w", err)
+		}
+	} else {
+		validBytes := start + int64(tailStart)
+		if err := file.Truncate(validBytes); err != nil {
+			return fmt.Errorf("audit truncate tail: %w", err)
+		}
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("audit sync repaired tail: %w", err)
+	}
+	return nil
 }
 
 // Append writes one entry to the log. The entry's Time is set if zero.

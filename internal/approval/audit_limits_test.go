@@ -32,6 +32,55 @@ func TestOpenAuditRepairsExistingFileMode(t *testing.T) {
 	}
 }
 
+func TestOpenAuditTruncatesIncompleteFinalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	data := `{"event":"enqueue","id":"complete"}` + "\n" + `{"event":"approve"`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := OpenAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Append(AuditEntry{Event: EventEnqueue, ID: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ReadAuditLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].ID != "complete" || entries[1].ID != "next" {
+		t.Fatalf("entries = %#v, want complete then next", entries)
+	}
+}
+
+func TestOpenAuditTerminatesValidFinalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	if err := os.WriteFile(path, []byte(`{"event":"enqueue","id":"first"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := OpenAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Append(AuditEntry{Event: EventEnqueue, ID: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ReadAuditLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].ID != "first" || entries[1].ID != "second" {
+		t.Fatalf("entries = %#v, want first then second", entries)
+	}
+}
+
 func TestReadAuditLogRejectsEntryLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.log")
 	data := strings.Repeat("{}\n", MaxAuditReplayEntries+1)

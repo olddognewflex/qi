@@ -8,12 +8,19 @@ import (
 )
 
 type SessionLease struct {
-	file   *os.File
-	verify func() error
-	remove func() error
-	once   sync.Once
-	err    error
+	file         *os.File
+	verify       func() error
+	remove       func() error
+	localRelease func()
+	once         sync.Once
+	err          error
 }
+
+var processSessionLeases = struct {
+	sync.Mutex
+	next  uint64
+	files map[uint64]os.FileInfo
+}{files: make(map[uint64]os.FileInfo)}
 
 func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 	name := id.String() + ".lock"
@@ -40,7 +47,12 @@ func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 	if err := file.Chmod(0o600); err != nil {
 		return nil, errors.Join(fmt.Errorf("repair planner session lease mode: %w", err), file.Close())
 	}
+	localRelease, err := reserveProcessSessionLease(info)
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
 	if err := tryLockSession(file); err != nil {
+		localRelease()
 		closeErr := file.Close()
 		if errors.Is(err, ErrSessionLeaseHeld) {
 			return nil, errors.Join(err, closeErr)
@@ -48,7 +60,8 @@ func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 		return nil, errors.Join(fmt.Errorf("lock planner session lease: %w", err), closeErr)
 	}
 	return &SessionLease{
-		file: file,
+		file:         file,
+		localRelease: localRelease,
 		verify: func() error {
 			held, err := file.Stat()
 			if err != nil {
@@ -76,12 +89,16 @@ func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 }
 
 func (l *SessionLease) Release() error {
-	l.once.Do(func() { l.err = l.file.Close() })
+	l.once.Do(func() {
+		defer l.localRelease()
+		l.err = l.file.Close()
+	})
 	return l.err
 }
 
 func (l *SessionLease) Complete() error {
 	l.once.Do(func() {
+		defer l.localRelease()
 		if err := l.verify(); err != nil {
 			l.err = errors.Join(err, l.file.Close())
 			return
@@ -89,4 +106,25 @@ func (l *SessionLease) Complete() error {
 		l.err = completeSessionLease(l.file, l.remove)
 	})
 	return l.err
+}
+
+func reserveProcessSessionLease(info os.FileInfo) (func(), error) {
+	processSessionLeases.Lock()
+	defer processSessionLeases.Unlock()
+	for _, held := range processSessionLeases.files {
+		if os.SameFile(info, held) {
+			return nil, ErrSessionLeaseHeld
+		}
+	}
+	processSessionLeases.next++
+	token := processSessionLeases.next
+	processSessionLeases.files[token] = info
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			processSessionLeases.Lock()
+			delete(processSessionLeases.files, token)
+			processSessionLeases.Unlock()
+		})
+	}, nil
 }
