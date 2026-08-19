@@ -1,7 +1,5 @@
 package approval
 
-import "bytes"
-
 // RestoreStats reports how many live and lookup-only entries replay restored.
 type RestoreStats struct {
 	Pending  int
@@ -73,7 +71,8 @@ func terminalAuditMatchesEnqueue(terminal, enqueue AuditEntry) bool {
 	return terminal.Caller == enqueue.Caller &&
 		terminal.CallID == enqueue.CallID &&
 		terminal.Tool == enqueue.Tool &&
-		bytes.Equal(terminal.Params, enqueue.Params)
+		terminal.ParamsHash != "" &&
+		terminal.ParamsHash == auditParamsHash(enqueue.Params)
 }
 
 func (q *Queue) hasID(id string) bool {

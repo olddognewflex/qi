@@ -317,8 +317,8 @@ func TestQueueRestoreRejectsMismatchedTerminalBinding(t *testing.T) {
 	terminal := AuditEntry{
 		Time: time.Now(), Event: EventExecute, ID: enqueue.ID,
 		Caller: enqueue.Caller, CallID: enqueue.CallID, Tool: enqueue.Tool,
-		Params:  cloneRaw(enqueue.Params),
-		Outcome: &TerminalOutcome{Status: StatusExecuted, Result: json.RawMessage(`{"id":"wrong"}`)},
+		ParamsHash: auditParamsHash(enqueue.Params),
+		Outcome:    &TerminalOutcome{Status: StatusExecuted, Result: json.RawMessage(`{"id":"wrong"}`)},
 	}
 	tests := []struct {
 		name   string
@@ -327,7 +327,7 @@ func TestQueueRestoreRejectsMismatchedTerminalBinding(t *testing.T) {
 		{name: "caller", mutate: func(e *AuditEntry) { e.Caller = "ai-planner:session-b" }},
 		{name: "call id", mutate: func(e *AuditEntry) { e.CallID = "call-b" }},
 		{name: "tool", mutate: func(e *AuditEntry) { e.Tool = "vault.capture" }},
-		{name: "params", mutate: func(e *AuditEntry) { e.Params = json.RawMessage(`{"text":"b"}`) }},
+		{name: "params", mutate: func(e *AuditEntry) { e.ParamsHash = auditParamsHash(json.RawMessage(`{"text":"b"}`)) }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

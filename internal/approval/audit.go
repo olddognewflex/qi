@@ -5,6 +5,7 @@ package approval
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,16 +36,17 @@ const (
 
 // AuditEntry is a single line in the audit log.
 type AuditEntry struct {
-	Time    time.Time        `json:"time"`
-	Event   AuditEvent       `json:"event"`
-	ID      string           `json:"id"`
-	Caller  string           `json:"caller,omitempty"`
-	CallID  string           `json:"call_id,omitempty"`
-	Tool    string           `json:"tool,omitempty"`
-	Reason  string           `json:"reason,omitempty"`
-	Err     string           `json:"err,omitempty"`
-	Params  json.RawMessage  `json:"params,omitempty"`
-	Outcome *TerminalOutcome `json:"outcome,omitempty"`
+	Time       time.Time        `json:"time"`
+	Event      AuditEvent       `json:"event"`
+	ID         string           `json:"id"`
+	Caller     string           `json:"caller,omitempty"`
+	CallID     string           `json:"call_id,omitempty"`
+	Tool       string           `json:"tool,omitempty"`
+	Reason     string           `json:"reason,omitempty"`
+	Err        string           `json:"err,omitempty"`
+	Params     json.RawMessage  `json:"params,omitempty"`
+	ParamsHash string           `json:"params_hash,omitempty"`
+	Outcome    *TerminalOutcome `json:"outcome,omitempty"`
 }
 
 // TerminalOutcome is present only on durable terminal records. Its pointer
@@ -60,9 +62,11 @@ type TerminalOutcome struct {
 
 // Audit is an append-only JSONL writer. Safe for concurrent use.
 type Audit struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
+	mu            sync.Mutex
+	f             *os.File
+	path          string
+	reserved      map[string]int64
+	reservedBytes int64
 }
 
 // OpenAudit opens (or creates) the audit log at path with 0600 perms.
@@ -84,7 +88,7 @@ func OpenAudit(path string) (*Audit, error) {
 	if err := f.Chmod(0o600); err != nil {
 		return nil, errors.Join(fmt.Errorf("audit chmod: %w", err), f.Close())
 	}
-	return &Audit{f: f, path: path}, nil
+	return &Audit{f: f, path: path, reserved: make(map[string]int64)}, nil
 }
 
 // Append writes one entry to the log. The entry's Time is set if zero.
@@ -109,11 +113,19 @@ func (a *Audit) Append(e AuditEntry) error {
 	if err != nil {
 		return fmt.Errorf("audit inspect before write: %w", err)
 	}
-	required := len(line)
+	reservedAfter := a.reservedBytes
+	reservation := a.reserved[e.ID]
+	if e.Event == EventExecute || e.Event == EventFail {
+		reservedAfter -= reservation
+	}
+	required := int64(len(line))
 	if e.Event == EventApprove {
+		if reservation != 0 {
+			return fmt.Errorf("audit terminal capacity already reserved for %s", e.ID)
+		}
 		required += MaxAuditRecordBytes
 	}
-	if info.Size()+int64(required) > MaxAuditLogBytes {
+	if info.Size()+reservedAfter+required > MaxAuditLogBytes {
 		return fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
 	}
 	n, err := a.f.Write(line)
@@ -126,7 +138,21 @@ func (a *Audit) Append(e AuditEntry) error {
 	if err := a.f.Sync(); err != nil {
 		return fmt.Errorf("audit sync: %w", err)
 	}
+	switch e.Event {
+	case EventApprove:
+		a.reserved[e.ID] = MaxAuditRecordBytes
+		a.reservedBytes += MaxAuditRecordBytes
+	case EventExecute, EventFail:
+		if reservation != 0 {
+			delete(a.reserved, e.ID)
+			a.reservedBytes -= reservation
+		}
+	}
 	return nil
+}
+
+func auditParamsHash(params json.RawMessage) string {
+	return fmt.Sprintf("%x", sha256.Sum256(params))
 }
 
 // Path returns the audit log location.
