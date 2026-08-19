@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"qi/internal/approval"
 	"qi/internal/daemon"
@@ -26,10 +27,14 @@ type stubLLM struct {
 	captured  []GenerateRequest
 	state     ProviderState
 	stateErr  error
+	stateHook func()
 	idx       int
 }
 
 func (s *stubLLM) ProviderState() (ProviderState, error) {
+	if s.stateHook != nil {
+		s.stateHook()
+	}
 	if s.stateErr != nil {
 		return ProviderState{}, s.stateErr
 	}
@@ -318,6 +323,35 @@ func TestRunDeniesPendingApprovalWhenProviderStateFails(t *testing.T) {
 				t.Fatalf("approvals = %+v, want one denied approval", entries)
 			}
 		})
+	}
+}
+
+func TestRunDeniesPendingApprovalAfterContextCancellation(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	registry := tools.NewRegistry()
+	if err := builtin.RegisterCapture(registry, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	queue := approval.NewQueue(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	llm := &stubLLM{
+		stateHook: func() { <-ctx.Done() },
+		stateErr:  errors.New("state failed"),
+		responses: []*GenerateResponse{
+			toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+		},
+	}
+	planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), llm)
+
+	_, err := planner.Run(ctx, "capture this")
+
+	if err == nil {
+		t.Fatal("provider state failure was accepted")
+	}
+	entries := queue.List("")
+	if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
+		t.Fatalf("approvals = %+v, want one denied approval", entries)
 	}
 }
 

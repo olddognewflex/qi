@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"qi/internal/daemon/client"
 	"qi/internal/tools"
@@ -86,9 +87,11 @@ func (p *Planner) loop(ctx context.Context, messages []Message, toolDefs []ToolD
 }
 
 func (p *Planner) denyUnpersistedApprovals(ctx context.Context, pendings []PendingCall) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	var combined error
 	for _, pending := range pendings {
-		if _, err := p.qid.DenyApproval(ctx, pending.ApprovalID, "planner session persistence failed"); err != nil {
+		if _, err := p.qid.DenyApproval(cleanupCtx, pending.ApprovalID, "planner session persistence failed"); err != nil {
 			combined = errors.Join(combined, fmt.Errorf("ai: deny unpersisted approval %s: %w", pending.ApprovalID, err))
 		}
 	}
