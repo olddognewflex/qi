@@ -57,20 +57,23 @@ func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 	}
 	info, err := file.Stat()
 	if err != nil {
+		closeErr := file.Close()
 		localRelease()
-		return nil, errors.Join(fmt.Errorf("inspect planner session lease: %w", err), file.Close())
+		return nil, errors.Join(fmt.Errorf("inspect planner session lease: %w", err), closeErr)
 	}
 	if !info.Mode().IsRegular() || (expected != nil && !os.SameFile(expected, info)) {
+		closeErr := file.Close()
 		localRelease()
-		return nil, errors.Join(fmt.Errorf("%w: lease file is not regular", ErrInvalidSession), file.Close())
+		return nil, errors.Join(fmt.Errorf("%w: lease file is not regular", ErrInvalidSession), closeErr)
 	}
 	if err := file.Chmod(0o600); err != nil {
+		closeErr := file.Close()
 		localRelease()
-		return nil, errors.Join(fmt.Errorf("repair planner session lease mode: %w", err), file.Close())
+		return nil, errors.Join(fmt.Errorf("repair planner session lease mode: %w", err), closeErr)
 	}
 	if err := tryLockSession(file); err != nil {
-		localRelease()
 		closeErr := file.Close()
+		localRelease()
 		if errors.Is(err, ErrSessionLeaseHeld) {
 			return nil, errors.Join(err, closeErr)
 		}
