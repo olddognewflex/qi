@@ -9,12 +9,38 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"qi/internal/ai"
 	"qi/internal/config"
 	"qi/internal/domain"
 	"qi/internal/service"
 	"qi/internal/tui"
 )
+
+// stdinIsTTY reports whether stdin is an interactive terminal. A package var so
+// tests can force the no-TTY path (in a test binary stdin is already not a TTY,
+// but overriding keeps the intent explicit).
+var stdinIsTTY = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// pickTasks resolves an ambiguous match to a selection. With a terminal it
+// launches the interactive picker; without one (a pipe, an agent) it prints the
+// candidates and returns an error telling the user to narrow the match — instead
+// of dying inside bubbletea with a raw "open /dev/tty" error (#62). qi inbox has
+// --dry-run as its headless path; the task pickers had nothing.
+func pickTasks(cmd *cobra.Command, title string, candidates []domain.Task) ([]domain.Task, error) {
+	if !stdinIsTTY() {
+		out := cmd.ErrOrStderr()
+		fmt.Fprintf(out, "%s — %d candidates; the interactive picker needs a terminal.\n", title, len(candidates))
+		for _, t := range candidates {
+			fmt.Fprintf(out, "  - %s\n", taskDisplayLine(t))
+		}
+		fmt.Fprintln(out, "Re-run with a more specific query (or an exact single match) to select non-interactively.")
+		return nil, fmt.Errorf("ambiguous match: %d tasks and no terminal for the picker", len(candidates))
+	}
+	return tui.PickTasks(title, candidates)
+}
 
 func newTaskCommand(cfg config.Config) *cobra.Command {
 	svc := service.NewTaskService(cfg.TaskFilePath)
@@ -217,7 +243,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			if query != "" {
 				title = fmt.Sprintf("Tasks matching %q", query)
 			}
-			picked, err := tui.PickTasks(title, candidates)
+			picked, err := pickTasks(cmd, title, candidates)
 			if err != nil {
 				return err
 			}
@@ -288,7 +314,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				if query != "" {
 					title = fmt.Sprintf("Tasks matching %q", query)
 				}
-				picked, err = tui.PickTasks(title, candidates)
+				picked, err = pickTasks(cmd, title, candidates)
 				if err != nil {
 					return err
 				}
@@ -358,7 +384,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				if query != "" {
 					title = fmt.Sprintf("Tasks matching %q", query)
 				}
-				picked, err := tui.PickTasks(title, candidates)
+				picked, err := pickTasks(cmd, title, candidates)
 				if err != nil {
 					return err
 				}
