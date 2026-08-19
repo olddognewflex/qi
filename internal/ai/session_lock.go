@@ -19,58 +19,54 @@ type SessionLease struct {
 var processSessionLeases = struct {
 	sync.Mutex
 	next  uint64
-	files map[uint64]os.FileInfo
-}{files: make(map[uint64]os.FileInfo)}
+	files map[uint64]processSessionLease
+}{files: make(map[uint64]processSessionLease)}
+
+type processSessionLease struct {
+	dir  os.FileInfo
+	name string
+}
 
 func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 	name := id.String() + ".lock"
+	dirInfo, err := s.dir.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect planner session directory for lease: %w", err)
+	}
+	localRelease, err := reserveProcessSessionLease(dirInfo, name)
+	if err != nil {
+		return nil, err
+	}
 	var expected os.FileInfo
-	var localRelease func()
 	file, err := s.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if os.IsExist(err) {
 		expected, err = s.root.Lstat(name)
 		if err != nil {
+			localRelease()
 			return nil, err
 		}
 		if expected.Mode()&os.ModeSymlink != 0 || !expected.Mode().IsRegular() {
+			localRelease()
 			return nil, fmt.Errorf("%w: lease file is not regular", ErrInvalidSession)
-		}
-		localRelease, err = reserveProcessSessionLease(expected)
-		if err != nil {
-			return nil, err
 		}
 		file, err = s.root.OpenFile(name, os.O_RDWR, 0o600)
 	}
 	if err != nil {
-		if localRelease != nil {
-			localRelease()
-		}
+		localRelease()
 		return nil, fmt.Errorf("open planner session lease: %w", err)
 	}
 	info, err := file.Stat()
 	if err != nil {
-		if localRelease != nil {
-			localRelease()
-		}
+		localRelease()
 		return nil, errors.Join(fmt.Errorf("inspect planner session lease: %w", err), file.Close())
 	}
 	if !info.Mode().IsRegular() || (expected != nil && !os.SameFile(expected, info)) {
-		if localRelease != nil {
-			localRelease()
-		}
+		localRelease()
 		return nil, errors.Join(fmt.Errorf("%w: lease file is not regular", ErrInvalidSession), file.Close())
 	}
 	if err := file.Chmod(0o600); err != nil {
-		if localRelease != nil {
-			localRelease()
-		}
+		localRelease()
 		return nil, errors.Join(fmt.Errorf("repair planner session lease mode: %w", err), file.Close())
-	}
-	if localRelease == nil {
-		localRelease, err = reserveProcessSessionLease(info)
-		if err != nil {
-			return nil, errors.Join(err, file.Close())
-		}
 	}
 	if err := tryLockSession(file); err != nil {
 		localRelease()
@@ -129,17 +125,17 @@ func (l *SessionLease) Complete() error {
 	return l.err
 }
 
-func reserveProcessSessionLease(info os.FileInfo) (func(), error) {
+func reserveProcessSessionLease(dir os.FileInfo, name string) (func(), error) {
 	processSessionLeases.Lock()
 	defer processSessionLeases.Unlock()
 	for _, held := range processSessionLeases.files {
-		if os.SameFile(info, held) {
+		if name == held.name && os.SameFile(dir, held.dir) {
 			return nil, ErrSessionLeaseHeld
 		}
 	}
 	processSessionLeases.next++
 	token := processSessionLeases.next
-	processSessionLeases.files[token] = info
+	processSessionLeases.files[token] = processSessionLease{dir: dir, name: name}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
