@@ -20,27 +20,30 @@ const (
 // Message is one conversation turn in provider-neutral form. A turn is
 // either a user message (plain text or carrying tool results) or an
 // assistant message (plain text and/or tool calls).
+// The json tags make a Message round-trip cleanly through a persisted planner
+// session (see session.go); providers translate Messages to their own wire
+// format in code, so the tags affect only session storage.
 type Message struct {
-	Role        Role
-	Text        string
-	ToolCalls   []ToolCall   // assistant turns that proposed tool calls
-	ToolResults []ToolResult // user turns that are returning tool results
+	Role        Role         `json:"role"`
+	Text        string       `json:"text,omitempty"`
+	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`   // assistant turns that proposed tool calls
+	ToolResults []ToolResult `json:"tool_results,omitempty"` // user turns that are returning tool results
 }
 
 // ToolCall is one tool_use proposal emitted by the model.
 type ToolCall struct {
-	ID    string          // unique within the conversation
-	Name  string          // sanitized name as sent to the provider
-	Input json.RawMessage // JSON-encoded arguments
+	ID    string          `json:"id"`    // unique within the conversation
+	Name  string          `json:"name"`  // sanitized name as sent to the provider
+	Input json.RawMessage `json:"input"` // JSON-encoded arguments
 }
 
 // ToolResult carries one tool's output back to the model. CallID matches
 // the originating ToolCall.ID; providers that do not support correlation
 // ids (Ollama) ignore the field and rely on ordering.
 type ToolResult struct {
-	CallID  string
-	Content string
-	IsError bool
+	CallID  string `json:"call_id"`
+	Content string `json:"content"`
+	IsError bool   `json:"is_error,omitempty"`
 }
 
 // ToolDef describes a tool the provider may invoke.

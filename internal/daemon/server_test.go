@@ -380,6 +380,138 @@ func TestApprovalUnknownID(t *testing.T) {
 	}
 }
 
+func TestApprovalGetAfterRestore(t *testing.T) {
+	// Given: an executed approval exists only in a durable audit log.
+	auditPath := filepath.Join(t.TempDir(), "audit.log")
+	audit, err := approval.OpenAudit(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := approval.NewQueue(audit)
+	id, err := source.EnqueueWithCallID("ai-planner:s1", "call-1", "mutate", json.RawMessage(`{"x":1}`), "confirm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Approve(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.RecordResult(id, json.RawMessage(`{"ok":true}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := approval.ReadAuditLog(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := approval.NewQueue(nil)
+	restored.Restore(entries)
+	s := newSessionWith(t, tools.NewRegistry(), restored)
+
+	// When: a client fetches the terminal approval after restart.
+	s.send(`{"jsonrpc":"2.0","method":"approval.get","id":1,"params":{"id":"` + id + `"}}`)
+	resp := s.readResp()
+
+	// Then: the persisted result and planner correlation are returned.
+	if resp.Error != nil {
+		t.Fatalf("approval.get error = %+v", resp.Error)
+	}
+	var got approval.Pending
+	if err := json.Unmarshal(resp.Result, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != approval.StatusExecuted || got.CallID != "call-1" || string(got.Result) != `{"ok":true}` {
+		t.Fatalf("approval = %+v", got)
+	}
+}
+
+func TestRestoredTerminalCannotExecuteAgain(t *testing.T) {
+	// Given: an executed approval is restored into lookup-only history.
+	auditPath := filepath.Join(t.TempDir(), "audit.log")
+	audit, err := approval.OpenAudit(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := approval.NewQueue(audit)
+	id, err := source.Enqueue("ai-planner:s1", "mutate", nil, "confirm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Approve(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.RecordResult(id, json.RawMessage(`{"ok":true}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := audit.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := approval.ReadAuditLog(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := approval.NewQueue(nil)
+	restored.Restore(entries)
+	executions := 0
+	r := tools.NewRegistry()
+	if err := r.RegisterLocal(tools.Tool{Name: "mutate", Mutating: true}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		executions++
+		return json.RawMessage(`{"ok":true}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := newSessionWith(t, r, restored)
+
+	// When: the restored terminal approval is approved again.
+	s.send(`{"jsonrpc":"2.0","method":"approval.approve","id":1,"params":{"id":"` + id + `"}}`)
+	resp := s.readResp()
+
+	// Then: the transition is rejected before registry execution.
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, approval.ErrIllegalTransition.Error()) {
+		t.Fatalf("response error = %+v", resp.Error)
+	}
+	if executions != 0 {
+		t.Fatalf("executions = %d, want 0", executions)
+	}
+}
+
+func TestApprovalApproveSurfacesRecordResultAuditFailure(t *testing.T) {
+	// Given: the audit closes during execution, after approval was persisted.
+	audit, err := approval.OpenAudit(filepath.Join(t.TempDir(), "audit.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := approval.NewQueue(audit)
+	r := tools.NewRegistry()
+	if err := r.RegisterLocal(tools.Tool{Name: "mutate", Mutating: true}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		if err := audit.Close(); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(`{"ok":true}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := newSessionWith(t, r, q)
+	s.send(`{"jsonrpc":"2.0","method":"tools.call","id":1,"params":{"name":"mutate","arguments":{},"caller":"ai"}}`)
+	pendingResp := s.readResp()
+	var pending struct {
+		ApprovalID string `json:"approval_id"`
+	}
+	if err := json.Unmarshal(pendingResp.Result, &pending); err != nil {
+		t.Fatal(err)
+	}
+
+	// When: the user approves and execution succeeds but terminal persistence fails.
+	s.send(`{"jsonrpc":"2.0","method":"approval.approve","id":2,"params":{"id":"` + pending.ApprovalID + `"}}`)
+	resp := s.readResp()
+
+	// Then: JSON-RPC reports the durability ambiguity instead of success.
+	if resp.Error == nil || !strings.Contains(resp.Error.Message, "tool may have executed; terminal result was not durably recorded") {
+		t.Fatalf("response error = %+v", resp.Error)
+	}
+}
+
 func TestApprovalMethodsAbsentWithoutQueue(t *testing.T) {
 	s := newSession(t, tools.NewRegistry()) // queue=nil
 	s.send(`{"jsonrpc":"2.0","method":"approval.list","id":1,"params":{}}`)

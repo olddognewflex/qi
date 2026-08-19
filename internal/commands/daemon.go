@@ -312,13 +312,15 @@ func (e *daemonEnv) stop(ctx context.Context, out io.Writer) (respawned bool, er
 	// relaunch (launchd's ThrottleInterval can delay it up to ~10s). Fall back to
 	// watching for the respawn only when we cannot introspect the supervisor
 	// (non-macOS, or launchctl unavailable) — which also covers systemd et al.
-	if label, supervised, known := supervisorProbe(ctx); known {
-		if supervised {
-			fmt.Fprint(out, supervisorRelaunchWarning(label))
-			return true, nil
+	if supervisorProbeMatchesSocket(sock) {
+		if label, supervised, known := supervisorProbe(ctx); known {
+			if supervised {
+				fmt.Fprint(out, supervisorRelaunchWarning(label))
+				return true, nil
+			}
+			fmt.Fprintln(out, "qid stopped")
+			return false, nil
 		}
-		fmt.Fprintln(out, "qid stopped")
-		return false, nil
 	}
 	if waitRespawn(sock, supervisorRecheckWindow) {
 		fmt.Fprint(out, supervisorRelaunchWarning(""))
@@ -333,6 +335,15 @@ func (e *daemonEnv) stop(ctx context.Context, out io.Writer) (respawned bool, er
 // otherwise see the developer's own loaded qid agent and contaminate every stop
 // test.
 var supervisorProbe = qidSupervisor
+
+// supervisorProbeMatchesSocket limits the launchd label check to the canonical
+// qid socket. A loaded default qid agent says nothing about a separate daemon
+// started with --socket; an actual supervisor for that custom socket is still
+// detected by the socket-specific respawn poll below.
+func supervisorProbeMatchesSocket(sock string) bool {
+	defaultSock, err := daemon.SocketPath()
+	return err == nil && filepath.Clean(sock) == filepath.Clean(defaultSock)
+}
 
 // waitRespawn reports whether qid becomes reachable again within budget after a
 // clean stop — the observable signature of a supervisor that owns qid's

@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Status is where a queue entry sits in its lifecycle.
@@ -22,10 +24,18 @@ const (
 	StatusFailed   Status = "failed"
 )
 
+const (
+	MaxApprovalCallerBytes = 8 << 10
+	MaxApprovalCallIDBytes = 1 << 10
+	MaxApprovalToolBytes   = 8 << 10
+	MaxTerminalTextBytes   = 32 << 10
+)
+
 // Pending is the in-memory record for one queued call.
 type Pending struct {
 	ID         string          `json:"id"`
 	Caller     string          `json:"caller"`
+	CallID     string          `json:"call_id,omitempty"`
 	ToolName   string          `json:"tool"`
 	Params     json.RawMessage `json:"params,omitempty"`
 	Status     Status          `json:"status"`
@@ -44,22 +54,26 @@ var ErrUnknownID = errors.New("approval id not found")
 // entry's current status.
 var ErrIllegalTransition = errors.New("illegal approval state transition")
 
+var errTerminalResultNotDurable = errors.New("tool may have executed; terminal result was not durably recorded")
+
 // Queue holds pending approval entries in memory and emits an audit record
 // on every transition.
 type Queue struct {
-	mu    sync.Mutex
-	items map[string]*Pending
-	audit *Audit
-	now   func() time.Time
+	mu      sync.Mutex
+	items   map[string]*Pending
+	history map[string]*Pending
+	audit   *Audit
+	now     func() time.Time
 }
 
 // NewQueue builds a queue that writes audit records to a. Audit may be nil
 // in tests.
 func NewQueue(a *Audit) *Queue {
 	return &Queue{
-		items: make(map[string]*Pending),
-		audit: a,
-		now:   func() time.Time { return time.Now().UTC() },
+		items:   make(map[string]*Pending),
+		history: make(map[string]*Pending),
+		audit:   a,
+		now:     func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -72,14 +86,34 @@ func newID() string {
 // Enqueue adds a pending entry and returns its id. The audit log gets an
 // "enqueue" event.
 func (q *Queue) Enqueue(caller, toolName string, params json.RawMessage, reason string) (string, error) {
+	return q.EnqueueWithCallID(caller, "", toolName, params, reason)
+}
+
+// EnqueueWithCallID adds a pending entry bound to an optional immutable
+// planner tool-call ID.
+func (q *Queue) EnqueueWithCallID(caller, callID, toolName string, params json.RawMessage, reason string) (string, error) {
 	if caller == "" || toolName == "" {
 		return "", fmt.Errorf("enqueue: caller and tool name are required")
+	}
+	if err := validateApprovalText("caller", caller, MaxApprovalCallerBytes); err != nil {
+		return "", err
+	}
+	if err := validateApprovalText("call id", callID, MaxApprovalCallIDBytes); err != nil {
+		return "", err
+	}
+	if err := validateApprovalText("tool name", toolName, MaxApprovalToolBytes); err != nil {
+		return "", err
+	}
+	if err := validateApprovalText("reason", reason, MaxTerminalTextBytes); err != nil {
+		return "", err
 	}
 
 	q.mu.Lock()
 	id := newID()
 	for {
-		if _, exists := q.items[id]; !exists {
+		_, live := q.items[id]
+		_, historical := q.history[id]
+		if !live && !historical {
 			break
 		}
 		id = newID()
@@ -87,97 +121,145 @@ func (q *Queue) Enqueue(caller, toolName string, params json.RawMessage, reason 
 	p := &Pending{
 		ID:        id,
 		Caller:    caller,
+		CallID:    callID,
 		ToolName:  toolName,
-		Params:    params,
+		Params:    cloneRaw(params),
 		Status:    StatusPending,
 		Reason:    reason,
 		CreatedAt: q.now(),
 	}
 	q.items[id] = p
-	q.mu.Unlock()
-
-	q.audited(AuditEntry{
+	err := q.appendAudit(AuditEntry{
+		Time:   p.CreatedAt,
 		Event:  EventEnqueue,
 		ID:     id,
 		Caller: caller,
+		CallID: callID,
 		Tool:   toolName,
 		Reason: reason,
-		Params: params,
+		Params: cloneRaw(params),
 	})
+	if err != nil {
+		delete(q.items, id)
+		q.mu.Unlock()
+		return "", fmt.Errorf("enqueue audit: %w", err)
+	}
+	q.mu.Unlock()
 	return id, nil
 }
 
 // Approve marks the entry approved. Caller is expected to execute the tool
 // afterwards and call RecordResult.
 func (q *Queue) Approve(id string) (Pending, error) {
-	p, err := q.transition(id, StatusApproved, "", "")
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	p, err := q.pendingForTransition(id, StatusApproved)
 	if err != nil {
 		return Pending{}, err
 	}
-	q.audited(AuditEntry{Event: EventApprove, ID: id, Caller: p.Caller, Tool: p.ToolName})
-	return p, nil
+	t := q.now()
+	if err := q.appendAudit(AuditEntry{Time: t, Event: EventApprove, ID: id, Caller: p.Caller, CallID: p.CallID, Tool: p.ToolName}); err != nil {
+		return Pending{}, fmt.Errorf("approve audit: %w", err)
+	}
+	p.Status = StatusApproved
+	p.DecidedAt = &t
+	return clonePending(p), nil
 }
 
 // Deny refuses the entry. Reason is recorded in audit.
 func (q *Queue) Deny(id, reason string) (Pending, error) {
-	p, err := q.transition(id, StatusDenied, reason, "")
+	if err := validateApprovalText("denial reason", reason, MaxTerminalTextBytes); err != nil {
+		return Pending{}, err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	p, err := q.pendingForTransition(id, StatusDenied)
 	if err != nil {
 		return Pending{}, err
 	}
-	q.audited(AuditEntry{Event: EventDeny, ID: id, Caller: p.Caller, Tool: p.ToolName, Reason: reason})
-	return p, nil
+	t := q.now()
+	outcome := &TerminalOutcome{Status: StatusDenied, Reason: reason, DecidedAt: &t}
+	if err := q.appendAudit(AuditEntry{Time: t, Event: EventDeny, ID: id, Caller: p.Caller, CallID: p.CallID, Tool: p.ToolName, ParamsHash: auditParamsHash(p.Params), Outcome: outcome}); err != nil {
+		return Pending{}, fmt.Errorf("deny audit: %w", err)
+	}
+	p.Status = StatusDenied
+	p.Reason = reason
+	p.DecidedAt = &t
+	return clonePending(p), nil
 }
 
 // RecordResult stores the tool's output after execution. If execErr is
 // non-nil, the entry is marked failed and the error string is captured.
 func (q *Queue) RecordResult(id string, result json.RawMessage, execErr error) (Pending, error) {
-	q.mu.Lock()
-	p, ok := q.items[id]
-	if !ok {
-		q.mu.Unlock()
-		return Pending{}, fmt.Errorf("%w: %s", ErrUnknownID, id)
+	if execErr == nil && len(result) > MaxTerminalResultBytes {
+		return Pending{}, fmt.Errorf("terminal result exceeds %d bytes", MaxTerminalResultBytes)
 	}
-	if p.Status != StatusApproved {
-		q.mu.Unlock()
-		return Pending{}, fmt.Errorf("%w: cannot record result on %s entry", ErrIllegalTransition, p.Status)
-	}
-	t := q.now()
-	p.ExecutedAt = &t
-	if execErr != nil {
-		p.Status = StatusFailed
-		p.Err = execErr.Error()
-	} else {
-		p.Status = StatusExecuted
-		p.Result = result
-	}
-	snap := *p
-	q.mu.Unlock()
-
-	if execErr != nil {
-		q.audited(AuditEntry{Event: EventFail, ID: id, Caller: snap.Caller, Tool: snap.ToolName, Err: execErr.Error()})
-	} else {
-		q.audited(AuditEntry{Event: EventExecute, ID: id, Caller: snap.Caller, Tool: snap.ToolName})
-	}
-	return snap, nil
-}
-
-func (q *Queue) transition(id string, next Status, reason, _ string) (Pending, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	p, ok := q.items[id]
 	if !ok {
+		if historical, exists := q.history[id]; exists {
+			return Pending{}, fmt.Errorf("%w: cannot record result on %s entry", ErrIllegalTransition, historical.Status)
+		}
 		return Pending{}, fmt.Errorf("%w: %s", ErrUnknownID, id)
 	}
-	if p.Status != StatusPending {
-		return Pending{}, fmt.Errorf("%w: %s → %s", ErrIllegalTransition, p.Status, next)
+	if p.Status != StatusApproved {
+		return Pending{}, fmt.Errorf("%w: cannot record result on %s entry", ErrIllegalTransition, p.Status)
 	}
 	t := q.now()
-	p.Status = next
-	p.DecidedAt = &t
-	if reason != "" {
-		p.Reason = reason
+	snap := clonePending(p)
+	snap.ExecutedAt = &t
+	event := EventExecute
+	if execErr != nil {
+		snap.Status = StatusFailed
+		snap.Err = boundedTerminalText(execErr.Error())
+		event = EventFail
+	} else {
+		snap.Status = StatusExecuted
+		snap.Result = cloneRaw(result)
 	}
-	return *p, nil
+	outcome := &TerminalOutcome{Status: snap.Status, Result: cloneRaw(snap.Result), Err: snap.Err, DecidedAt: snap.DecidedAt, ExecutedAt: snap.ExecutedAt}
+	if err := q.appendAudit(AuditEntry{Time: t, Event: event, ID: id, Caller: snap.Caller, CallID: snap.CallID, Tool: snap.ToolName, ParamsHash: auditParamsHash(snap.Params), Outcome: outcome}); err != nil {
+		return Pending{}, fmt.Errorf("%w: %v", errTerminalResultNotDurable, err)
+	}
+	*p = snap
+	return clonePending(p), nil
+}
+
+func validateApprovalText(name, value string, maxBytes int) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("enqueue: %s must be valid UTF-8", name)
+	}
+	if len(value) > maxBytes {
+		return fmt.Errorf("enqueue: %s exceeds %d bytes", name, maxBytes)
+	}
+	return nil
+}
+
+func boundedTerminalText(value string) string {
+	value = strings.ToValidUTF8(value, "�")
+	if len(value) <= MaxTerminalTextBytes {
+		return value
+	}
+	value = value[:MaxTerminalTextBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func (q *Queue) pendingForTransition(id string, next Status) (*Pending, error) {
+	p, ok := q.items[id]
+	if !ok {
+		if historical, exists := q.history[id]; exists {
+			return nil, fmt.Errorf("%w: %s → %s", ErrIllegalTransition, historical.Status, next)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrUnknownID, id)
+	}
+	if p.Status != StatusPending {
+		return nil, fmt.Errorf("%w: %s → %s", ErrIllegalTransition, p.Status, next)
+	}
+	return p, nil
 }
 
 // Get returns a snapshot of the entry with the given id.
@@ -185,10 +267,14 @@ func (q *Queue) Get(id string) (Pending, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	p, ok := q.items[id]
+	if ok {
+		return clonePending(p), true
+	}
+	p, ok = q.history[id]
 	if !ok {
 		return Pending{}, false
 	}
-	return *p, true
+	return clonePending(p), true
 }
 
 // List returns a snapshot of every entry, sorted by creation time
@@ -200,86 +286,37 @@ func (q *Queue) List(filter Status) []Pending {
 		if filter != "" && p.Status != filter {
 			continue
 		}
-		out = append(out, *p)
+		out = append(out, clonePending(p))
 	}
 	q.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out
 }
 
-// Restore rebuilds in-memory pending entries from a replayed audit log,
-// folding events by id. Any entry whose latest event is non-terminal —
-// enqueue (never decided) or approve (approved but no execute/fail recorded,
-// i.e. interrupted mid-execution) — is re-materialized as StatusPending so a
-// human must re-approve it after a restart. Terminal states (denied,
-// executed, failed) are left out; they need no runtime entry.
-//
-// It emits no new audit events: this reconstructs runtime state from the
-// durable record, it does not append to it. Call once on startup before
-// serving. Returns the number of entries restored.
-//
-// Trade-off: an entry approved-but-not-recorded is re-queued rather than
-// assumed done. For a confirm-gated tool, re-prompting the human (who sees
-// the tool and params) is safer than silently dropping a mutation that may
-// never have been applied. Exactly-once would require a pre-execute intent
-// record; this favors no-silent-loss over no-double-execute.
-func (q *Queue) Restore(entries []AuditEntry) int {
-	type acc struct {
-		enq    *AuditEntry
-		latest AuditEvent
-	}
-	byID := make(map[string]*acc)
-	order := make([]string, 0)
-	for i := range entries {
-		e := entries[i]
-		if e.ID == "" {
-			continue
-		}
-		a, ok := byID[e.ID]
-		if !ok {
-			a = &acc{}
-			byID[e.ID] = a
-			order = append(order, e.ID)
-		}
-		if e.Event == EventEnqueue {
-			cp := e
-			a.enq = &cp
-		}
-		a.latest = e.Event
-	}
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	n := 0
-	for _, id := range order {
-		a := byID[id]
-		switch a.latest {
-		case EventDeny, EventExecute, EventFail:
-			continue // terminal — no runtime entry needed
-		}
-		if a.enq == nil {
-			continue // cannot reconstruct without the enqueue record
-		}
-		if _, exists := q.items[id]; exists {
-			continue
-		}
-		q.items[id] = &Pending{
-			ID:        id,
-			Caller:    a.enq.Caller,
-			ToolName:  a.enq.Tool,
-			Params:    a.enq.Params,
-			Status:    StatusPending,
-			Reason:    a.enq.Reason,
-			CreatedAt: a.enq.Time,
-		}
-		n++
-	}
-	return n
+func cloneRaw(raw json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), raw...)
 }
 
-func (q *Queue) audited(e AuditEntry) {
-	if q.audit == nil {
-		return
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
 	}
-	_ = q.audit.Append(e)
+	copy := *value
+	return &copy
+}
+
+func clonePending(p *Pending) Pending {
+	copy := *p
+	copy.Params = cloneRaw(p.Params)
+	copy.Result = cloneRaw(p.Result)
+	copy.DecidedAt = cloneTime(p.DecidedAt)
+	copy.ExecutedAt = cloneTime(p.ExecutedAt)
+	return copy
+}
+
+func (q *Queue) appendAudit(e AuditEntry) error {
+	if q.audit == nil {
+		return nil
+	}
+	return q.audit.Append(e)
 }

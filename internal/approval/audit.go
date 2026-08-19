@@ -5,13 +5,23 @@ package approval
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+)
+
+const (
+	MaxTerminalResultBytes = 4 << 20
+	MaxAuditRecordBytes    = MaxTerminalResultBytes + (512 << 10)
+	MaxAuditLogBytes       = 64 << 20
+	MaxAuditReplayEntries  = 10_000
 )
 
 // AuditEvent identifies what happened to a queue entry.
@@ -27,21 +37,38 @@ const (
 
 // AuditEntry is a single line in the audit log.
 type AuditEntry struct {
-	Time   time.Time       `json:"time"`
-	Event  AuditEvent      `json:"event"`
-	ID     string          `json:"id"`
-	Caller string          `json:"caller,omitempty"`
-	Tool   string          `json:"tool,omitempty"`
-	Reason string          `json:"reason,omitempty"`
-	Err    string          `json:"err,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
+	Time       time.Time        `json:"time"`
+	Event      AuditEvent       `json:"event"`
+	ID         string           `json:"id"`
+	Caller     string           `json:"caller,omitempty"`
+	CallID     string           `json:"call_id,omitempty"`
+	Tool       string           `json:"tool,omitempty"`
+	Reason     string           `json:"reason,omitempty"`
+	Err        string           `json:"err,omitempty"`
+	Params     json.RawMessage  `json:"params,omitempty"`
+	ParamsHash string           `json:"params_hash,omitempty"`
+	Outcome    *TerminalOutcome `json:"outcome,omitempty"`
+}
+
+// TerminalOutcome is present only on durable terminal records. Its pointer
+// presence distinguishes a new empty/null result from a legacy terminal event.
+type TerminalOutcome struct {
+	Status     Status          `json:"status"`
+	Result     json.RawMessage `json:"result"`
+	Reason     string          `json:"reason,omitempty"`
+	Err        string          `json:"err,omitempty"`
+	DecidedAt  *time.Time      `json:"decided_at,omitempty"`
+	ExecutedAt *time.Time      `json:"executed_at,omitempty"`
 }
 
 // Audit is an append-only JSONL writer. Safe for concurrent use.
 type Audit struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
+	mu            sync.Mutex
+	f             *os.File
+	path          string
+	reserved      map[string]int64
+	reservedBytes int64
+	recordCount   int
 }
 
 // OpenAudit opens (or creates) the audit log at path with 0600 perms.
@@ -49,11 +76,69 @@ func OpenAudit(path string) (*Audit, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("audit mkdir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("audit open: %w", err)
 	}
-	return &Audit{f: f, path: path}, nil
+	info, err := f.Stat()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("audit inspect: %w", err), f.Close())
+	}
+	if info.Size() > MaxAuditLogBytes {
+		return nil, errors.Join(fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes), f.Close())
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return nil, errors.Join(fmt.Errorf("audit chmod: %w", err), f.Close())
+	}
+	entries, err := ReadAuditLog(path)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	if err := repairAuditTail(f); err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return &Audit{f: f, path: path, reserved: make(map[string]int64), recordCount: len(entries)}, nil
+}
+
+func repairAuditTail(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("audit inspect tail: %w", err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	readSize := min(info.Size(), int64(MaxAuditRecordBytes+1))
+	start := info.Size() - readSize
+	data := make([]byte, readSize)
+	if _, err := file.ReadAt(data, start); err != nil {
+		return fmt.Errorf("audit read tail: %w", err)
+	}
+	if data[len(data)-1] == '\n' {
+		return nil
+	}
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	tailStart := lastNewline + 1
+	var entry AuditEntry
+	valid := json.Unmarshal(data[tailStart:], &entry) == nil &&
+		(entry.Outcome == nil || len(entry.Outcome.Result) <= MaxTerminalResultBytes)
+	if valid {
+		if info.Size() == MaxAuditLogBytes {
+			return fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
+		}
+		if _, err := file.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("audit terminate tail: %w", err)
+		}
+	} else {
+		validBytes := start + int64(tailStart)
+		if err := file.Truncate(validBytes); err != nil {
+			return fmt.Errorf("audit truncate tail: %w", err)
+		}
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("audit sync repaired tail: %w", err)
+	}
+	return nil
 }
 
 // Append writes one entry to the log. The entry's Time is set if zero.
@@ -65,12 +150,69 @@ func (a *Audit) Append(e AuditEntry) error {
 	if err != nil {
 		return fmt.Errorf("audit marshal: %w", err)
 	}
+	if len(b) > MaxAuditRecordBytes {
+		return fmt.Errorf("audit record exceeds %d bytes", MaxAuditRecordBytes)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, err := a.f.Write(append(b, '\n')); err != nil {
+	if a.f == nil {
+		return errors.New("audit write: audit is closed")
+	}
+	line := append(b, '\n')
+	info, err := a.f.Stat()
+	if err != nil {
+		return fmt.Errorf("audit inspect before write: %w", err)
+	}
+	reservedAfter := a.reservedBytes
+	reservation := a.reserved[e.ID]
+	reservedEntriesAfter := len(a.reserved)
+	if e.Event == EventExecute || e.Event == EventFail {
+		reservedAfter -= reservation
+		if reservation != 0 {
+			reservedEntriesAfter--
+		}
+	}
+	required := int64(len(line))
+	requiredEntries := 1
+	if e.Event == EventApprove {
+		if reservation != 0 {
+			return fmt.Errorf("audit terminal capacity already reserved for %s", e.ID)
+		}
+		required += MaxAuditRecordBytes
+		requiredEntries++
+	}
+	if a.recordCount+reservedEntriesAfter+requiredEntries > MaxAuditReplayEntries {
+		return fmt.Errorf("audit replay exceeds %d entries", MaxAuditReplayEntries)
+	}
+	if info.Size()+reservedAfter+required > MaxAuditLogBytes {
+		return fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
+	}
+	n, err := a.f.Write(line)
+	if err != nil {
 		return fmt.Errorf("audit write: %w", err)
 	}
+	if n != len(line) {
+		return fmt.Errorf("audit write: short write: wrote %d of %d bytes", n, len(line))
+	}
+	if err := a.f.Sync(); err != nil {
+		return fmt.Errorf("audit sync: %w", err)
+	}
+	switch e.Event {
+	case EventApprove:
+		a.reserved[e.ID] = MaxAuditRecordBytes
+		a.reservedBytes += MaxAuditRecordBytes
+	case EventExecute, EventFail:
+		if reservation != 0 {
+			delete(a.reserved, e.ID)
+			a.reservedBytes -= reservation
+		}
+	}
+	a.recordCount++
 	return nil
+}
+
+func auditParamsHash(params json.RawMessage) string {
+	return fmt.Sprintf("%x", sha256.Sum256(params))
 }
 
 // Path returns the audit log location.
@@ -90,24 +232,51 @@ func ReadAuditLog(path string) ([]AuditEntry, error) {
 		return nil, fmt.Errorf("audit open: %w", err)
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("audit inspect: %w", err)
+	}
+	if info.Size() > MaxAuditLogBytes {
+		return nil, fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
+	}
 
 	var entries []AuditEntry
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
+	reader := bufio.NewReaderSize(f, MaxAuditRecordBytes+1)
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			return entries, fmt.Errorf("audit record exceeds %d bytes", MaxAuditRecordBytes)
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return entries, fmt.Errorf("audit read: %w", readErr)
+		}
+		terminated := len(line) > 0 && line[len(line)-1] == '\n'
+		if terminated {
+			line = line[:len(line)-1]
+		}
 		if len(line) == 0 {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
 		var e AuditEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			// Truncated trailing line from an interrupted write; stop here.
-			break
+			if errors.Is(readErr, io.EOF) && !terminated {
+				break
+			}
+			return entries, fmt.Errorf("audit decode: %w", err)
+		}
+		if e.Outcome != nil && len(e.Outcome.Result) > MaxTerminalResultBytes {
+			return entries, fmt.Errorf("terminal result exceeds %d bytes", MaxTerminalResultBytes)
+		}
+		if len(entries) == MaxAuditReplayEntries {
+			return entries, fmt.Errorf("audit replay exceeds %d entries", MaxAuditReplayEntries)
 		}
 		entries = append(entries, e)
-	}
-	if err := sc.Err(); err != nil {
-		return entries, fmt.Errorf("audit scan: %w", err)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 	return entries, nil
 }

@@ -250,7 +250,8 @@ qi ai tools call <name> [--args '{"k":"v"}'] [--caller cli|ai|...]
 qi ai approvals [--status pending|approved|denied|executed|failed]
 qi ai approve <id>                            # runs the queued tool
 qi ai deny <id> [--reason "..."]
-qi ai run "<prompt>" [--provider anthropic|ollama] [--model <id>]
+qi ai run "<prompt>" [--provider <name>] [--model <id>]
+qi ai resume <session-id> [--provider <name>] [--model <id>]
 
 qi daily end [YYYY-MM-DD] [--provider …] [--model …]
                                               # AI-summarize a day's ## Logs into ## Summary
@@ -445,9 +446,47 @@ When a mutation is queued, the caller receives `{"status":"pending","approval_id
 Runs a tool-use loop. The planner:
 1. Fetches `tools.list` from `qid`.
 2. Sends them to the configured LLM with `cache_control` on the system block (Anthropic) for free prompt caching across iterations and re-runs.
-3. For each `tool_use` the model emits, dispatches via `client.CallToolAs(ctx, "ai-planner:<id>", name, args)`.
-4. Surfaces approval-pending responses back to the model so it can tell you which `qi ai approve` to run.
-5. Stops when the model emits a final text turn (or hits `DefaultMaxIterations=8`).
+3. For each `tool_use` the model emits, dispatches through qid with caller `ai-planner:<session-id>` and the model's call ID.
+4. When a mutation needs approval, saves the conversation and stops before the LLM sees a result. The output prints both the approval command and the session's resume command.
+5. On `qi ai resume`, verifies that the saved caller, call ID, tool, and parameters match the terminal approval, feeds the executed/denied/failed result to the LLM, and continues the same loop.
+6. Stops when the model emits a final text turn (or hits `DefaultMaxIterations=8`).
+
+Approve and continue a run explicitly:
+
+```bash
+qi ai run "add a task, then use its id"
+qi ai approve <approval-id>
+qi ai resume <session-id>
+```
+
+When `run` or `resume` uses `--socket`, the printed approval and continuation
+commands carry the same safely quoted socket path.
+
+A denial is also a terminal result the planner can reason about:
+
+```bash
+qi ai deny <approval-id> --reason "not today"
+qi ai resume <session-id>
+```
+
+The approval result is stored in qid's audit log, so qid may restart between the
+approve/deny command and `resume`; resume reads the recorded result and never
+re-executes a terminal mutation. If qid stopped after recording approval but before
+recording an execution outcome, the entry returns to `pending` and requires a new
+explicit approval. Startup and resume never auto-run it.
+
+A flagless resume restores the saved provider, model, ordered failover chain, and
+active fallback entry while resolving credentials again from the current environment;
+changed defaults and `QI_AI_PROVIDER` do not silently switch an existing conversation.
+`--provider` deliberately replaces the saved chain with one provider. `--model`
+without `--provider` is accepted only for a saved single-provider session; it is
+ambiguous for a saved chain and is rejected.
+
+Planner sessions are versioned, bounded machine-local state under
+`$XDG_STATE_HOME/qi/ai-sessions/` (or `~/.local/state/qi/ai-sessions/`). The
+directory and files are private (`0700`/`0600`), a completed resume deletes its
+session, and concurrent resume attempts for the same session fail rather than running
+the continuation twice.
 
 ### `qi-mcp`
 
@@ -593,7 +632,8 @@ Machine-local state (never in vault, never synced):
 ```
 ~/.local/share/qi/qi.db          # SQLite FTS5 index + optional embeddings
 ~/.local/state/qi/qid.sock       # qid unix-domain socket
-~/.local/state/qi/audit.log      # append-only approval audit (JSONL)
+~/.local/state/qi/audit.log      # append-only approval audit (JSONL, 64 MiB cap)
+~/.local/state/qi/ai-sessions/   # resumable planner sessions (private, transient)
 ```
 Honors `XDG_DATA_HOME` and `XDG_RUNTIME_DIR` / `XDG_STATE_HOME` when set.
 
