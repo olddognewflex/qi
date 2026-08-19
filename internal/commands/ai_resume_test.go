@@ -28,6 +28,28 @@ type deleteErrorStore struct {
 
 func (s *deleteErrorStore) Delete(ai.SessionID) error { return s.err }
 
+func TestAIResumeCLIMissingSessionRemovesLease(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	rawID := strings.Repeat("a", 64)
+	command := newAIResumeCommand()
+	command.SetArgs([]string{rawID})
+
+	err := command.Execute()
+
+	if err == nil || !strings.Contains(err.Error(), "no such planner session") {
+		t.Fatalf("error = %v, want missing session", err)
+	}
+	sessionDir, err := ai.SessionDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(sessionDir, rawID+".lock")
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing session lease was not deleted: %v", err)
+	}
+}
+
 func TestAIResumeCLIExecutedOutcomeAfterRestore(t *testing.T) {
 	// Given
 	fixture := newResumeCLIFixture(t)

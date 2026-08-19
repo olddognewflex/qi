@@ -87,11 +87,11 @@ func resumePlanner(command *cobra.Command, rawID, socketFlag, providerFlag, mode
 	if err != nil {
 		return err
 	}
-	defer func() { returnErr = errors.Join(returnErr, lease.Release()) }()
 	session, err := store.Load(sessionID)
 	if err != nil {
-		return err
+		return errors.Join(err, lease.Complete())
 	}
+	defer func() { returnErr = errors.Join(returnErr, lease.Release()) }()
 	cfg, err := config.Load()
 	if err != nil {
 		return err
