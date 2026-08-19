@@ -33,13 +33,18 @@ func testSession(t *testing.T) Session {
 		Version:   SessionVersion,
 		SessionID: mustSessionID(t, testSessionID),
 		Model:     "claude-x",
+		Provider: ProviderState{
+			Version: ProviderStateVersion,
+			Entries: []ProviderStateEntry{{Provider: ProviderAnthropic, Model: "claude-x", ConfigID: strings.Repeat("a", 64)}},
+		},
 		Messages: []Message{
 			{Role: RoleUser, Text: "do the thing"},
-			{Role: RoleAssistant, Text: "ok", ToolCalls: []ToolCall{{ID: "tu_1", Name: "task_add", Input: json.RawMessage(`{"text":"x"}`)}}},
+			{Role: RoleAssistant, Text: "ok", ToolCalls: []ToolCall{
+				{ID: "tu_0", Name: "ro_echo", Input: json.RawMessage(`{}`)},
+				{ID: "tu_1", Name: "task_add", Input: json.RawMessage(`{"text":"x"}`)},
+			}},
 		},
-		Results: map[string]ToolResult{
-			"tu_0": {CallID: "tu_0", Content: "prior ok"},
-		},
+		Results: []ToolResult{{CallID: "tu_0", Content: "prior ok"}},
 		Pending: []PendingCall{{CallID: "tu_1", ApprovalID: "ap_9", ToolName: "task.add", Reason: "mutating"}},
 	}
 }
@@ -113,7 +118,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	if got.Version != SessionVersion || got.SessionID != sess.SessionID || got.Model != sess.Model {
 		t.Fatalf("header mismatch: %+v", got)
 	}
-	if got.Results["tu_0"].Content != "prior ok" || got.Pending[0].ApprovalID != "ap_9" {
+	if got.Results[0].Content != "prior ok" || got.Pending[0].ApprovalID != "ap_9" {
 		t.Fatalf("body mismatch: %+v", got)
 	}
 	if err := store.Delete(sess.SessionID); err != nil {

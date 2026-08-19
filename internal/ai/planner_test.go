@@ -23,7 +23,22 @@ type stubLLM struct {
 	mu        sync.Mutex
 	responses []*GenerateResponse
 	captured  []GenerateRequest
+	state     ProviderState
 	idx       int
+}
+
+func (s *stubLLM) ProviderState() (ProviderState, error) {
+	if s.state.Version != 0 {
+		return s.state, nil
+	}
+	return testProviderState(), nil
+}
+
+func testProviderState() ProviderState {
+	return ProviderState{
+		Version: ProviderStateVersion,
+		Entries: []ProviderStateEntry{{Provider: ProviderAnthropic, Model: "test-model", ConfigID: strings.Repeat("b", 64)}},
+	}
 }
 
 func (s *stubLLM) Generate(_ context.Context, req GenerateRequest) (*GenerateResponse, error) {
@@ -235,6 +250,29 @@ func TestRunSurfacesPendingApproval(t *testing.T) {
 	}
 	if !strings.HasPrefix(pendingList[0].Caller, CallerPrefix) {
 		t.Fatalf("caller = %q, want prefix %q", pendingList[0].Caller, CallerPrefix)
+	}
+}
+
+func TestRunRejectsInvalidToolCallsBeforeQIDActivity(t *testing.T) {
+	registry := tools.NewRegistry()
+	executions := 0
+	if err := registry.RegisterLocal(tools.Tool{Name: "mutate.one", Mutating: true, Schema: json.RawMessage(`{"type":"object"}`)}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		executions++
+		return json.RawMessage(`{"ok":true}`), nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	queue := approval.NewQueue(nil)
+	llm := &stubLLM{responses: []*GenerateResponse{{StopReason: "tool_use", ToolCalls: []ToolCall{
+		{ID: "call-1", Name: "mutate_one", Input: json.RawMessage(`{} {}`)},
+	}}}}
+	planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), llm)
+
+	if _, err := planner.Run(context.Background(), "mutate"); err == nil {
+		t.Fatal("trailing tool input JSON accepted")
+	}
+	if executions != 0 || len(queue.List("")) != 0 {
+		t.Fatalf("qid activity: executions=%d approvals=%d", executions, len(queue.List("")))
 	}
 }
 
