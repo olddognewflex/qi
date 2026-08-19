@@ -224,12 +224,13 @@ type toolsCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
 	Caller    string          `json:"caller"`
+	CallID    string          `json:"call_id,omitempty"`
 }
 
 type pendingResult struct {
-	Status      string `json:"status"`
-	ApprovalID  string `json:"approval_id"`
-	Reason      string `json:"reason,omitempty"`
+	Status     string `json:"status"`
+	ApprovalID string `json:"approval_id"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 func (s *Server) toolsCall(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
@@ -264,7 +265,7 @@ func (s *Server) toolsCall(ctx context.Context, raw json.RawMessage) (json.RawMe
 		if s.queue == nil {
 			return nil, &policyDeniedError{reason: "approval queue is not available"}
 		}
-		id, err := s.queue.Enqueue(p.Caller, p.Name, p.Arguments, verdict.Reason)
+		id, err := s.queue.EnqueueWithCallID(p.Caller, p.CallID, p.Name, p.Arguments, verdict.Reason)
 		if err != nil {
 			return nil, fmt.Errorf("enqueue: %w", err)
 		}
@@ -317,7 +318,7 @@ func (s *Server) approvalApprove(ctx context.Context, raw json.RawMessage) (json
 	result, execErr := tools.Execute(ctx, s.registry, p.ToolName, p.Params)
 	final, recordErr := s.queue.RecordResult(id, result, execErr)
 	if recordErr != nil {
-		s.log.Error("approval record result", "id", id, "err", recordErr)
+		return nil, recordErr
 	}
 	if execErr != nil {
 		return nil, execErr

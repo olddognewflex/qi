@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"qi/internal/approval"
 	"qi/internal/daemon"
 	"qi/internal/tools"
 	"qi/internal/tools/builtin"
@@ -20,12 +21,48 @@ import (
 // newPipeClient wires a Client to an in-memory server-side Server via net.Pipe.
 func newPipeClient(t *testing.T, r *tools.Registry) *Client {
 	t.Helper()
-	server := daemon.NewServer(r, nil, nil, nil)
+	return newPipeClientWithQueue(t, r, nil)
+}
+
+func newPipeClientWithQueue(t *testing.T, r *tools.Registry, q *approval.Queue) *Client {
+	t.Helper()
+	server := daemon.NewServer(r, nil, q, nil)
 	cli, srv := net.Pipe()
 	go server.ServeConn(context.Background(), srv)
 	c := &Client{conn: cli, br: bufio.NewReader(cli)}
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+func TestCallToolAsWithIDPreservesPlannerCorrelation(t *testing.T) {
+	// Given: a mutating tool call from an AI planner requires approval.
+	r := tools.NewRegistry()
+	if err := r.RegisterLocal(tools.Tool{Name: "mutate", Mutating: true}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{"ok":true}`), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q := approval.NewQueue(nil)
+	c := newPipeClientWithQueue(t, r, q)
+
+	// When: the planner sends its immutable model call ID on the qid wire.
+	raw, err := c.CallToolAsWithID(context.Background(), "ai-planner:s1", "call-42", "mutate", json.RawMessage(`{"x":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := IsPending(raw)
+	if !ok {
+		t.Fatalf("result = %s, want pending", raw)
+	}
+
+	// Then: the queued approval retains the correlation and exact call binding.
+	got, found := q.Get(pending.ApprovalID)
+	if !found {
+		t.Fatalf("approval %q not found", pending.ApprovalID)
+	}
+	if got.CallID != "call-42" || got.Caller != "ai-planner:s1" || got.ToolName != "mutate" || string(got.Params) != `{"x":1}` {
+		t.Fatalf("approval = %+v", got)
+	}
 }
 
 func TestListToolsEmpty(t *testing.T) {

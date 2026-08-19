@@ -8,10 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+)
+
+const (
+	MaxTerminalResultBytes = 4 << 20
+	MaxAuditRecordBytes    = MaxTerminalResultBytes + (64 << 10)
 )
 
 // AuditEvent identifies what happened to a queue entry.
@@ -27,14 +33,27 @@ const (
 
 // AuditEntry is a single line in the audit log.
 type AuditEntry struct {
-	Time   time.Time       `json:"time"`
-	Event  AuditEvent      `json:"event"`
-	ID     string          `json:"id"`
-	Caller string          `json:"caller,omitempty"`
-	Tool   string          `json:"tool,omitempty"`
-	Reason string          `json:"reason,omitempty"`
-	Err    string          `json:"err,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
+	Time    time.Time        `json:"time"`
+	Event   AuditEvent       `json:"event"`
+	ID      string           `json:"id"`
+	Caller  string           `json:"caller,omitempty"`
+	CallID  string           `json:"call_id,omitempty"`
+	Tool    string           `json:"tool,omitempty"`
+	Reason  string           `json:"reason,omitempty"`
+	Err     string           `json:"err,omitempty"`
+	Params  json.RawMessage  `json:"params,omitempty"`
+	Outcome *TerminalOutcome `json:"outcome,omitempty"`
+}
+
+// TerminalOutcome is present only on durable terminal records. Its pointer
+// presence distinguishes a new empty/null result from a legacy terminal event.
+type TerminalOutcome struct {
+	Status     Status          `json:"status"`
+	Result     json.RawMessage `json:"result"`
+	Reason     string          `json:"reason,omitempty"`
+	Err        string          `json:"err,omitempty"`
+	DecidedAt  *time.Time      `json:"decided_at,omitempty"`
+	ExecutedAt *time.Time      `json:"executed_at,omitempty"`
 }
 
 // Audit is an append-only JSONL writer. Safe for concurrent use.
@@ -65,10 +84,24 @@ func (a *Audit) Append(e AuditEntry) error {
 	if err != nil {
 		return fmt.Errorf("audit marshal: %w", err)
 	}
+	if len(b) > MaxAuditRecordBytes {
+		return fmt.Errorf("audit record exceeds %d bytes", MaxAuditRecordBytes)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, err := a.f.Write(append(b, '\n')); err != nil {
+	if a.f == nil {
+		return errors.New("audit write: audit is closed")
+	}
+	line := append(b, '\n')
+	n, err := a.f.Write(line)
+	if err != nil {
 		return fmt.Errorf("audit write: %w", err)
+	}
+	if n != len(line) {
+		return fmt.Errorf("audit write: short write: wrote %d of %d bytes", n, len(line))
+	}
+	if err := a.f.Sync(); err != nil {
+		return fmt.Errorf("audit sync: %w", err)
 	}
 	return nil
 }
@@ -92,24 +125,128 @@ func ReadAuditLog(path string) ([]AuditEntry, error) {
 	defer f.Close()
 
 	var entries []AuditEntry
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
+	reader := bufio.NewReaderSize(f, MaxAuditRecordBytes+1)
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			return entries, fmt.Errorf("audit record exceeds %d bytes", MaxAuditRecordBytes)
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return entries, fmt.Errorf("audit read: %w", readErr)
+		}
+		terminated := len(line) > 0 && line[len(line)-1] == '\n'
+		if terminated {
+			line = line[:len(line)-1]
+		}
 		if len(line) == 0 {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
 		var e AuditEntry
 		if err := json.Unmarshal(line, &e); err != nil {
-			// Truncated trailing line from an interrupted write; stop here.
-			break
+			if errors.Is(readErr, io.EOF) && !terminated {
+				break
+			}
+			return entries, fmt.Errorf("audit decode: %w", err)
+		}
+		if e.Outcome != nil && len(e.Outcome.Result) > MaxTerminalResultBytes {
+			return entries, fmt.Errorf("terminal result exceeds %d bytes", MaxTerminalResultBytes)
 		}
 		entries = append(entries, e)
-	}
-	if err := sc.Err(); err != nil {
-		return entries, fmt.Errorf("audit scan: %w", err)
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
 	}
 	return entries, nil
+}
+
+// RestoreStats reports how many live and lookup-only entries replay restored.
+type RestoreStats struct {
+	Pending  int
+	Terminal int
+}
+
+// Restore rebuilds live pending entries and lookup-only terminal history from
+// a replayed audit log. Approved entries without a durable terminal outcome
+// are restored as pending and require another explicit approval. It never
+// executes tools or emits new audit events.
+func (q *Queue) Restore(entries []AuditEntry) RestoreStats {
+	type accumulator struct {
+		enqueue *AuditEntry
+		latest  AuditEntry
+	}
+	byID := make(map[string]*accumulator)
+	order := make([]string, 0)
+	for i := range entries {
+		e := entries[i]
+		if e.ID == "" {
+			continue
+		}
+		a, ok := byID[e.ID]
+		if !ok {
+			a = &accumulator{}
+			byID[e.ID] = a
+			order = append(order, e.ID)
+		}
+		if e.Event == EventEnqueue {
+			copy := e
+			a.enqueue = &copy
+		}
+		a.latest = e
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	stats := RestoreStats{}
+	for _, id := range order {
+		a := byID[id]
+		if a.enqueue == nil || q.hasID(id) {
+			continue
+		}
+		p := &Pending{
+			ID: id, Caller: a.enqueue.Caller, CallID: a.enqueue.CallID,
+			ToolName: a.enqueue.Tool, Params: cloneRaw(a.enqueue.Params),
+			Status: StatusPending, Reason: a.enqueue.Reason, CreatedAt: a.enqueue.Time,
+		}
+		switch a.latest.Event {
+		case EventDeny, EventExecute, EventFail:
+			outcome := a.latest.Outcome
+			if outcome == nil || !terminalOutcomeMatches(a.latest.Event, outcome.Status) {
+				continue
+			}
+			p.Status, p.Result, p.Reason, p.Err = outcome.Status, cloneRaw(outcome.Result), outcome.Reason, outcome.Err
+			p.DecidedAt, p.ExecutedAt = cloneTime(outcome.DecidedAt), cloneTime(outcome.ExecutedAt)
+			q.history[id] = p
+			stats.Terminal++
+		case EventEnqueue, EventApprove:
+			q.items[id] = p
+			stats.Pending++
+		}
+	}
+	return stats
+}
+
+func (q *Queue) hasID(id string) bool {
+	if _, exists := q.items[id]; exists {
+		return true
+	}
+	_, exists := q.history[id]
+	return exists
+}
+
+func terminalOutcomeMatches(event AuditEvent, status Status) bool {
+	switch event {
+	case EventDeny:
+		return status == StatusDenied
+	case EventExecute:
+		return status == StatusExecuted
+	case EventFail:
+		return status == StatusFailed
+	default:
+		return false
+	}
 }
 
 // Close flushes and closes the underlying file.
