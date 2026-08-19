@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"qi/internal/config"
 	"qi/internal/remotequeue"
 	"qi/internal/service"
+
+	"github.com/spf13/cobra"
 )
 
 // queueAdapter bridges the remotequeue HTTP client to the service.RemoteQueue
@@ -77,14 +77,11 @@ func newRemoteDrainCommand(cfg config.Config) *cobra.Command {
 				return printDeadletter(cmd.Context(), client)
 			}
 
-			taskSvc := service.TaskService{
-				TaskFilePath: cfg.TaskFilePath,
-				TasksDir:     filepath.Dir(cfg.TaskFilePath),
-			}
+			taskSvc := service.NewTaskService(cfg.TaskFilePath)
 			drain := service.DrainService{
 				Tasks:    taskSvc,
-				Notes:    service.NoteService{NotesDir: cfg.NotesPath},
-				Captures: service.CaptureService{InboxPath: cfg.InboxPath},
+				Notes:    service.NewNoteService(cfg.NotesPath),
+				Captures: service.NewCaptureService(cfg.InboxPath),
 				Queue:    queueAdapter{c: client},
 				IsClient: func(name string) bool { _, ok := cfg.ClientByName(name); return ok },
 			}

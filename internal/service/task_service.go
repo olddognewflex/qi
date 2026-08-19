@@ -46,6 +46,19 @@ type TaskService struct {
 	TasksDir     string
 }
 
+// NewTaskService builds a TaskService for a task file, deriving TasksDir from
+// its directory. It collapses the identical `{TaskFilePath, TasksDir:
+// filepath.Dir(...)}` literal repeated across the command layer, so a future
+// required field is added in one place instead of drifting across call sites.
+// It takes the path (not config.Config) to keep the service layer decoupled
+// from config — the one-way dependency the CLI layering depends on.
+func NewTaskService(taskFilePath string) TaskService {
+	return TaskService{
+		TaskFilePath: taskFilePath,
+		TasksDir:     filepath.Dir(taskFilePath),
+	}
+}
+
 type AddTaskInput struct {
 	Text       string
 	Project    string
