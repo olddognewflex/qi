@@ -18,7 +18,7 @@ import (
 
 const (
 	MaxTerminalResultBytes = 4 << 20
-	MaxAuditRecordBytes    = MaxTerminalResultBytes + (64 << 10)
+	MaxAuditRecordBytes    = MaxTerminalResultBytes + (512 << 10)
 	MaxAuditLogBytes       = 64 << 20
 	MaxAuditReplayEntries  = 10_000
 )
@@ -67,6 +67,7 @@ type Audit struct {
 	path          string
 	reserved      map[string]int64
 	reservedBytes int64
+	recordCount   int
 }
 
 // OpenAudit opens (or creates) the audit log at path with 0600 perms.
@@ -88,7 +89,11 @@ func OpenAudit(path string) (*Audit, error) {
 	if err := f.Chmod(0o600); err != nil {
 		return nil, errors.Join(fmt.Errorf("audit chmod: %w", err), f.Close())
 	}
-	return &Audit{f: f, path: path, reserved: make(map[string]int64)}, nil
+	entries, err := ReadAuditLog(path)
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return &Audit{f: f, path: path, reserved: make(map[string]int64), recordCount: len(entries)}, nil
 }
 
 // Append writes one entry to the log. The entry's Time is set if zero.
@@ -107,6 +112,9 @@ func (a *Audit) Append(e AuditEntry) error {
 	defer a.mu.Unlock()
 	if a.f == nil {
 		return errors.New("audit write: audit is closed")
+	}
+	if a.recordCount == MaxAuditReplayEntries {
+		return fmt.Errorf("audit replay exceeds %d entries", MaxAuditReplayEntries)
 	}
 	line := append(b, '\n')
 	info, err := a.f.Stat()
@@ -148,6 +156,7 @@ func (a *Audit) Append(e AuditEntry) error {
 			a.reservedBytes -= reservation
 		}
 	}
+	a.recordCount++
 	return nil
 }
 

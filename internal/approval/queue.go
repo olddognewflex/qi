@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Status is where a queue entry sits in its lifecycle.
@@ -20,6 +22,13 @@ const (
 	StatusDenied   Status = "denied"
 	StatusExecuted Status = "executed"
 	StatusFailed   Status = "failed"
+)
+
+const (
+	MaxApprovalCallerBytes = 8 << 10
+	MaxApprovalCallIDBytes = 1 << 10
+	MaxApprovalToolBytes   = 8 << 10
+	MaxTerminalTextBytes   = 32 << 10
 )
 
 // Pending is the in-memory record for one queued call.
@@ -86,6 +95,18 @@ func (q *Queue) EnqueueWithCallID(caller, callID, toolName string, params json.R
 	if caller == "" || toolName == "" {
 		return "", fmt.Errorf("enqueue: caller and tool name are required")
 	}
+	if err := validateApprovalText("caller", caller, MaxApprovalCallerBytes); err != nil {
+		return "", err
+	}
+	if err := validateApprovalText("call id", callID, MaxApprovalCallIDBytes); err != nil {
+		return "", err
+	}
+	if err := validateApprovalText("tool name", toolName, MaxApprovalToolBytes); err != nil {
+		return "", err
+	}
+	if err := validateApprovalText("reason", reason, MaxTerminalTextBytes); err != nil {
+		return "", err
+	}
 
 	q.mu.Lock()
 	id := newID()
@@ -147,6 +168,9 @@ func (q *Queue) Approve(id string) (Pending, error) {
 
 // Deny refuses the entry. Reason is recorded in audit.
 func (q *Queue) Deny(id, reason string) (Pending, error) {
+	if err := validateApprovalText("denial reason", reason, MaxTerminalTextBytes); err != nil {
+		return Pending{}, err
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	p, err := q.pendingForTransition(id, StatusDenied)
@@ -155,7 +179,7 @@ func (q *Queue) Deny(id, reason string) (Pending, error) {
 	}
 	t := q.now()
 	outcome := &TerminalOutcome{Status: StatusDenied, Reason: reason, DecidedAt: &t}
-	if err := q.appendAudit(AuditEntry{Time: t, Event: EventDeny, ID: id, Caller: p.Caller, CallID: p.CallID, Tool: p.ToolName, Reason: reason, ParamsHash: auditParamsHash(p.Params), Outcome: outcome}); err != nil {
+	if err := q.appendAudit(AuditEntry{Time: t, Event: EventDeny, ID: id, Caller: p.Caller, CallID: p.CallID, Tool: p.ToolName, ParamsHash: auditParamsHash(p.Params), Outcome: outcome}); err != nil {
 		return Pending{}, fmt.Errorf("deny audit: %w", err)
 	}
 	p.Status = StatusDenied
@@ -188,18 +212,40 @@ func (q *Queue) RecordResult(id string, result json.RawMessage, execErr error) (
 	event := EventExecute
 	if execErr != nil {
 		snap.Status = StatusFailed
-		snap.Err = execErr.Error()
+		snap.Err = boundedTerminalText(execErr.Error())
 		event = EventFail
 	} else {
 		snap.Status = StatusExecuted
 		snap.Result = cloneRaw(result)
 	}
 	outcome := &TerminalOutcome{Status: snap.Status, Result: cloneRaw(snap.Result), Err: snap.Err, DecidedAt: snap.DecidedAt, ExecutedAt: snap.ExecutedAt}
-	if err := q.appendAudit(AuditEntry{Time: t, Event: event, ID: id, Caller: snap.Caller, CallID: snap.CallID, Tool: snap.ToolName, Err: snap.Err, ParamsHash: auditParamsHash(snap.Params), Outcome: outcome}); err != nil {
+	if err := q.appendAudit(AuditEntry{Time: t, Event: event, ID: id, Caller: snap.Caller, CallID: snap.CallID, Tool: snap.ToolName, ParamsHash: auditParamsHash(snap.Params), Outcome: outcome}); err != nil {
 		return Pending{}, fmt.Errorf("%w: %v", errTerminalResultNotDurable, err)
 	}
 	*p = snap
 	return clonePending(p), nil
+}
+
+func validateApprovalText(name, value string, maxBytes int) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("enqueue: %s must be valid UTF-8", name)
+	}
+	if len(value) > maxBytes {
+		return fmt.Errorf("enqueue: %s exceeds %d bytes", name, maxBytes)
+	}
+	return nil
+}
+
+func boundedTerminalText(value string) string {
+	value = strings.ToValidUTF8(value, "�")
+	if len(value) <= MaxTerminalTextBytes {
+		return value
+	}
+	value = value[:MaxTerminalTextBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (q *Queue) pendingForTransition(id string, next Status) (*Pending, error) {

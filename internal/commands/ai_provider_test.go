@@ -119,6 +119,13 @@ func TestAIResumeCLIRejectsModelOnlyChain(t *testing.T) {
 	}
 }
 
+func TestBuildResumeLLM_RejectsEmptyProviderOverride(t *testing.T) {
+	_, err := buildResumeLLM(config.Config{}, ai.ProviderState{}, "", "", true, false)
+	if err == nil || !strings.Contains(err.Error(), "--provider must not be empty") {
+		t.Fatalf("error = %v, want empty-provider rejection", err)
+	}
+}
+
 func TestAIResumeCLIKeepsFailedOverProvider(t *testing.T) {
 	// Given
 	t.Setenv("OPENAI_API_KEY", "fresh-secret")

@@ -79,8 +79,11 @@ func buildResumeLLM(
 ) (*ai.FallbackLLM, error) {
 	if providerChanged {
 		provider, err := ai.ParseProvider(providerFlag)
-		if err != nil || provider == "" {
+		if err != nil {
 			return nil, err
+		}
+		if provider == "" {
+			return nil, errors.New("--provider must not be empty")
 		}
 		entry, err := buildEntry(cfg, provider, providerOverridesFor(cfg, provider), modelFlag)
 		if err != nil {

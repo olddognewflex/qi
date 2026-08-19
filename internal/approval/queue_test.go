@@ -171,7 +171,7 @@ func TestFailExecution(t *testing.T) {
 	events := readAuditEvents(t, auditPath)
 	found := false
 	for _, e := range events {
-		if e.Event == EventFail && strings.Contains(e.Err, "disk full") {
+		if e.Event == EventFail && e.Outcome != nil && strings.Contains(e.Outcome.Err, "disk full") {
 			found = true
 		}
 	}
@@ -518,7 +518,7 @@ func TestReadAuditRejectsMiddleCorruption(t *testing.T) {
 func TestReadAuditRejectsOversizedMiddleRecord(t *testing.T) {
 	// Given: an audit line exceeds the supported terminal payload envelope.
 	path := filepath.Join(t.TempDir(), "audit.log")
-	oversized := `{"event":"execute","id":"a","result":"` + strings.Repeat("x", (4<<20)+(128<<10)) + `"}`
+	oversized := `{"event":"execute","id":"a","result":"` + strings.Repeat("x", MaxAuditRecordBytes+1) + `"}`
 	data := oversized + "\n" + `{"event":"enqueue","id":"b"}` + "\n"
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
