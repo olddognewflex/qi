@@ -141,3 +141,86 @@ func TestFallbackSwitchesOnTransportError(t *testing.T) {
 		t.Fatalf("resp=%+v err=%v", resp, err)
 	}
 }
+
+func TestFallbackStateRoundTripKeepsActiveEntry(t *testing.T) {
+	// Given
+	primary := &scriptedLLM{errs: []error{limitErr("ollama")}}
+	backup := &scriptedLLM{}
+	entries := []FallbackEntry{
+		{Name: "ollama", Provider: ProviderOllama, LLM: primary, Model: "qwen3:14b", ConfigID: ConfigIDForDescriptor("ollama|http://localhost:11434")},
+		{Name: "anthropic", Provider: ProviderAnthropic, LLM: backup, Model: "claude-x", ConfigID: ConfigIDForDescriptor("anthropic|default")},
+	}
+	fallback, err := NewFallbackLLM(entries, nil)
+	if err != nil {
+		t.Fatalf("new fallback: %v", err)
+	}
+	if _, err := fallback.Generate(context.Background(), GenerateRequest{}); err != nil {
+		t.Fatalf("fail over: %v", err)
+	}
+
+	// When
+	state, err := fallback.ProviderState()
+	if err != nil {
+		t.Fatalf("snapshot fallback: %v", err)
+	}
+	restoredPrimary := &scriptedLLM{}
+	restoredBackup := &scriptedLLM{}
+	restored, err := NewFallbackLLMFromState([]FallbackEntry{
+		{Name: "ollama", Provider: ProviderOllama, LLM: restoredPrimary, Model: "qwen3:14b", ConfigID: ConfigIDForDescriptor("ollama|http://localhost:11434")},
+		{Name: "anthropic", Provider: ProviderAnthropic, LLM: restoredBackup, Model: "claude-x", ConfigID: ConfigIDForDescriptor("anthropic|default")},
+	}, state, nil)
+	if err != nil {
+		t.Fatalf("restore fallback: %v", err)
+	}
+	if _, err := restored.Generate(context.Background(), GenerateRequest{}); err != nil {
+		t.Fatalf("generate from restored fallback: %v", err)
+	}
+
+	// Then
+	if restoredPrimary.calls != 0 {
+		t.Errorf("restored primary calls = %d, want 0", restoredPrimary.calls)
+	}
+	if restoredBackup.calls != 1 {
+		t.Errorf("restored backup calls = %d, want 1", restoredBackup.calls)
+	}
+}
+
+func TestFallbackRestoredEntryCanFailOver(t *testing.T) {
+	// Given
+	primary := &scriptedLLM{}
+	backup := &scriptedLLM{errs: []error{limitErr("anthropic")}}
+	later := &scriptedLLM{}
+	entries := []FallbackEntry{
+		{Name: "ollama", Provider: ProviderOllama, LLM: primary, Model: "qwen3:14b", ConfigID: ConfigIDForDescriptor("ollama|http://localhost:11434")},
+		{Name: "anthropic", Provider: ProviderAnthropic, LLM: backup, Model: "claude-x", ConfigID: ConfigIDForDescriptor("anthropic|default")},
+		{Name: "openai", Provider: ProviderOpenAI, LLM: later, Model: "gpt-x", ConfigID: ConfigIDForDescriptor("openai|https://api.openai.com/v1")},
+	}
+	state := ProviderState{Version: ProviderStateVersion, Entries: []ProviderStateEntry{
+		{Provider: ProviderOllama, Model: "qwen3:14b", ConfigID: ConfigIDForDescriptor("ollama|http://localhost:11434")},
+		{Provider: ProviderAnthropic, Model: "claude-x", ConfigID: ConfigIDForDescriptor("anthropic|default")},
+		{Provider: ProviderOpenAI, Model: "gpt-x", ConfigID: ConfigIDForDescriptor("openai|https://api.openai.com/v1")},
+	}, Active: 1}
+	var switches []string
+	restored, err := NewFallbackLLMFromState(entries, state, func(from, to FallbackEntry, _ error) {
+		switches = append(switches, from.Name+"->"+to.Name)
+	})
+	if err != nil {
+		t.Fatalf("restore fallback: %v", err)
+	}
+
+	// When
+	if _, err := restored.Generate(context.Background(), GenerateRequest{}); err != nil {
+		t.Fatalf("generate from restored fallback: %v", err)
+	}
+
+	// Then
+	if primary.calls != 0 {
+		t.Errorf("primary calls = %d, want 0", primary.calls)
+	}
+	if backup.models[0] != "claude-x" || later.models[0] != "gpt-x" {
+		t.Errorf("models = %q/%q, want claude-x/gpt-x", backup.models[0], later.models[0])
+	}
+	if got, want := strings.Join(switches, ","), "anthropic->openai"; got != want {
+		t.Errorf("switches = %q, want %q", got, want)
+	}
+}

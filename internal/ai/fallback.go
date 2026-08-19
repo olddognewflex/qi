@@ -15,9 +15,11 @@ import (
 // id: model names are provider-specific, so the chain stamps the entry's
 // model into each request rather than sharing the planner's.
 type FallbackEntry struct {
-	Name  string // provider label for switch notices, e.g. "ollama"
-	LLM   LLM
-	Model string // may be empty for providers with a built-in default
+	Name     string // provider label for switch notices, e.g. "ollama"
+	Provider Provider
+	LLM      LLM
+	Model    string // may be empty for providers with a built-in default
+	ConfigID string // canonical secret-free connection identity
 }
 
 // FallbackLLM tries each entry in order. Failover is sticky for the life of
@@ -39,7 +41,58 @@ func NewFallbackLLM(entries []FallbackEntry, onSwitch func(from, to FallbackEntr
 	if len(entries) == 0 {
 		return nil, errors.New("ai: fallback chain needs at least one provider")
 	}
-	return &FallbackLLM{entries: entries, onSwitch: onSwitch}, nil
+	return &FallbackLLM{entries: append([]FallbackEntry(nil), entries...), onSwitch: onSwitch}, nil
+}
+
+// NewFallbackLLMFromState reconstructs a chain at the saved sticky entry.
+// Entries are built by the caller, which remains responsible for resolving
+// current credentials and matching them against the saved identities.
+func NewFallbackLLMFromState(entries []FallbackEntry, state ProviderState, onSwitch func(from, to FallbackEntry, err error)) (*FallbackLLM, error) {
+	if err := state.Validate(); err != nil {
+		return nil, err
+	}
+	entryState, err := providerStateFromEntries(entries)
+	if err != nil {
+		return nil, err
+	}
+	if len(entryState.Entries) != len(state.Entries) {
+		return nil, fmt.Errorf("%w: saved provider entries do not match reconstructed chain", ErrInvalidProviderState)
+	}
+	for index, entry := range entryState.Entries {
+		if entry != state.Entries[index] {
+			return nil, fmt.Errorf("%w: saved provider entry %d does not match reconstructed chain", ErrInvalidProviderState, index)
+		}
+	}
+	return &FallbackLLM{entries: append([]FallbackEntry(nil), entries...), active: state.Active, onSwitch: onSwitch}, nil
+}
+
+// ProviderState exports the current sticky failover position without exposing
+// an LLM implementation, URL, API key, or environment value.
+func (f *FallbackLLM) ProviderState() (ProviderState, error) {
+	state, err := providerStateFromEntries(f.entries)
+	if err != nil {
+		return ProviderState{}, err
+	}
+	state.Active = f.active
+	return state, nil
+}
+
+func providerStateFromEntries(entries []FallbackEntry) (ProviderState, error) {
+	state := ProviderState{Version: ProviderStateVersion, Entries: make([]ProviderStateEntry, 0, len(entries))}
+	for _, entry := range entries {
+		if entry.LLM == nil {
+			return ProviderState{}, fmt.Errorf("%w: provider %q has no LLM", ErrInvalidProviderState, entry.Provider)
+		}
+		state.Entries = append(state.Entries, ProviderStateEntry{
+			Provider: entry.Provider,
+			Model:    entry.Model,
+			ConfigID: entry.ConfigID,
+		})
+	}
+	if err := state.Validate(); err != nil {
+		return ProviderState{}, err
+	}
+	return state, nil
 }
 
 // Generate implements LLM. Provider-side failures (ShouldFailover) advance
