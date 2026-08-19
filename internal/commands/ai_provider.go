@@ -116,22 +116,19 @@ func reconstructSavedEntry(cfg config.Config, saved ai.ProviderStateEntry) (ai.F
 			candidates = append(candidates, candidate)
 		}
 	}
-	matches := make([]ai.FallbackEntry, 0, 1)
+	var match *ai.FallbackEntry
 	for _, candidate := range candidates {
 		entry, err := buildEntry(cfg, saved.Provider, candidate, saved.Model)
-		if err == nil && entry.ConfigID == saved.ConfigID {
-			matches = append(matches, entry)
+		if err == nil && entry.ConfigID == saved.ConfigID && match == nil {
+			match = &entry
 		}
 	}
-	if len(matches) > 1 {
-		return ai.FallbackEntry{}, fmt.Errorf("duplicate configured provider identity for %s", saved.Provider)
-	}
-	if len(matches) == 0 {
+	if match == nil {
 		return ai.FallbackEntry{}, fmt.Errorf(
 			"saved provider %s is unavailable or changed; pass --provider ... to override", saved.Provider,
 		)
 	}
-	return matches[0], nil
+	return *match, nil
 }
 
 func rejectDuplicateEntries(entries []ai.FallbackEntry) error {

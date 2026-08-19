@@ -451,6 +451,9 @@ qi ai approve <approval-id>
 qi ai resume <session-id>
 ```
 
+When `run` or `resume` uses `--socket`, the printed approval and continuation
+commands carry the same safely quoted socket path.
+
 A denial is also a terminal result the planner can reason about:
 
 ```bash
@@ -621,7 +624,7 @@ Machine-local state (never in vault, never synced):
 ```
 ~/.local/share/qi/qi.db          # SQLite FTS5 index + optional embeddings
 ~/.local/state/qi/qid.sock       # qid unix-domain socket
-~/.local/state/qi/audit.log      # append-only approval audit (JSONL)
+~/.local/state/qi/audit.log      # append-only approval audit (JSONL, 64 MiB cap)
 ~/.local/state/qi/ai-sessions/   # resumable planner sessions (private, transient)
 ```
 Honors `XDG_DATA_HOME` and `XDG_RUNTIME_DIR` / `XDG_STATE_HOME` when set.

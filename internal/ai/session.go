@@ -108,7 +108,6 @@ func validateStoredSession(session Session) error {
 		partition[result.CallID] = "result"
 	}
 	approvalIDs := make(map[string]struct{}, len(session.Pending))
-	toolNames := make(map[string]struct{}, len(session.Pending))
 	for _, pending := range session.Pending {
 		if err := validateCallID(pending.CallID); err != nil {
 			return fmt.Errorf("%w: pending call id: %v", ErrInvalidSession, err)
@@ -125,15 +124,11 @@ func validateStoredSession(session Session) error {
 		if _, exists := approvalIDs[pending.ApprovalID]; exists {
 			return fmt.Errorf("%w: duplicate approval id %q", ErrInvalidSession, pending.ApprovalID)
 		}
-		if _, exists := toolNames[pending.ToolName]; exists {
-			return fmt.Errorf("%w: duplicate pending tool name %q", ErrInvalidSession, pending.ToolName)
-		}
 		if sanitizeToolName(pending.ToolName) != calls[pending.CallID].Name {
 			return fmt.Errorf("%w: pending tool %q does not match call %q", ErrInvalidSession, pending.ToolName, calls[pending.CallID].Name)
 		}
 		partition[pending.CallID] = "pending"
 		approvalIDs[pending.ApprovalID] = struct{}{}
-		toolNames[pending.ToolName] = struct{}{}
 	}
 	for callID := range calls {
 		if partition[callID] == "" {

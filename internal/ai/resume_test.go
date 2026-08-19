@@ -373,11 +373,6 @@ func TestSessionValidationRejectsInvalidPartitions(t *testing.T) {
 			s.Results = nil
 			s.Pending = []PendingCall{{CallID: "call-1", ApprovalID: "same", ToolName: "task.add"}, {CallID: "call-2", ApprovalID: "same", ToolName: "vault.capture"}}
 		}},
-		{name: "duplicate tool", mutate: func(s *Session) {
-			s.Results = nil
-			s.Messages[1].ToolCalls[1].Name = "task_add"
-			s.Pending = []PendingCall{{CallID: "call-1", ApprovalID: "a", ToolName: "task.add"}, {CallID: "call-2", ApprovalID: "b", ToolName: "task.add"}}
-		}},
 		{name: "empty approval", mutate: func(s *Session) { s.Pending[0].ApprovalID = "" }},
 		{name: "empty tool", mutate: func(s *Session) { s.Pending[0].ToolName = "" }},
 		{name: "trailing json", mutate: func(s *Session) { s.Messages[1].ToolCalls[0].Input = json.RawMessage(`{} {}`) }},
@@ -390,6 +385,23 @@ func TestSessionValidationRejectsInvalidPartitions(t *testing.T) {
 				t.Fatal("invalid session accepted")
 			}
 		})
+	}
+}
+
+func TestSessionValidationAllowsRepeatedPendingTool(t *testing.T) {
+	session := Session{
+		Version: SessionVersion, SessionID: mustSessionID(t, testSessionID), Provider: testProviderState(),
+		Messages: []Message{{Role: RoleUser, Text: "add two"}, {Role: RoleAssistant, ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "task_add", Input: json.RawMessage(`{"text":"one"}`)},
+			{ID: "call-2", Name: "task_add", Input: json.RawMessage(`{"text":"two"}`)},
+		}}},
+		Pending: []PendingCall{
+			{CallID: "call-1", ApprovalID: "approval-1", ToolName: "task.add"},
+			{CallID: "call-2", ApprovalID: "approval-2", ToolName: "task.add"},
+		},
+	}
+	if err := validateStoredSession(session); err != nil {
+		t.Fatalf("valid repeated tool calls rejected: %v", err)
 	}
 }
 

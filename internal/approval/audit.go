@@ -18,6 +18,8 @@ import (
 const (
 	MaxTerminalResultBytes = 4 << 20
 	MaxAuditRecordBytes    = MaxTerminalResultBytes + (64 << 10)
+	MaxAuditLogBytes       = 64 << 20
+	MaxAuditReplayEntries  = 10_000
 )
 
 // AuditEvent identifies what happened to a queue entry.
@@ -72,6 +74,16 @@ func OpenAudit(path string) (*Audit, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit open: %w", err)
 	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("audit inspect: %w", err), f.Close())
+	}
+	if info.Size() > MaxAuditLogBytes {
+		return nil, errors.Join(fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes), f.Close())
+	}
+	if err := f.Chmod(0o600); err != nil {
+		return nil, errors.Join(fmt.Errorf("audit chmod: %w", err), f.Close())
+	}
 	return &Audit{f: f, path: path}, nil
 }
 
@@ -93,6 +105,17 @@ func (a *Audit) Append(e AuditEntry) error {
 		return errors.New("audit write: audit is closed")
 	}
 	line := append(b, '\n')
+	info, err := a.f.Stat()
+	if err != nil {
+		return fmt.Errorf("audit inspect before write: %w", err)
+	}
+	required := len(line)
+	if e.Event == EventApprove {
+		required += MaxAuditRecordBytes
+	}
+	if info.Size()+int64(required) > MaxAuditLogBytes {
+		return fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
+	}
 	n, err := a.f.Write(line)
 	if err != nil {
 		return fmt.Errorf("audit write: %w", err)
@@ -123,6 +146,13 @@ func ReadAuditLog(path string) ([]AuditEntry, error) {
 		return nil, fmt.Errorf("audit open: %w", err)
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("audit inspect: %w", err)
+	}
+	if info.Size() > MaxAuditLogBytes {
+		return nil, fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
+	}
 
 	var entries []AuditEntry
 	reader := bufio.NewReaderSize(f, MaxAuditRecordBytes+1)
@@ -154,99 +184,15 @@ func ReadAuditLog(path string) ([]AuditEntry, error) {
 		if e.Outcome != nil && len(e.Outcome.Result) > MaxTerminalResultBytes {
 			return entries, fmt.Errorf("terminal result exceeds %d bytes", MaxTerminalResultBytes)
 		}
+		if len(entries) == MaxAuditReplayEntries {
+			return entries, fmt.Errorf("audit replay exceeds %d entries", MaxAuditReplayEntries)
+		}
 		entries = append(entries, e)
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 	}
 	return entries, nil
-}
-
-// RestoreStats reports how many live and lookup-only entries replay restored.
-type RestoreStats struct {
-	Pending  int
-	Terminal int
-}
-
-// Restore rebuilds live pending entries and lookup-only terminal history from
-// a replayed audit log. Approved entries without a durable terminal outcome
-// are restored as pending and require another explicit approval. It never
-// executes tools or emits new audit events.
-func (q *Queue) Restore(entries []AuditEntry) RestoreStats {
-	type accumulator struct {
-		enqueue *AuditEntry
-		latest  AuditEntry
-	}
-	byID := make(map[string]*accumulator)
-	order := make([]string, 0)
-	for i := range entries {
-		e := entries[i]
-		if e.ID == "" {
-			continue
-		}
-		a, ok := byID[e.ID]
-		if !ok {
-			a = &accumulator{}
-			byID[e.ID] = a
-			order = append(order, e.ID)
-		}
-		if e.Event == EventEnqueue {
-			copy := e
-			a.enqueue = &copy
-		}
-		a.latest = e
-	}
-
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	stats := RestoreStats{}
-	for _, id := range order {
-		a := byID[id]
-		if a.enqueue == nil || q.hasID(id) {
-			continue
-		}
-		p := &Pending{
-			ID: id, Caller: a.enqueue.Caller, CallID: a.enqueue.CallID,
-			ToolName: a.enqueue.Tool, Params: cloneRaw(a.enqueue.Params),
-			Status: StatusPending, Reason: a.enqueue.Reason, CreatedAt: a.enqueue.Time,
-		}
-		switch a.latest.Event {
-		case EventDeny, EventExecute, EventFail:
-			outcome := a.latest.Outcome
-			if outcome == nil || !terminalOutcomeMatches(a.latest.Event, outcome.Status) {
-				continue
-			}
-			p.Status, p.Result, p.Reason, p.Err = outcome.Status, cloneRaw(outcome.Result), outcome.Reason, outcome.Err
-			p.DecidedAt, p.ExecutedAt = cloneTime(outcome.DecidedAt), cloneTime(outcome.ExecutedAt)
-			q.history[id] = p
-			stats.Terminal++
-		case EventEnqueue, EventApprove:
-			q.items[id] = p
-			stats.Pending++
-		}
-	}
-	return stats
-}
-
-func (q *Queue) hasID(id string) bool {
-	if _, exists := q.items[id]; exists {
-		return true
-	}
-	_, exists := q.history[id]
-	return exists
-}
-
-func terminalOutcomeMatches(event AuditEvent, status Status) bool {
-	switch event {
-	case EventDeny:
-		return status == StatusDenied
-	case EventExecute:
-		return status == StatusExecuted
-	case EventFail:
-		return status == StatusFailed
-	default:
-		return false
-	}
 }
 
 // Close flushes and closes the underlying file.

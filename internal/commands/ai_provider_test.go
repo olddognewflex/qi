@@ -59,6 +59,31 @@ func TestBuildResumeLLM_UsesSavedProviderWhenDefaultsAndEnvChanged(t *testing.T)
 	}
 }
 
+func TestBuildResumeLLM_DeduplicatesPresetIdentity(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "fresh-secret")
+	cfg := config.Config{AI: config.AIConfig{Providers: []config.AIProviderConfig{{
+		Provider: "openai", Model: "saved-model",
+	}}}}
+	entry, err := buildEntry(cfg, ai.ProviderOpenAI, cfg.AI.Providers[0], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := ai.ProviderState{Version: ai.ProviderStateVersion, Entries: []ai.ProviderStateEntry{{
+		Provider: entry.Provider, Model: entry.Model, ConfigID: entry.ConfigID,
+	}}}
+	llm, err := buildResumeLLM(cfg, saved, "", "", false, false)
+	if err != nil {
+		t.Fatalf("unchanged preset identity rejected: %v", err)
+	}
+	state, err := llm.ProviderState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Entries[0] != saved.Entries[0] {
+		t.Fatalf("restored = %+v, want %+v", state, saved)
+	}
+}
+
 func TestBuildResumeLLM_RejectsChangedSavedProvider(t *testing.T) {
 	// Given
 	t.Setenv("OPENAI_API_KEY", "fresh-secret")

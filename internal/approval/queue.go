@@ -155,7 +155,7 @@ func (q *Queue) Deny(id, reason string) (Pending, error) {
 	}
 	t := q.now()
 	outcome := &TerminalOutcome{Status: StatusDenied, Reason: reason, DecidedAt: &t}
-	if err := q.appendAudit(AuditEntry{Time: t, Event: EventDeny, ID: id, Caller: p.Caller, CallID: p.CallID, Tool: p.ToolName, Reason: reason, Outcome: outcome}); err != nil {
+	if err := q.appendAudit(AuditEntry{Time: t, Event: EventDeny, ID: id, Caller: p.Caller, CallID: p.CallID, Tool: p.ToolName, Reason: reason, Params: cloneRaw(p.Params), Outcome: outcome}); err != nil {
 		return Pending{}, fmt.Errorf("deny audit: %w", err)
 	}
 	p.Status = StatusDenied
@@ -195,7 +195,7 @@ func (q *Queue) RecordResult(id string, result json.RawMessage, execErr error) (
 		snap.Result = cloneRaw(result)
 	}
 	outcome := &TerminalOutcome{Status: snap.Status, Result: cloneRaw(snap.Result), Err: snap.Err, DecidedAt: snap.DecidedAt, ExecutedAt: snap.ExecutedAt}
-	if err := q.appendAudit(AuditEntry{Time: t, Event: event, ID: id, Caller: snap.Caller, CallID: snap.CallID, Tool: snap.ToolName, Err: snap.Err, Outcome: outcome}); err != nil {
+	if err := q.appendAudit(AuditEntry{Time: t, Event: event, ID: id, Caller: snap.Caller, CallID: snap.CallID, Tool: snap.ToolName, Err: snap.Err, Params: cloneRaw(snap.Params), Outcome: outcome}); err != nil {
 		return Pending{}, fmt.Errorf("%w: %v", errTerminalResultNotDurable, err)
 	}
 	*p = snap

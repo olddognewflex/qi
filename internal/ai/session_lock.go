@@ -8,9 +8,11 @@ import (
 )
 
 type SessionLease struct {
-	file *os.File
-	once sync.Once
-	err  error
+	file   *os.File
+	verify func() error
+	remove func() error
+	once   sync.Once
+	err    error
 }
 
 func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
@@ -45,10 +47,46 @@ func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 		}
 		return nil, errors.Join(fmt.Errorf("lock planner session lease: %w", err), closeErr)
 	}
-	return &SessionLease{file: file}, nil
+	return &SessionLease{
+		file: file,
+		verify: func() error {
+			held, err := file.Stat()
+			if err != nil {
+				return fmt.Errorf("inspect held planner session lease: %w", err)
+			}
+			current, err := s.root.Lstat(name)
+			if err != nil {
+				return fmt.Errorf("inspect planner session lease path: %w", err)
+			}
+			if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(held, current) {
+				return fmt.Errorf("%w: planner session lease path changed", ErrInvalidSession)
+			}
+			return nil
+		},
+		remove: func() error {
+			if err := s.root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("delete planner session lease: %w", err)
+			}
+			if err := s.dir.Sync(); err != nil {
+				return fmt.Errorf("sync planner session directory after lease delete: %w", err)
+			}
+			return nil
+		},
+	}, nil
 }
 
 func (l *SessionLease) Release() error {
 	l.once.Do(func() { l.err = l.file.Close() })
+	return l.err
+}
+
+func (l *SessionLease) Complete() error {
+	l.once.Do(func() {
+		if err := l.verify(); err != nil {
+			l.err = errors.Join(err, l.file.Close())
+			return
+		}
+		l.err = completeSessionLease(l.file, l.remove)
+	})
 	return l.err
 }

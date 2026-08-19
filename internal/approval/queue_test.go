@@ -308,6 +308,74 @@ func TestQueueRestoreApprovedButNotExecuted(t *testing.T) {
 	}
 }
 
+func TestQueueRestoreRejectsMismatchedTerminalBinding(t *testing.T) {
+	enqueue := AuditEntry{
+		Time: time.Now(), Event: EventEnqueue, ID: "approval-a",
+		Caller: "ai-planner:session-a", CallID: "call-a", Tool: "task.add",
+		Params: json.RawMessage(`{"text":"a"}`),
+	}
+	terminal := AuditEntry{
+		Time: time.Now(), Event: EventExecute, ID: enqueue.ID,
+		Caller: enqueue.Caller, CallID: enqueue.CallID, Tool: enqueue.Tool,
+		Params:  cloneRaw(enqueue.Params),
+		Outcome: &TerminalOutcome{Status: StatusExecuted, Result: json.RawMessage(`{"id":"wrong"}`)},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*AuditEntry)
+	}{
+		{name: "caller", mutate: func(e *AuditEntry) { e.Caller = "ai-planner:session-b" }},
+		{name: "call id", mutate: func(e *AuditEntry) { e.CallID = "call-b" }},
+		{name: "tool", mutate: func(e *AuditEntry) { e.Tool = "vault.capture" }},
+		{name: "params", mutate: func(e *AuditEntry) { e.Params = json.RawMessage(`{"text":"b"}`) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mismatched := terminal
+			tt.mutate(&mismatched)
+			fresh := NewQueue(nil)
+			if stats := fresh.Restore([]AuditEntry{enqueue, mismatched}); stats != (RestoreStats{}) {
+				t.Fatalf("restore stats = %+v, want no restored entry", stats)
+			}
+			if _, ok := fresh.Get(enqueue.ID); ok {
+				t.Fatal("mismatched terminal outcome was restored")
+			}
+		})
+	}
+}
+
+func TestAuditRejectsOversizedReplay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(MaxAuditLogBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadAuditLog(path); err == nil || !strings.Contains(err.Error(), "audit log exceeds") {
+		t.Fatalf("read error = %v, want total-size rejection", err)
+	}
+}
+
+func TestAuditAppendRejectsTotalSizeLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	a, err := OpenAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := a.f.Truncate(MaxAuditLogBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Append(AuditEntry{Event: EventEnqueue, ID: "overflow"}); err == nil || !strings.Contains(err.Error(), "audit log exceeds") {
+		t.Fatalf("append error = %v, want total-size rejection", err)
+	}
+}
+
 func TestQueueRestoreTerminalOutcomes(t *testing.T) {
 	// Given: three approvals reach distinct terminal outcomes and are audited.
 	q, path := mustQueue(t)

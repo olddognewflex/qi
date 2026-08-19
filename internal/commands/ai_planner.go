@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -46,7 +47,7 @@ func newAIRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printPlannerResult(command.OutOrStdout(), result)
+			printPlannerResult(command.OutOrStdout(), result, socketFlag)
 			return nil
 		},
 	}
@@ -122,8 +123,11 @@ func resumePlanner(command *cobra.Command, rawID, socketFlag, providerFlag, mode
 		if err := store.Delete(session.SessionID); err != nil {
 			return fmt.Errorf("delete planner session: %w", err)
 		}
+		if err := lease.Complete(); err != nil {
+			return fmt.Errorf("delete planner session lease: %w", err)
+		}
 	}
-	printPlannerResult(command.OutOrStdout(), result)
+	printPlannerResult(command.OutOrStdout(), result, socketFlag)
 	return nil
 }
 
@@ -142,7 +146,7 @@ func buildPlanner(qid *client.Client, providerFlag, modelFlag string) (*ai.Plann
 	return planner, nil
 }
 
-func printPlannerResult(out io.Writer, result ai.RunResult) {
+func printPlannerResult(out io.Writer, result ai.RunResult, socket string) {
 	for _, turn := range result.Turns {
 		if turn.Text != "" {
 			fmt.Fprintf(out, "[turn %d] %s\n", turn.Iteration, turn.Text)
@@ -158,6 +162,10 @@ func printPlannerResult(out io.Writer, result ai.RunResult) {
 		}
 	}
 	if result.StopReason == ai.StopAwaitingApproval {
+		socketArg := ""
+		if socket != "" {
+			socketArg = " --socket " + shellQuoteArg(socket)
+		}
 		fmt.Fprintln(out, "")
 		fmt.Fprintln(out, "Approval required — approve, then resume to continue:")
 		for _, pending := range result.Pending {
@@ -165,9 +173,9 @@ func printPlannerResult(out io.Writer, result ai.RunResult) {
 			if reason == "" {
 				reason = pending.ToolName
 			}
-			fmt.Fprintf(out, "  qi ai approve %s   # %s\n", pending.ApprovalID, reason)
+			fmt.Fprintf(out, "  qi ai approve %s%s   # %s\n", pending.ApprovalID, socketArg, reason)
 		}
-		fmt.Fprintf(out, "  qi ai resume %s\n", result.SessionID)
+		fmt.Fprintf(out, "  qi ai resume %s%s\n", result.SessionID, socketArg)
 	}
 	if result.StopReason == "max_iterations" {
 		fmt.Fprintln(out, "(stopped: max iterations reached)")
@@ -177,4 +185,8 @@ func printPlannerResult(out io.Writer, result ai.RunResult) {
 		fmt.Fprintf(out, "\ntokens: in=%d out=%d cache_write=%d cache_read=%d\n",
 			usage.InputTokens, usage.OutputTokens, usage.CacheCreationTokens, usage.CacheReadTokens)
 	}
+}
+
+func shellQuoteArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

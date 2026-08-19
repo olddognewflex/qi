@@ -28,7 +28,7 @@ type deleteErrorStore struct {
 
 func (s *deleteErrorStore) Delete(ai.SessionID) error { return s.err }
 
-func TestAIResumeCLIRunApproveRestartResume(t *testing.T) {
+func TestAIResumeCLIExecutedOutcomeAfterRestore(t *testing.T) {
 	// Given
 	fixture := newResumeCLIFixture(t)
 	var output bytes.Buffer
@@ -52,6 +52,14 @@ func TestAIResumeCLIRunApproveRestartResume(t *testing.T) {
 	defer store.Close()
 	if _, loadErr := store.Load(fixture.sessionID); loadErr == nil {
 		t.Fatal("completed session was not deleted")
+	}
+	sessionDir, dirErr := ai.SessionDir()
+	if dirErr != nil {
+		t.Fatal(dirErr)
+	}
+	lockPath := filepath.Join(sessionDir, fixture.sessionID.String()+".lock")
+	if _, statErr := os.Stat(lockPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("completed session lease was not deleted: %v", statErr)
 	}
 }
 
@@ -92,9 +100,6 @@ func TestAIResumeCLIKeepsSessionAtSecondGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "qi ai resume "+fixture.sessionID.String()) {
-		t.Fatalf("output = %q", output.String())
-	}
 	store, openErr := ai.DefaultSessionStore()
 	if openErr != nil {
 		t.Fatal(openErr)
@@ -106,6 +111,15 @@ func TestAIResumeCLIKeepsSessionAtSecondGate(t *testing.T) {
 	}
 	if len(saved.Pending) != 1 || saved.Pending[0].CallID != "call_2" {
 		t.Fatalf("pending = %+v", saved.Pending)
+	}
+	socketArg := "--socket '" + fixture.socket + "'"
+	for _, command := range []string{
+		"qi ai approve " + saved.Pending[0].ApprovalID + " " + socketArg,
+		"qi ai resume " + fixture.sessionID.String() + " " + socketArg,
+	} {
+		if !strings.Contains(output.String(), command) {
+			t.Fatalf("output missing %q: %q", command, output.String())
+		}
 	}
 }
 

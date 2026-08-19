@@ -16,3 +16,7 @@ func tryLockSession(file *os.File) error {
 	}
 	return err
 }
+
+func completeSessionLease(file *os.File, remove func() error) error {
+	return errors.Join(remove(), file.Close())
+}
