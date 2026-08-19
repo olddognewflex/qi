@@ -24,32 +24,53 @@ var processSessionLeases = struct {
 
 func (s *SessionStore) AcquireLease(id SessionID) (*SessionLease, error) {
 	name := id.String() + ".lock"
-	if err := s.rejectExistingNonRegular(name); err != nil {
-		return nil, err
-	}
+	var expected os.FileInfo
+	var localRelease func()
 	file, err := s.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if os.IsExist(err) {
-		if err := s.requireRegular(name); err != nil {
+		expected, err = s.root.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+		if expected.Mode()&os.ModeSymlink != 0 || !expected.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: lease file is not regular", ErrInvalidSession)
+		}
+		localRelease, err = reserveProcessSessionLease(expected)
+		if err != nil {
 			return nil, err
 		}
 		file, err = s.root.OpenFile(name, os.O_RDWR, 0o600)
 	}
 	if err != nil {
+		if localRelease != nil {
+			localRelease()
+		}
 		return nil, fmt.Errorf("open planner session lease: %w", err)
 	}
 	info, err := file.Stat()
 	if err != nil {
+		if localRelease != nil {
+			localRelease()
+		}
 		return nil, errors.Join(fmt.Errorf("inspect planner session lease: %w", err), file.Close())
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() || (expected != nil && !os.SameFile(expected, info)) {
+		if localRelease != nil {
+			localRelease()
+		}
 		return nil, errors.Join(fmt.Errorf("%w: lease file is not regular", ErrInvalidSession), file.Close())
 	}
 	if err := file.Chmod(0o600); err != nil {
+		if localRelease != nil {
+			localRelease()
+		}
 		return nil, errors.Join(fmt.Errorf("repair planner session lease mode: %w", err), file.Close())
 	}
-	localRelease, err := reserveProcessSessionLease(info)
-	if err != nil {
-		return nil, errors.Join(err, file.Close())
+	if localRelease == nil {
+		localRelease, err = reserveProcessSessionLease(info)
+		if err != nil {
+			return nil, errors.Join(err, file.Close())
+		}
 	}
 	if err := tryLockSession(file); err != nil {
 		localRelease()
