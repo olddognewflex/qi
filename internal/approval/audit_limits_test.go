@@ -59,6 +59,45 @@ func TestAuditAppendRejectsEntryLimit(t *testing.T) {
 	}
 }
 
+func TestAuditApproveReservesTerminalEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	data := strings.Repeat("{}\n", MaxAuditReplayEntries-1)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := OpenAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer audit.Close()
+	if err := audit.Append(AuditEntry{Event: EventApprove, ID: "approval"}); err == nil || !strings.Contains(err.Error(), "audit replay exceeds") {
+		t.Fatalf("approve error = %v, want terminal-entry reservation rejection", err)
+	}
+}
+
+func TestAuditTerminalConsumesReservedEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	data := strings.Repeat("{}\n", MaxAuditReplayEntries-2)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit, err := OpenAudit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer audit.Close()
+	if err := audit.Append(AuditEntry{Event: EventApprove, ID: "approval"}); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if err := audit.Append(AuditEntry{Event: EventEnqueue, ID: "interleaved"}); err == nil || !strings.Contains(err.Error(), "audit replay exceeds") {
+		t.Fatalf("interleaved error = %v, want reserved-entry rejection", err)
+	}
+	terminal := AuditEntry{Event: EventExecute, ID: "approval", Outcome: &TerminalOutcome{Status: StatusExecuted, Result: json.RawMessage(`{}`)}}
+	if err := audit.Append(terminal); err != nil {
+		t.Fatalf("reserved terminal append: %v", err)
+	}
+}
+
 func TestAuditApproveReservesTerminalCapacity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.log")
 	audit, err := OpenAudit(path)

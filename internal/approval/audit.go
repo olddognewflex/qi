@@ -113,9 +113,6 @@ func (a *Audit) Append(e AuditEntry) error {
 	if a.f == nil {
 		return errors.New("audit write: audit is closed")
 	}
-	if a.recordCount == MaxAuditReplayEntries {
-		return fmt.Errorf("audit replay exceeds %d entries", MaxAuditReplayEntries)
-	}
 	line := append(b, '\n')
 	info, err := a.f.Stat()
 	if err != nil {
@@ -123,15 +120,24 @@ func (a *Audit) Append(e AuditEntry) error {
 	}
 	reservedAfter := a.reservedBytes
 	reservation := a.reserved[e.ID]
+	reservedEntriesAfter := len(a.reserved)
 	if e.Event == EventExecute || e.Event == EventFail {
 		reservedAfter -= reservation
+		if reservation != 0 {
+			reservedEntriesAfter--
+		}
 	}
 	required := int64(len(line))
+	requiredEntries := 1
 	if e.Event == EventApprove {
 		if reservation != 0 {
 			return fmt.Errorf("audit terminal capacity already reserved for %s", e.ID)
 		}
 		required += MaxAuditRecordBytes
+		requiredEntries++
+	}
+	if a.recordCount+reservedEntriesAfter+requiredEntries > MaxAuditReplayEntries {
+		return fmt.Errorf("audit replay exceeds %d entries", MaxAuditReplayEntries)
 	}
 	if info.Size()+reservedAfter+required > MaxAuditLogBytes {
 		return fmt.Errorf("audit log exceeds %d bytes", MaxAuditLogBytes)
