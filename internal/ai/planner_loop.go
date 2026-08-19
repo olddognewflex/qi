@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -69,7 +70,8 @@ func (p *Planner) loop(ctx context.Context, messages []Message, toolDefs []ToolD
 				Provider: providerState, Messages: messages, Results: resolved, Pending: pendings,
 			}
 			if err := session.Save(); err != nil {
-				return result, fmt.Errorf("ai: persist session: %w", err)
+				persistErr := fmt.Errorf("ai: persist session: %w", err)
+				return result, errors.Join(persistErr, p.denyUnpersistedApprovals(ctx, pendings))
 			}
 			result.SessionID = p.sessionID.String()
 			result.StopReason = StopAwaitingApproval
@@ -79,6 +81,16 @@ func (p *Planner) loop(ctx context.Context, messages []Message, toolDefs []ToolD
 	}
 	result.StopReason = "max_iterations"
 	return result, nil
+}
+
+func (p *Planner) denyUnpersistedApprovals(ctx context.Context, pendings []PendingCall) error {
+	var combined error
+	for _, pending := range pendings {
+		if _, err := p.qid.DenyApproval(ctx, pending.ApprovalID, "planner session persistence failed"); err != nil {
+			combined = errors.Join(combined, fmt.Errorf("ai: deny unpersisted approval %s: %w", pending.ApprovalID, err))
+		}
+	}
+	return combined
 }
 
 func canonicalToolCalls(calls []ToolCall) ([]ToolCall, error) {

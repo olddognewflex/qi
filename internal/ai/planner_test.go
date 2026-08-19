@@ -253,6 +253,28 @@ func TestRunSurfacesPendingApproval(t *testing.T) {
 	}
 }
 
+func TestRunDeniesPendingApprovalWhenSessionSaveFails(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "relative")
+	registry := tools.NewRegistry()
+	if err := builtin.RegisterCapture(registry, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	queue := approval.NewQueue(nil)
+	planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), &stubLLM{responses: []*GenerateResponse{
+		toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+	}})
+
+	_, err := planner.Run(context.Background(), "capture this")
+
+	if err == nil || !strings.Contains(err.Error(), "persist session") {
+		t.Fatalf("error = %v, want persistence failure", err)
+	}
+	entries := queue.List("")
+	if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
+		t.Fatalf("approvals = %+v, want one denied approval", entries)
+	}
+}
+
 func TestRunRejectsInvalidToolCallsBeforeQIDActivity(t *testing.T) {
 	registry := tools.NewRegistry()
 	executions := 0
