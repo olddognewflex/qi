@@ -31,6 +31,12 @@ func SocketPath() (string, error) {
 // daemon is running and an error is returned; a failed dial means the socket
 // file is stale, it is removed, and the listener is created.
 func Listen(path string) (net.Listener, error) {
+	// Fail with a clear message before net.Listen turns an over-length path into
+	// a bare "bind: invalid argument" (#68). The limit is platform-specific
+	// (sockaddr_un.sun_path: 103 usable on darwin, 107 elsewhere).
+	if len(path) > maxSocketPathLen {
+		return nil, fmt.Errorf("socket path is %d bytes, over the %d-byte OS limit for unix sockets on this platform; use a shorter --socket or XDG_RUNTIME_DIR", len(path), maxSocketPathLen)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir socket parent: %w", err)
 	}

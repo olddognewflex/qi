@@ -52,10 +52,7 @@ func newPlanCommand(cfg config.Config) *cobra.Command {
 				return fmt.Errorf("invalid --block %q: must be greater than zero", blockFlag)
 			}
 
-			tasks := service.TaskService{
-				TaskFilePath: cfg.TaskFilePath,
-				TasksDir:     filepath.Dir(cfg.TaskFilePath),
-			}
+			tasks := service.NewTaskService(cfg.TaskFilePath)
 			open, err := tasks.ListOpenTasks()
 			if err != nil {
 				return err

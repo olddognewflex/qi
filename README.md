@@ -169,7 +169,7 @@ bin/qi ai run "what's on my schedule today?"
 qi capture <text>             # alias: qi c <text>
 qi task add <text> [--project <tag> | --client <name>] [--due YYYY-MM-DD]
                    [--schedule YYYY-MM-DD] [--repeat "every week"]
-qi task list
+qi task list [--actionable[=YYYY-MM-DD]]
 qi task done [fuzzy-text]
 qi sync [--dry-run]           # reconcile tasks with project vaults (see Cross-vault sync)
 
@@ -233,6 +233,14 @@ a stale qid binary) report **warn** and don't fail. `qi remote-status` is a no-o
 `--due` writes the Obsidian Tasks due marker (`📅 YYYY-MM-DD`); `--schedule` writes the
 scheduled marker (`⏳ YYYY-MM-DD`); `--repeat` writes the recurrence marker (`🔁 <rule>`).
 All are optional and shown by `qi task list`.
+
+`qi task list --actionable` lists open tasks whose due and scheduled dates are
+each either absent or today/past. Pass a cutoff to reproduce a dated daily-note
+view, for example `--actionable=2026-08-18`. Results are sorted by the optional
+Dataview inline field `[priority:: value]`
+descending: text values first lexically, numeric values next numerically, and
+unprioritized tasks last. Numeric priority values are limited to 128 characters;
+longer values sort as text.
 
 ### `qi ai` — requires `qid` running
 

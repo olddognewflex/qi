@@ -1,12 +1,34 @@
 package service
 
 import (
+	"cmp"
 	"fmt"
+	"math/big"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"qi/internal/domain"
 )
+
+var dataviewNumberRe = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
+
+const maxNumericPriorityLength = 128
+
+type priorityValueKind uint8
+
+const (
+	priorityEmpty priorityValueKind = iota
+	priorityNumber
+	priorityText
+)
+
+type prioritySortKey struct {
+	kind   priorityValueKind
+	number *big.Rat
+	text   string
+}
 
 // TaskFilter narrows the tasks returned by ListTasks. The zero value lists open
 // tasks with no project or date constraint (the historic ListOpenTasks
@@ -28,6 +50,9 @@ type TaskFilter struct {
 	// After keeps tasks whose Scheduled OR Due date falls strictly after this
 	// day. Nil applies no bound.
 	After *time.Time
+	// ActionableOn keeps open tasks whose Due and Scheduled dates are each
+	// either absent or no later than this day. Nil applies no actionable filter.
+	ActionableOn *time.Time
 	// Now is the reference day for "today"/"overdue". Zero means time.Now().
 	Now time.Time
 }
@@ -87,7 +112,21 @@ func (s TaskService) ListTasks(f TaskFilter) ([]domain.Task, error) {
 		if f.After != nil && !anyDate(t, func(d time.Time) bool { return dayBefore(*f.After, d) }) {
 			continue
 		}
+		if f.ActionableOn != nil && !actionableOn(t, *f.ActionableOn) {
+			continue
+		}
 		out = append(out, t)
+	}
+	if f.ActionableOn != nil {
+		priorityKeys := make(map[string]prioritySortKey)
+		for _, task := range out {
+			if _, ok := priorityKeys[task.Priority]; !ok {
+				priorityKeys[task.Priority] = newPrioritySortKey(task.Priority)
+			}
+		}
+		slices.SortStableFunc(out, func(a, b domain.Task) int {
+			return comparePrioritySortKeys(priorityKeys[a.Priority], priorityKeys[b.Priority])
+		})
 	}
 	return out, nil
 }
@@ -115,6 +154,40 @@ func (f TaskFilter) dateMatcher(now time.Time) (func(domain.Task) bool, error) {
 			return anyDate(t, func(d time.Time) bool { return sameDay(d, parsed) })
 		}, nil
 	}
+}
+
+func comparePrioritySortKeys(aKey, bKey prioritySortKey) int {
+	if aKey.kind != bKey.kind {
+		return cmp.Compare(bKey.kind, aKey.kind)
+	}
+	switch aKey.kind {
+	case priorityNumber:
+		return bKey.number.Cmp(aKey.number)
+	case priorityText:
+		return strings.Compare(bKey.text, aKey.text)
+	case priorityEmpty:
+		return 0
+	default:
+		return 0
+	}
+}
+
+func newPrioritySortKey(raw string) prioritySortKey {
+	if raw == "" {
+		return prioritySortKey{kind: priorityEmpty}
+	}
+	if len(raw) <= maxNumericPriorityLength && dataviewNumberRe.MatchString(raw) {
+		if number, ok := new(big.Rat).SetString(raw); ok {
+			return prioritySortKey{kind: priorityNumber, number: number}
+		}
+	}
+	return prioritySortKey{kind: priorityText, text: raw}
+}
+
+func actionableOn(t domain.Task, day time.Time) bool {
+	return !t.Completed &&
+		(t.Due == nil || !dayBefore(day, *t.Due)) &&
+		(t.Scheduled == nil || !dayBefore(day, *t.Scheduled))
 }
 
 // anyDate reports whether the task's Scheduled or Due date satisfies pred. A nil

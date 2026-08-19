@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -44,10 +43,7 @@ func pickTasks(cmd *cobra.Command, title string, candidates []domain.Task) ([]do
 }
 
 func newTaskCommand(cfg config.Config) *cobra.Command {
-	svc := service.TaskService{
-		TaskFilePath: cfg.TaskFilePath,
-		TasksDir:     filepath.Dir(cfg.TaskFilePath),
-	}
+	svc := service.NewTaskService(cfg.TaskFilePath)
 
 	taskCmd := &cobra.Command{
 		Use:   "task",
@@ -140,16 +136,25 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd.Flags().Lookup("breakdown").NoOptDefVal = ai.DefaultBreakdownLevel
 
 	var listProject, listStatus, listDate, listBefore, listAfter string
+	var listActionable onceStringValue
 	var listJSON bool
 
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List tasks (filter by project, status, and/or date)",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filter := service.TaskFilter{
 				Project: listProject,
 				Status:  listStatus,
 				Date:    listDate,
+			}
+			if listActionable.set {
+				t, err := parseScheduleDate(listActionable.value)
+				if err != nil {
+					return fmt.Errorf("invalid actionable date: %w", err)
+				}
+				filter.ActionableOn = &t
 			}
 			if listBefore != "" {
 				t, err := parseScheduleDate(listBefore)
@@ -188,6 +193,8 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	listCmd.Flags().StringVar(&listDate, "date", "", "scheduled/due date: today, overdue, or YYYY-MM-DD")
 	listCmd.Flags().StringVar(&listBefore, "before", "", "scheduled/due strictly before date (YYYY-MM-DD, today, tomorrow, +Nd)")
 	listCmd.Flags().StringVar(&listAfter, "after", "", "scheduled/due strictly after date (YYYY-MM-DD, today, tomorrow, +Nd)")
+	listCmd.Flags().Var(&listActionable, "actionable", "due and scheduled dates are absent or on/before date (default today)")
+	listCmd.Flags().Lookup("actionable").NoOptDefVal = "today"
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "output as JSON (stable schema for scripts/agents)")
 
 	doneCmd := &cobra.Command{

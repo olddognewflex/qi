@@ -1,11 +1,78 @@
 package commands
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
+	"qi/internal/config"
 	"qi/internal/domain"
 )
+
+func TestTaskList_ActionableFlag_defaults_to_today(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	cmd := newTaskCommand(config.Config{TaskFilePath: filepath.Join(dir, "10-tasks", "inbox.md")})
+	listCmd, _, err := cmd.Find([]string{"list"})
+	if err != nil {
+		t.Fatalf("find task list: %v", err)
+	}
+
+	// When
+	flag := listCmd.Flags().Lookup("actionable")
+
+	// Then
+	if flag == nil {
+		t.Fatal("task list is missing --actionable")
+	}
+	if flag.NoOptDefVal != "today" {
+		t.Fatalf("--actionable default = %q, want today", flag.NoOptDefVal)
+	}
+}
+
+func TestTaskList_ActionableFlag_rejects_space_separated_cutoff(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	cmd := newTaskCommand(config.Config{TaskFilePath: filepath.Join(dir, "10-tasks", "inbox.md")})
+	cmd.SetArgs([]string{"list", "--actionable", "2000-01-01", "--json"})
+
+	// When
+	err := cmd.Execute()
+	// Then
+	if err == nil {
+		t.Fatal("want space-separated actionable cutoff error, got nil")
+	}
+}
+
+func TestTaskList_ActionableFlag_rejects_duplicate_cutoffs(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	cmd := newTaskCommand(config.Config{TaskFilePath: filepath.Join(dir, "10-tasks", "inbox.md")})
+	cmd.SetArgs([]string{"list", "--actionable=2099-01-01", "--actionable=2000-01-01", "--json"})
+
+	// When
+	err := cmd.Execute()
+
+	// Then
+	if err == nil {
+		t.Fatal("want duplicate actionable cutoff error, got nil")
+	}
+}
+
+func TestTaskList_ActionableFlag_rejects_empty_cutoff(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	cmd := newTaskCommand(config.Config{TaskFilePath: filepath.Join(dir, "10-tasks", "inbox.md")})
+	cmd.SetArgs([]string{"list", "--actionable=", "--json"})
+
+	// When
+	err := cmd.Execute()
+
+	// Then
+	if err == nil {
+		t.Fatal("want empty actionable cutoff error, got nil")
+	}
+}
 
 func TestParseScheduleDate(t *testing.T) {
 	now := time.Now()

@@ -9,7 +9,7 @@ import (
 )
 
 func newCaptureCommand(cfg config.Config) *cobra.Command {
-	svc := service.CaptureService{InboxPath: cfg.InboxPath}
+	svc := service.NewCaptureService(cfg.InboxPath)
 
 	captureCmd := &cobra.Command{
 		Use:     "capture <text>",

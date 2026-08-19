@@ -14,11 +14,8 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 	inbox := service.InboxService{
 		InboxDir:   cfg.InboxPath,
 		ArchiveDir: filepath.Join(cfg.InboxPath, "archive"),
-		Tasks: service.TaskService{
-			TaskFilePath: cfg.TaskFilePath,
-			TasksDir:     filepath.Dir(cfg.TaskFilePath),
-		},
-		Notes: service.NoteService{NotesDir: cfg.NotesPath},
+		Tasks: service.NewTaskService(cfg.TaskFilePath),
+		Notes: service.NewNoteService(cfg.NotesPath),
 	}
 
 	var dryRun bool
