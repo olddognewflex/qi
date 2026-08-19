@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -24,14 +25,24 @@ type stubLLM struct {
 	responses []*GenerateResponse
 	captured  []GenerateRequest
 	state     ProviderState
+	stateErr  error
 	idx       int
 }
 
 func (s *stubLLM) ProviderState() (ProviderState, error) {
+	if s.stateErr != nil {
+		return ProviderState{}, s.stateErr
+	}
 	if s.state.Version != 0 {
 		return s.state, nil
 	}
 	return testProviderState(), nil
+}
+
+type nonResumableLLM struct{ base *stubLLM }
+
+func (n *nonResumableLLM) Generate(ctx context.Context, request GenerateRequest) (*GenerateResponse, error) {
+	return n.base.Generate(ctx, request)
 }
 
 func testProviderState() ProviderState {
@@ -272,6 +283,41 @@ func TestRunDeniesPendingApprovalWhenSessionSaveFails(t *testing.T) {
 	entries := queue.List("")
 	if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
 		t.Fatalf("approvals = %+v, want one denied approval", entries)
+	}
+}
+
+func TestRunDeniesPendingApprovalWhenProviderStateFails(t *testing.T) {
+	tests := []struct {
+		name string
+		llm  LLM
+	}{
+		{name: "unsupported", llm: &nonResumableLLM{base: &stubLLM{responses: []*GenerateResponse{
+			toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+		}}}},
+		{name: "snapshot error", llm: &stubLLM{stateErr: errors.New("state failed"), responses: []*GenerateResponse{
+			toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+		}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			registry := tools.NewRegistry()
+			if err := builtin.RegisterCapture(registry, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			queue := approval.NewQueue(nil)
+			planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), tt.llm)
+
+			_, err := planner.Run(context.Background(), "capture this")
+
+			if err == nil {
+				t.Fatal("provider state failure was accepted")
+			}
+			entries := queue.List("")
+			if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
+				t.Fatalf("approvals = %+v, want one denied approval", entries)
+			}
+		})
 	}
 }
 

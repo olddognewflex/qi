@@ -59,11 +59,13 @@ func (p *Planner) loop(ctx context.Context, messages []Message, toolDefs []ToolD
 			resolved := resolvedResults(toolResults, pendings)
 			stateSource, ok := p.llm.(providerStateSource)
 			if !ok {
-				return result, fmt.Errorf("ai: provider does not expose resumable state")
+				stateErr := errors.New("ai: provider does not expose resumable state")
+				return result, errors.Join(stateErr, p.denyUnpersistedApprovals(ctx, pendings))
 			}
 			providerState, err := stateSource.ProviderState()
 			if err != nil {
-				return result, fmt.Errorf("ai: snapshot provider state: %w", err)
+				stateErr := fmt.Errorf("ai: snapshot provider state: %w", err)
+				return result, errors.Join(stateErr, p.denyUnpersistedApprovals(ctx, pendings))
 			}
 			session := Session{
 				Version: SessionVersion, SessionID: p.sessionID, Model: p.model,
