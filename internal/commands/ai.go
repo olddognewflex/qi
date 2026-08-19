@@ -112,7 +112,10 @@ func buildPlanner(c *client.Client, providerFlag, modelFlag string) (*ai.Planner
 	if err != nil {
 		return nil, err
 	}
-	p := ai.NewWithLLM(c, llm)
+	p, err := ai.NewWithLLM(c, llm)
+	if err != nil {
+		return nil, err
+	}
 	if model != "" {
 		p.SetModel(model)
 	}
