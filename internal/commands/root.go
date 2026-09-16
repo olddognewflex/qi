@@ -50,6 +50,8 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(newSyncCommand(cfg))
 	root.AddCommand(newLaunchCommand(cfg))
 	root.AddCommand(newRemoteCommand(cfg))
+	root.AddCommand(newAgentCommand(cfg))
+	root.AddCommand(newVoiceCommand(cfg))
 	for _, c := range deprecatedRemoteAliases(cfg) {
 		root.AddCommand(c)
 	}

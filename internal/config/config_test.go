@@ -1277,3 +1277,53 @@ model = "orphan-without-provider"
 		t.Errorf("legacy AI = %+v", cfg.AI)
 	}
 }
+
+func TestLoadFrom_AgentsAndVoiceSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `vault_path = "` + dir + `"
+
+[agents]
+runtime = "herdr"
+herdr_bin = "/opt/herdr"
+
+[voice]
+stt = "http"
+stt_url = "http://localhost:8000/v1/audio/transcriptions"
+stt_model = "whisper-1"
+stt_api_key_env = "STT_KEY"
+tts = "echo"
+record_seconds = 6
+record_device = "1"
+wait_timeout_seconds = 42
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Agents.Runtime != "herdr" || cfg.Agents.HerdrBin != "/opt/herdr" {
+		t.Errorf("Agents = %+v", cfg.Agents)
+	}
+	want := config.VoiceConfig{STT: "http", STTURL: "http://localhost:8000/v1/audio/transcriptions", STTModel: "whisper-1", STTAPIKeyEnv: "STT_KEY", TTS: "echo", RecordSeconds: 6, RecordDevice: "1", WaitTimeoutSeconds: 42}
+	if cfg.Voice != want {
+		t.Errorf("Voice = %+v, want %+v", cfg.Voice, want)
+	}
+}
+
+func TestLoadFrom_AgentsAndVoiceDefaultsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(`vault_path = "`+dir+`"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Agents != (config.AgentsConfig{}) || cfg.Voice != (config.VoiceConfig{}) {
+		t.Errorf("expected zero Agents/Voice, got %+v %+v", cfg.Agents, cfg.Voice)
+	}
+}

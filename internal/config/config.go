@@ -86,6 +86,36 @@ type EmbeddingsConfig struct {
 	OllamaURL string `json:"ollama_url,omitempty"`
 }
 
+// AgentsConfig selects the agent runtime qi uses to discover and address
+// coding-agent instances (Claude Code, Codex, ...). Runtime is "auto"
+// (default: Herdr when qi detects a Herdr environment, else the local
+// no-agent runtime), "herdr", or "local". HerdrBin overrides the herdr
+// binary path (default: $HERDR_BIN_PATH, else "herdr" on PATH).
+type AgentsConfig struct {
+	Runtime  string `json:"runtime,omitempty"`
+	HerdrBin string `json:"herdr_bin,omitempty"`
+}
+
+// VoiceConfig configures `qi voice`. STT is "text" (default: typed
+// utterances on stdin — the reference path) or "http" (record with ffmpeg,
+// transcribe via an OpenAI-compatible /v1/audio/transcriptions endpoint at
+// STTURL with STTModel; the API key is read from the env var NAMED by
+// STTAPIKeyEnv). TTS is "say" (macOS `say`, default on darwin), "echo"
+// (print only), or "none". RecordSeconds/RecordDevice bound the ffmpeg
+// capture (avfoundation audio device index). WaitTimeoutSeconds caps how
+// long qi waits for an agent to settle after an instruction (default 300).
+// STTAPIKeyEnv is the NAME of an environment variable, not a secret.
+type VoiceConfig struct {
+	STT                string `json:"stt,omitempty"`
+	STTURL             string `json:"stt_url,omitempty"`
+	STTModel           string `json:"stt_model,omitempty"`
+	STTAPIKeyEnv       string `json:"stt_api_key_env,omitempty"`
+	TTS                string `json:"tts,omitempty"`
+	RecordSeconds      int    `json:"record_seconds,omitempty"`
+	RecordDevice       string `json:"record_device,omitempty"`
+	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty"`
+}
+
 type Config struct {
 	VaultPath       string
 	TaskFilePath    string
@@ -108,6 +138,8 @@ type Config struct {
 	Sync            SyncConfig
 	Notify          NotifyConfig
 	Embeddings      EmbeddingsConfig
+	Agents          AgentsConfig
+	Voice           VoiceConfig
 }
 
 type mcpServerTOML struct {
@@ -173,6 +205,22 @@ type embeddingsTOML struct {
 	OllamaURL string `toml:"ollama_url"`
 }
 
+type agentsTOML struct {
+	Runtime  string `toml:"runtime"`
+	HerdrBin string `toml:"herdr_bin"`
+}
+
+type voiceTOML struct {
+	STT                string `toml:"stt"`
+	STTURL             string `toml:"stt_url"`
+	STTModel           string `toml:"stt_model"`
+	STTAPIKeyEnv       string `toml:"stt_api_key_env"`
+	TTS                string `toml:"tts"`
+	RecordSeconds      int    `toml:"record_seconds"`
+	RecordDevice       string `toml:"record_device"`
+	WaitTimeoutSeconds int    `toml:"wait_timeout_seconds"`
+}
+
 type tomlFile struct {
 	VaultPath       string          `toml:"vault_path"`
 	TaskFilePath    string          `toml:"task_file_path"`
@@ -191,6 +239,8 @@ type tomlFile struct {
 	Sync            syncTOML        `toml:"sync"`
 	Notify          notifyTOML      `toml:"notify"`
 	Embeddings      embeddingsTOML  `toml:"embeddings"`
+	Agents          agentsTOML      `toml:"agents"`
+	Voice           voiceTOML       `toml:"voice"`
 }
 
 func ConfigPath() string {
@@ -498,6 +548,17 @@ func LoadFrom(path string) (Config, error) {
 			Enabled:   raw.Embeddings.Enabled,
 			Model:     raw.Embeddings.Model,
 			OllamaURL: raw.Embeddings.OllamaURL,
+		},
+		Agents: AgentsConfig{Runtime: raw.Agents.Runtime, HerdrBin: raw.Agents.HerdrBin},
+		Voice: VoiceConfig{
+			STT:                raw.Voice.STT,
+			STTURL:             raw.Voice.STTURL,
+			STTModel:           raw.Voice.STTModel,
+			STTAPIKeyEnv:       raw.Voice.STTAPIKeyEnv,
+			TTS:                raw.Voice.TTS,
+			RecordSeconds:      raw.Voice.RecordSeconds,
+			RecordDevice:       raw.Voice.RecordDevice,
+			WaitTimeoutSeconds: raw.Voice.WaitTimeoutSeconds,
 		},
 	}, nil
 }

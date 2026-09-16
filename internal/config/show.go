@@ -45,6 +45,8 @@ type ShowConfig struct {
 	Sync            SyncConfig       `json:"sync"`
 	Notify          NotifyConfig     `json:"notify"`
 	Embeddings      EmbeddingsConfig `json:"embeddings"`
+	Agents          AgentsConfig     `json:"agents"`
+	Voice           VoiceConfig      `json:"voice"`
 }
 
 // showCalDAV redacts the CalDAV password (username/endpoint/path are not secret).
@@ -185,5 +187,7 @@ func RedactView(c Config, configPath string) ShowConfig {
 		Sync:       c.Sync,
 		Notify:     c.Notify,
 		Embeddings: c.Embeddings,
+		Agents:     c.Agents,
+		Voice:      c.Voice,
 	}
 }
