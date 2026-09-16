@@ -15,7 +15,9 @@ func newCaptureCommand(cfg config.Config) *cobra.Command {
 		Use:     "capture <text>",
 		Aliases: []string{"c"},
 		Short:   "Capture a thought to inbox (fast, no blocking)",
-		Args:    cobra.ExactArgs(1),
+		Example: "  qi capture \"idea: batch the drain timer\"\n" +
+			"  qi c \"call the dentist\"",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := svc.Capture(args[0]); err != nil {
 				return err

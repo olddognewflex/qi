@@ -47,12 +47,12 @@ func (a queueAdapter) Deadletter(ctx context.Context, ids []string, reason strin
 	return a.c.Deadletter(ctx, ids, reason)
 }
 
-func newRemoteDrainCommand(cfg config.Config) *cobra.Command {
+func newRemoteDrainCommand(cfg config.Config, use string) *cobra.Command {
 	var showFailed bool
 	var limit int
 
 	cmd := &cobra.Command{
-		Use:   "remote-drain",
+		Use:   use,
 		Short: "Drain remote-captured tasks from the cloud queue into the vault",
 		Long: "Pull tasks from the cloud queue, validate each, write the valid ones\n" +
 			"idempotently into the vault, ack what was written, and deadletter what failed.\n" +

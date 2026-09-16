@@ -8,9 +8,9 @@ import (
 	"qi/internal/remotequeue"
 )
 
-func newRemoteStatusCommand(cfg config.Config) *cobra.Command {
+func newRemoteStatusCommand(cfg config.Config, use string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "remote-status",
+		Use:   use,
 		Short: "Show pending and deadletter counts in the cloud queue",
 		Long: "Query the cloud queue for how many tasks are waiting to be drained\n" +
 			"(pending) and how many failed validation and were set aside (deadletter).\n" +
@@ -38,7 +38,7 @@ func newRemoteStatusCommand(cfg config.Config) *cobra.Command {
 
 			fmt.Fprintf(out, "pending %d, deadletter %d", stats.Pending, stats.Deadletter)
 			if stats.Deadletter > 0 {
-				fmt.Fprint(out, " (see qi remote-drain --show-failed)")
+				fmt.Fprint(out, " (see qi remote drain --show-failed)")
 			}
 			fmt.Fprintln(out)
 			return nil
