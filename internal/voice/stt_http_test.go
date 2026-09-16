@@ -224,3 +224,23 @@ func TestFFmpegRecorderUnsupportedPlatform(t *testing.T) {
 		t.Fatalf("record() = %v, want an unsupported-platform error naming the GOOS", err)
 	}
 }
+
+func TestHTTPTranscriber_SendsHintAsPrompt(t *testing.T) {
+	var gotPrompt string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrompt = r.FormValue("prompt")
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer srv.Close()
+	wav := filepath.Join(t.TempDir(), "clip.wav")
+	if err := os.WriteFile(wav, []byte("RIFF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr := &HTTPTranscriber{URL: srv.URL, Model: "m", Hint: "qi, Codex", Record: func(context.Context) (string, error) { return wav, nil }}
+	if _, err := tr.Listen(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotPrompt != "qi, Codex" {
+		t.Errorf("prompt = %q", gotPrompt)
+	}
+}

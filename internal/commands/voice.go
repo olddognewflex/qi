@@ -116,6 +116,7 @@ func buildTranscriber(cfg config.Config, forceText bool, stdin io.Reader, out io
 		Client: &http.Client{Timeout: 60 * time.Second},
 		Record: rec,
 		Prompt: out,
+		Hint:   cfg.Voice.STTPrompt,
 	}, nil
 }
 

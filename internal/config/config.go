@@ -100,7 +100,8 @@ type AgentsConfig struct {
 // utterances on stdin — the reference path) or "http" (record with ffmpeg,
 // transcribe via an OpenAI-compatible /v1/audio/transcriptions endpoint at
 // STTURL with STTModel; the API key is read from the env var NAMED by
-// STTAPIKeyEnv). TTS is "say" (macOS `say`, default on darwin), "echo"
+// STTAPIKeyEnv; STTPrompt is an optional vocabulary hint sent as the
+// endpoint's "prompt" field). TTS is "say" (macOS `say`, default on darwin), "echo"
 // (print only), or "none". RecordSeconds/RecordDevice bound the ffmpeg
 // capture (avfoundation audio device index). WaitTimeoutSeconds caps how
 // long qi waits for an agent to settle after an instruction (default 300).
@@ -110,6 +111,7 @@ type VoiceConfig struct {
 	STTURL             string `json:"stt_url,omitempty"`
 	STTModel           string `json:"stt_model,omitempty"`
 	STTAPIKeyEnv       string `json:"stt_api_key_env,omitempty"`
+	STTPrompt          string `json:"stt_prompt,omitempty"`
 	TTS                string `json:"tts,omitempty"`
 	RecordSeconds      int    `json:"record_seconds,omitempty"`
 	RecordDevice       string `json:"record_device,omitempty"`
@@ -215,6 +217,7 @@ type voiceTOML struct {
 	STTURL             string `toml:"stt_url"`
 	STTModel           string `toml:"stt_model"`
 	STTAPIKeyEnv       string `toml:"stt_api_key_env"`
+	STTPrompt          string `toml:"stt_prompt"`
 	TTS                string `toml:"tts"`
 	RecordSeconds      int    `toml:"record_seconds"`
 	RecordDevice       string `toml:"record_device"`
@@ -555,6 +558,7 @@ func LoadFrom(path string) (Config, error) {
 			STTURL:             raw.Voice.STTURL,
 			STTModel:           raw.Voice.STTModel,
 			STTAPIKeyEnv:       raw.Voice.STTAPIKeyEnv,
+			STTPrompt:          raw.Voice.STTPrompt,
 			TTS:                raw.Voice.TTS,
 			RecordSeconds:      raw.Voice.RecordSeconds,
 			RecordDevice:       raw.Voice.RecordDevice,

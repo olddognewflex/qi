@@ -43,6 +43,10 @@ type HTTPTranscriber struct {
 	// Prompt, when non-nil, receives a turn cue: recording is time-boxed and
 	// silent, so without one the user has no idea when to start speaking.
 	Prompt io.Writer
+	// Hint, when set, is sent as the endpoint's "prompt" field: a short
+	// vocabulary list ("qi, Herdr, Codex, Claude, workspace, pane") that
+	// biases Whisper toward the names qi's grammar needs to recognise.
+	Hint string
 }
 
 // transcriptionResponse is the response_format=json shape.
@@ -126,6 +130,11 @@ func (t *HTTPTranscriber) buildRequest(path string) (io.Reader, string, error) {
 	}
 	if t.Model != "" {
 		if err := w.WriteField("model", t.Model); err != nil {
+			return nil, "", err
+		}
+	}
+	if t.Hint != "" {
+		if err := w.WriteField("prompt", t.Hint); err != nil {
 			return nil, "", err
 		}
 	}
