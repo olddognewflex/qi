@@ -49,9 +49,11 @@ func NewRootCommand() *cobra.Command {
 	root.AddCommand(markSkipConfig(newDaemonCommand()))
 	root.AddCommand(newSyncCommand(cfg))
 	root.AddCommand(newLaunchCommand(cfg))
-	root.AddCommand(newRemoteDrainCommand(cfg))
+	root.AddCommand(newRemoteCommand(cfg))
+	for _, c := range deprecatedRemoteAliases(cfg) {
+		root.AddCommand(c)
+	}
 	root.AddCommand(markSkipConfig(newDoctorCommand(cfg)))
-	root.AddCommand(newRemoteStatusCommand(cfg))
 	root.AddCommand(newInboxCommand(cfg))
 	root.AddCommand(newSearchCommand(cfg))
 	root.AddCommand(newEmbedCommand(cfg))

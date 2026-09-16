@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"qi/internal/ai"
 	"qi/internal/config"
 	"qi/internal/domain"
@@ -17,11 +17,33 @@ import (
 	"qi/internal/tui"
 )
 
-func newTaskCommand(cfg config.Config) *cobra.Command {
-	svc := service.TaskService{
-		TaskFilePath: cfg.TaskFilePath,
-		TasksDir:     filepath.Dir(cfg.TaskFilePath),
+// stdinIsTTY reports whether stdin is an interactive terminal. A package var so
+// tests can force the no-TTY path (in a test binary stdin is already not a TTY,
+// but overriding keeps the intent explicit).
+var stdinIsTTY = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// pickTasks resolves an ambiguous match to a selection. With a terminal it
+// launches the interactive picker; without one (a pipe, an agent) it prints the
+// candidates and returns an error telling the user to narrow the match — instead
+// of dying inside bubbletea with a raw "open /dev/tty" error (#62). qi inbox has
+// --dry-run as its headless path; the task pickers had nothing.
+func pickTasks(cmd *cobra.Command, title string, candidates []domain.Task) ([]domain.Task, error) {
+	if !stdinIsTTY() {
+		out := cmd.ErrOrStderr()
+		fmt.Fprintf(out, "%s — %d candidates; the interactive picker needs a terminal.\n", title, len(candidates))
+		for _, t := range candidates {
+			fmt.Fprintf(out, "  - %s\n", taskDisplayLine(t))
+		}
+		fmt.Fprintln(out, "Re-run with a more specific query (or an exact single match) to select non-interactively.")
+		return nil, fmt.Errorf("ambiguous match: %d tasks and no terminal for the picker", len(candidates))
 	}
+	return tui.PickTasks(title, candidates)
+}
+
+func newTaskCommand(cfg config.Config) *cobra.Command {
+	svc := service.NewTaskService(cfg.TaskFilePath)
 
 	taskCmd := &cobra.Command{
 		Use:   "task",
@@ -38,7 +60,11 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add <text>",
 		Short: "Add a task",
-		Args:  cobra.ExactArgs(1),
+		Example: "  qi task add \"Ship the release\" --due 2026-08-01\n" +
+			"  qi task add \"Water plants\" --schedule tomorrow --repeat \"every 3 days\"\n" +
+			"  qi task add \"Weekly review\" --repeat \"every week\" --project ops\n" +
+			"  qi task add \"Send invoice\" --client acme --due 2026-08-15",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var parsedDue *time.Time
 			if due != "" {
@@ -114,16 +140,29 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	addCmd.Flags().Lookup("breakdown").NoOptDefVal = ai.DefaultBreakdownLevel
 
 	var listProject, listStatus, listDate, listBefore, listAfter string
+	var listActionable onceStringValue
 	var listJSON bool
 
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List tasks (filter by project, status, and/or date)",
+		Example: "  qi task list --date today\n" +
+			"  qi task list --status all --project ops\n" +
+			"  qi task list --before +7d          # due/scheduled within a week\n" +
+			"  qi task list --json                # stable JSON for scripts/agents",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filter := service.TaskFilter{
 				Project: listProject,
 				Status:  listStatus,
 				Date:    listDate,
+			}
+			if listActionable.set {
+				t, err := parseScheduleDate(listActionable.value)
+				if err != nil {
+					return fmt.Errorf("invalid actionable date: %w", err)
+				}
+				filter.ActionableOn = &t
 			}
 			if listBefore != "" {
 				t, err := parseScheduleDate(listBefore)
@@ -162,6 +201,8 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 	listCmd.Flags().StringVar(&listDate, "date", "", "scheduled/due date: today, overdue, or YYYY-MM-DD")
 	listCmd.Flags().StringVar(&listBefore, "before", "", "scheduled/due strictly before date (YYYY-MM-DD, today, tomorrow, +Nd)")
 	listCmd.Flags().StringVar(&listAfter, "after", "", "scheduled/due strictly after date (YYYY-MM-DD, today, tomorrow, +Nd)")
+	listCmd.Flags().Var(&listActionable, "actionable", "due and scheduled dates are absent or on/before date (default today)")
+	listCmd.Flags().Lookup("actionable").NoOptDefVal = "today"
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "output as JSON (stable schema for scripts/agents)")
 
 	doneCmd := &cobra.Command{
@@ -210,7 +251,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			if query != "" {
 				title = fmt.Sprintf("Tasks matching %q", query)
 			}
-			picked, err := tui.PickTasks(title, candidates)
+			picked, err := pickTasks(cmd, title, candidates)
 			if err != nil {
 				return err
 			}
@@ -237,6 +278,9 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			"the date applies via the picker; with two, the first fuzzy-matches tasks.\n" +
 			"Date accepts YYYY-MM-DD, \"today\", \"tomorrow\", or \"+Nd\".\n" +
 			"\"+Nd\" offsets from each task's existing scheduled date (or today if unscheduled).",
+		Example: "  qi task schedule invoice tomorrow\n" +
+			"  qi task schedule \"call bank\" 2026-08-01\n" +
+			"  qi task schedule report +2d        # 2 days past its current schedule",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := ""
@@ -281,7 +325,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				if query != "" {
 					title = fmt.Sprintf("Tasks matching %q", query)
 				}
-				picked, err = tui.PickTasks(title, candidates)
+				picked, err = pickTasks(cmd, title, candidates)
 				if err != nil {
 					return err
 				}
@@ -351,7 +395,7 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				if query != "" {
 					title = fmt.Sprintf("Tasks matching %q", query)
 				}
-				picked, err := tui.PickTasks(title, candidates)
+				picked, err := pickTasks(cmd, title, candidates)
 				if err != nil {
 					return err
 				}
