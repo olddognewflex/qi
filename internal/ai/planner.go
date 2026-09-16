@@ -13,15 +13,13 @@ package ai
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"qi/internal/daemon/client"
-	"qi/internal/tools"
 )
 
 // DefaultModel is the model used when no override is supplied by the
@@ -50,30 +48,42 @@ type Planner struct {
 	model         string
 	maxTokens     int
 	maxIterations int
-	sessionID     string
+	sessionID     SessionID
 }
 
 // New constructs a Planner using the Anthropic provider. apiKey may be
 // empty; the SDK then falls back to ANTHROPIC_API_KEY.
-func New(qid *client.Client, apiKey string) *Planner {
+func New(qid *client.Client, apiKey string) (*Planner, error) {
 	return NewWithLLM(qid, NewAnthropicProvider(apiKey))
 }
 
 // NewWithLLM binds a Planner to any LLM implementation. Used by tests and
 // by the commands package when assembling providers from config.
-func NewWithLLM(qid *client.Client, llm LLM) *Planner {
+func NewWithLLM(qid *client.Client, llm LLM) (*Planner, error) {
+	return newPlannerWithReader(qid, llm, rand.Reader)
+}
+
+func newPlannerWithReader(qid *client.Client, llm LLM, reader io.Reader) (*Planner, error) {
+	id, err := generateSessionID(reader)
+	if err != nil {
+		return nil, err
+	}
+	return NewForResume(qid, llm, id), nil
+}
+
+func NewForResume(qid *client.Client, llm LLM, id SessionID) *Planner {
 	return &Planner{
 		llm:           llm,
 		qid:           qid,
 		model:         "",
 		maxTokens:     DefaultMaxTokens,
 		maxIterations: DefaultMaxIterations,
-		sessionID:     newSessionID(),
+		sessionID:     id,
 	}
 }
 
 // Caller returns the full caller string sent to qid for every tool call.
-func (p *Planner) Caller() string { return CallerPrefix + p.sessionID }
+func (p *Planner) Caller() string { return CallerPrefix + p.sessionID.String() }
 
 // SetModel overrides the model used for subsequent Run calls. An empty
 // string lets the provider use its own default.
@@ -97,12 +107,19 @@ type ToolCallRecord struct {
 
 // RunResult is the outcome of a Planner.Run.
 type RunResult struct {
-	FinalText  string
-	Turns      []TurnEvent
-	Pending    []client.PendingResult
+	FinalText string
+	Turns     []TurnEvent
+	Pending   []PendingCall
+	// SessionID is set (with StopReason "awaiting_approval") when the loop
+	// stopped at the approval gate and persisted a session to resume from.
+	SessionID  string
 	StopReason string
 	CacheUsage CacheStats
 }
+
+// StopAwaitingApproval is the StopReason set when the loop persisted a session
+// and stopped at the human approval gate.
+const StopAwaitingApproval = "awaiting_approval"
 
 // CacheStats aggregates per-turn token usage across a Run.
 type CacheStats struct {
@@ -113,143 +130,19 @@ type CacheStats struct {
 }
 
 // Run executes the tool-use loop. Terminates when the model returns a
-// turn with no tool calls, or when MaxIterations is reached.
+// turn with no tool calls, when a mutating call hits the approval gate (the
+// session is persisted and StopReason is StopAwaitingApproval), or when
+// MaxIterations is reached.
 func (p *Planner) Run(ctx context.Context, userPrompt string) (RunResult, error) {
 	if strings.TrimSpace(userPrompt) == "" {
 		return RunResult{}, errors.New("ai.Run: prompt is empty")
 	}
-	catalog, err := p.qid.ListTools(ctx)
-	if err != nil {
-		return RunResult{}, fmt.Errorf("ai.Run: list tools: %w", err)
-	}
-	toolDefs, nameMap, err := buildToolDefs(catalog)
+	toolDefs, nameMap, err := p.tools(ctx)
 	if err != nil {
 		return RunResult{}, err
 	}
-
 	messages := []Message{{Role: RoleUser, Text: userPrompt}}
-	result := RunResult{}
-	systemPrompt := systemPrompt(p.Caller())
-
-	for i := 0; i < p.maxIterations; i++ {
-		resp, err := p.llm.Generate(ctx, GenerateRequest{
-			Model:       p.model,
-			System:      systemPrompt,
-			Messages:    messages,
-			Tools:       toolDefs,
-			MaxTokens:   p.maxTokens,
-			CacheSystem: true,
-		})
-		if err != nil {
-			return result, fmt.Errorf("ai.Run: generate: %w", err)
-		}
-		result.CacheUsage.InputTokens += resp.Usage.InputTokens
-		result.CacheUsage.OutputTokens += resp.Usage.OutputTokens
-		result.CacheUsage.CacheCreationTokens += resp.Usage.CacheCreationTokens
-		result.CacheUsage.CacheReadTokens += resp.Usage.CacheReadTokens
-
-		turn := TurnEvent{Iteration: i, Text: strings.TrimSpace(resp.Text)}
-
-		if len(resp.ToolCalls) == 0 {
-			result.Turns = append(result.Turns, turn)
-			result.FinalText = turn.Text
-			result.StopReason = resp.StopReason
-			return result, nil
-		}
-
-		toolResults, calls, pendings := p.runToolCalls(ctx, resp.ToolCalls, nameMap)
-		turn.ToolCalls = calls
-		result.Turns = append(result.Turns, turn)
-		result.Pending = append(result.Pending, pendings...)
-
-		messages = append(messages,
-			Message{Role: RoleAssistant, Text: resp.Text, ToolCalls: resp.ToolCalls},
-			Message{Role: RoleUser, ToolResults: toolResults},
-		)
-	}
-
-	result.StopReason = "max_iterations"
-	return result, nil
-}
-
-func (p *Planner) runToolCalls(ctx context.Context, calls []ToolCall, nameMap map[string]string) ([]ToolResult, []ToolCallRecord, []client.PendingResult) {
-	var results []ToolResult
-	var records []ToolCallRecord
-	var pendings []client.PendingResult
-	caller := p.Caller()
-
-	for _, c := range calls {
-		qidName, ok := nameMap[c.Name]
-		if !ok {
-			qidName = c.Name
-		}
-		rec := ToolCallRecord{Name: qidName, Input: c.Input, ResultID: c.ID}
-
-		raw, err := p.qid.CallToolAs(ctx, caller, qidName, c.Input)
-		switch {
-		case err != nil:
-			rec.Error = err.Error()
-			results = append(results, ToolResult{CallID: c.ID, Content: "error: " + err.Error(), IsError: true})
-		default:
-			if pending, isPending := client.IsPending(raw); isPending {
-				rec.Pending = true
-				pendings = append(pendings, pending)
-				msg := fmt.Sprintf(
-					"approval required (id=%s). The user must run: qi ai approve %s",
-					pending.ApprovalID, pending.ApprovalID,
-				)
-				if pending.Reason != "" {
-					msg += "\nreason: " + pending.Reason
-				}
-				results = append(results, ToolResult{CallID: c.ID, Content: msg, IsError: true})
-			} else {
-				results = append(results, ToolResult{CallID: c.ID, Content: string(raw)})
-			}
-		}
-		records = append(records, rec)
-	}
-	return results, records, pendings
-}
-
-// buildToolDefs converts qid tools into provider-neutral ToolDefs and
-// returns the inverse name map so the planner can translate the model's
-// sanitized tool_use names back to original qid names before dispatch.
-// Anthropic and OpenAI/Ollama both restrict tool names to a subset of
-// characters that excludes '.'; sanitization is therefore applied
-// uniformly.
-func buildToolDefs(catalog []tools.Tool) ([]ToolDef, map[string]string, error) {
-	out := make([]ToolDef, 0, len(catalog))
-	nameMap := make(map[string]string, len(catalog))
-	for _, t := range catalog {
-		apiName := sanitizeToolName(t.Name)
-		if prev, exists := nameMap[apiName]; exists {
-			return nil, nil, fmt.Errorf("ai: sanitized name %q collides between %q and %q", apiName, prev, t.Name)
-		}
-		nameMap[apiName] = t.Name
-		out = append(out, ToolDef{
-			Name:        apiName,
-			Description: t.Description,
-			InputSchema: t.Schema,
-		})
-	}
-	return out, nameMap, nil
-}
-
-func sanitizeToolName(name string) string {
-	return strings.ReplaceAll(name, ".", "_")
-}
-
-func systemPrompt(caller string) string {
-	return "You are the Qi assistant's planner. You are calling tools as caller=\"" + caller + "\". " +
-		"Mutating tools route through a human approval queue and return tool errors of the form " +
-		"\"approval required (id=...)\". When you see one, tell the user verbatim which command to run, " +
-		"then stop calling tools."
-}
-
-func newSessionID() string {
-	var b [4]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return p.loop(ctx, messages, toolDefs, nameMap)
 }
 
 // ProviderFromEnv constructs the default provider for the current process.

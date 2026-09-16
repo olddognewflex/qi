@@ -129,9 +129,9 @@ func run() error {
 	// Rebuild pending approvals from the audit log so a qid restart does not
 	// silently drop calls that were awaiting human approval.
 	if past, rerr := approval.ReadAuditLog(auditPath); rerr != nil {
-		log.Warn("audit replay failed", "err", rerr)
-	} else if restored := queue.Restore(past); restored > 0 {
-		log.Info("restored pending approvals from audit log", "count", restored)
+		return fmt.Errorf("audit replay: %w", rerr)
+	} else if restored := queue.Restore(past); restored.Pending > 0 || restored.Terminal > 0 {
+		log.Info("restored approvals from audit log", "pending", restored.Pending, "terminal", restored.Terminal)
 	}
 
 	decider := policy.DefaultDecider{}

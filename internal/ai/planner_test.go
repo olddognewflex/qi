@@ -3,10 +3,12 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"qi/internal/approval"
 	"qi/internal/daemon"
@@ -23,7 +25,36 @@ type stubLLM struct {
 	mu        sync.Mutex
 	responses []*GenerateResponse
 	captured  []GenerateRequest
+	state     ProviderState
+	stateErr  error
+	stateHook func()
 	idx       int
+}
+
+func (s *stubLLM) ProviderState() (ProviderState, error) {
+	if s.stateHook != nil {
+		s.stateHook()
+	}
+	if s.stateErr != nil {
+		return ProviderState{}, s.stateErr
+	}
+	if s.state.Version != 0 {
+		return s.state, nil
+	}
+	return testProviderState(), nil
+}
+
+type nonResumableLLM struct{ base *stubLLM }
+
+func (n *nonResumableLLM) Generate(ctx context.Context, request GenerateRequest) (*GenerateResponse, error) {
+	return n.base.Generate(ctx, request)
+}
+
+func testProviderState() ProviderState {
+	return ProviderState{
+		Version: ProviderStateVersion,
+		Entries: []ProviderStateEntry{{Provider: ProviderAnthropic, Model: "test-model", ConfigID: strings.Repeat("b", 64)}},
+	}
 }
 
 func (s *stubLLM) Generate(_ context.Context, req GenerateRequest) (*GenerateResponse, error) {
@@ -75,6 +106,15 @@ func pipeDaemonAndClient(t *testing.T, r *tools.Registry, q *approval.Queue) *cl
 	return c
 }
 
+func newTestPlanner(t *testing.T, c *client.Client, llm LLM) *Planner {
+	t.Helper()
+	p, err := NewWithLLM(c, llm)
+	if err != nil {
+		t.Fatalf("new planner: %v", err)
+	}
+	return p
+}
+
 func TestSanitizeToolName(t *testing.T) {
 	cases := map[string]string{
 		"vault.capture":           "vault_capture",
@@ -101,7 +141,7 @@ func TestBuildToolDefsCollision(t *testing.T) {
 
 func TestRunRejectsEmptyPrompt(t *testing.T) {
 	c := pipeDaemonAndClient(t, tools.NewRegistry(), nil)
-	p := NewWithLLM(c, &stubLLM{responses: []*GenerateResponse{textResp("ok")}})
+	p := newTestPlanner(t, c, &stubLLM{responses: []*GenerateResponse{textResp("ok")}})
 	if _, err := p.Run(context.Background(), "   "); err == nil {
 		t.Fatal("expected error for empty prompt")
 	}
@@ -114,7 +154,7 @@ func TestRunReturnsTextWhenNoToolUse(t *testing.T) {
 	}
 	c := pipeDaemonAndClient(t, r, nil)
 	llm := &stubLLM{responses: []*GenerateResponse{textResp("hello back")}}
-	p := NewWithLLM(c, llm)
+	p := newTestPlanner(t, c, llm)
 
 	res, err := p.Run(context.Background(), "hi")
 	if err != nil {
@@ -159,7 +199,7 @@ func TestRunDispatchesToolAndLoops(t *testing.T) {
 		toolUseResp(sanitizeToolName(readOnlyTool), "tu_1", `{"text":"ping"}`),
 		textResp("done"),
 	}}
-	p := NewWithLLM(c, llm)
+	p := newTestPlanner(t, c, llm)
 
 	res, err := p.Run(context.Background(), "say hi")
 	if err != nil {
@@ -199,6 +239,7 @@ func TestRunDispatchesToolAndLoops(t *testing.T) {
 }
 
 func TestRunSurfacesPendingApproval(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // the planner now persists a session on pending
 	r := tools.NewRegistry()
 	if err := builtin.RegisterCapture(r, t.TempDir()); err != nil {
 		t.Fatalf("register: %v", err)
@@ -210,7 +251,7 @@ func TestRunSurfacesPendingApproval(t *testing.T) {
 		toolUseResp(sanitizeToolName(builtin.CaptureToolName), "tu_1", `{"text":"AI proposed"}`),
 		textResp("told the user to approve"),
 	}}
-	p := NewWithLLM(c, llm)
+	p := newTestPlanner(t, c, llm)
 
 	res, err := p.Run(context.Background(), "capture this for me")
 	if err != nil {
@@ -225,6 +266,115 @@ func TestRunSurfacesPendingApproval(t *testing.T) {
 	}
 	if !strings.HasPrefix(pendingList[0].Caller, CallerPrefix) {
 		t.Fatalf("caller = %q, want prefix %q", pendingList[0].Caller, CallerPrefix)
+	}
+}
+
+func TestRunDeniesPendingApprovalWhenSessionSaveFails(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "relative")
+	registry := tools.NewRegistry()
+	if err := builtin.RegisterCapture(registry, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	queue := approval.NewQueue(nil)
+	planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), &stubLLM{responses: []*GenerateResponse{
+		toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+	}})
+
+	_, err := planner.Run(context.Background(), "capture this")
+
+	if err == nil || !strings.Contains(err.Error(), "persist session") {
+		t.Fatalf("error = %v, want persistence failure", err)
+	}
+	entries := queue.List("")
+	if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
+		t.Fatalf("approvals = %+v, want one denied approval", entries)
+	}
+}
+
+func TestRunDeniesPendingApprovalWhenProviderStateFails(t *testing.T) {
+	tests := []struct {
+		name string
+		llm  LLM
+	}{
+		{name: "unsupported", llm: &nonResumableLLM{base: &stubLLM{responses: []*GenerateResponse{
+			toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+		}}}},
+		{name: "snapshot error", llm: &stubLLM{stateErr: errors.New("state failed"), responses: []*GenerateResponse{
+			toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+		}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			registry := tools.NewRegistry()
+			if err := builtin.RegisterCapture(registry, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			queue := approval.NewQueue(nil)
+			planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), tt.llm)
+
+			_, err := planner.Run(context.Background(), "capture this")
+
+			if err == nil {
+				t.Fatal("provider state failure was accepted")
+			}
+			entries := queue.List("")
+			if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
+				t.Fatalf("approvals = %+v, want one denied approval", entries)
+			}
+		})
+	}
+}
+
+func TestRunDeniesPendingApprovalAfterContextCancellation(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	registry := tools.NewRegistry()
+	if err := builtin.RegisterCapture(registry, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	queue := approval.NewQueue(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	llm := &stubLLM{
+		stateHook: func() { <-ctx.Done() },
+		stateErr:  errors.New("state failed"),
+		responses: []*GenerateResponse{
+			toolUseResp(sanitizeToolName(builtin.CaptureToolName), "call-1", `{"text":"orphan"}`),
+		},
+	}
+	planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), llm)
+
+	_, err := planner.Run(ctx, "capture this")
+
+	if err == nil {
+		t.Fatal("provider state failure was accepted")
+	}
+	entries := queue.List("")
+	if len(entries) != 1 || entries[0].Status != approval.StatusDenied {
+		t.Fatalf("approvals = %+v, want one denied approval", entries)
+	}
+}
+
+func TestRunRejectsInvalidToolCallsBeforeQIDActivity(t *testing.T) {
+	registry := tools.NewRegistry()
+	executions := 0
+	if err := registry.RegisterLocal(tools.Tool{Name: "mutate.one", Mutating: true, Schema: json.RawMessage(`{"type":"object"}`)}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		executions++
+		return json.RawMessage(`{"ok":true}`), nil
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	queue := approval.NewQueue(nil)
+	llm := &stubLLM{responses: []*GenerateResponse{{StopReason: "tool_use", ToolCalls: []ToolCall{
+		{ID: "call-1", Name: "mutate_one", Input: json.RawMessage(`{} {}`)},
+	}}}}
+	planner := newTestPlanner(t, pipeDaemonAndClient(t, registry, queue), llm)
+
+	if _, err := planner.Run(context.Background(), "mutate"); err == nil {
+		t.Fatal("trailing tool input JSON accepted")
+	}
+	if executions != 0 || len(queue.List("")) != 0 {
+		t.Fatalf("qid activity: executions=%d approvals=%d", executions, len(queue.List("")))
 	}
 }
 
@@ -245,7 +395,7 @@ func TestRunStopsAtMaxIterations(t *testing.T) {
 	llm := &stubLLM{responses: []*GenerateResponse{
 		toolUseResp(sanitizeToolName(readOnlyTool), "tu_1", `{}`),
 	}}
-	p := NewWithLLM(c, llm)
+	p := newTestPlanner(t, c, llm)
 	p.maxIterations = 3
 
 	res, err := p.Run(context.Background(), "loop forever")
@@ -278,7 +428,7 @@ func TestCacheStatsAggregateAcrossTurns(t *testing.T) {
 	first.Usage = Usage{InputTokens: 100, OutputTokens: 20, CacheCreationTokens: 80}
 	second := textRespWithUsage("done", 30, 10, 0, 80)
 	llm := &stubLLM{responses: []*GenerateResponse{first, second}}
-	p := NewWithLLM(c, llm)
+	p := newTestPlanner(t, c, llm)
 	res, err := p.Run(context.Background(), "go")
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -291,7 +441,7 @@ func TestCacheStatsAggregateAcrossTurns(t *testing.T) {
 
 func TestCallerHasPrefix(t *testing.T) {
 	c := pipeDaemonAndClient(t, tools.NewRegistry(), nil)
-	p := NewWithLLM(c, &stubLLM{responses: []*GenerateResponse{textResp("ok")}})
+	p := newTestPlanner(t, c, &stubLLM{responses: []*GenerateResponse{textResp("ok")}})
 	if !strings.HasPrefix(p.Caller(), CallerPrefix) {
 		t.Fatalf("caller = %q", p.Caller())
 	}

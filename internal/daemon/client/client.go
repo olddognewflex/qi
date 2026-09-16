@@ -214,6 +214,16 @@ func IsPending(raw json.RawMessage) (PendingResult, bool) {
 // CallToolAs invokes a tool with an explicit caller identity. arguments is
 // JSON-marshaled if non-nil.
 func (c *Client) CallToolAs(ctx context.Context, caller, name string, arguments any) (json.RawMessage, error) {
+	return c.callToolAs(ctx, caller, "", name, arguments)
+}
+
+// CallToolAsWithID invokes a tool with an explicit caller and immutable
+// planner tool-call ID for approval correlation.
+func (c *Client) CallToolAsWithID(ctx context.Context, caller, callID, name string, arguments any) (json.RawMessage, error) {
+	return c.callToolAs(ctx, caller, callID, name, arguments)
+}
+
+func (c *Client) callToolAs(ctx context.Context, caller, callID, name string, arguments any) (json.RawMessage, error) {
 	var argsRaw json.RawMessage
 	if arguments != nil {
 		switch a := arguments.(type) {
@@ -233,7 +243,8 @@ func (c *Client) CallToolAs(ctx context.Context, caller, name string, arguments 
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments,omitempty"`
 		Caller    string          `json:"caller"`
-	}{Name: name, Arguments: argsRaw, Caller: caller})
+		CallID    string          `json:"call_id,omitempty"`
+	}{Name: name, Arguments: argsRaw, Caller: caller, CallID: callID})
 }
 
 // ListApprovals returns queued approvals. Pass status="" for all entries.
