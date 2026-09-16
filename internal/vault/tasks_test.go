@@ -350,6 +350,9 @@ func TestParseFormat_ForeignInlineFieldSurvives(t *testing.T) {
 	if task.ParentID != "" {
 		t.Fatalf("expected empty ParentID, got %q", task.ParentID)
 	}
+	if task.Priority != "high" {
+		t.Fatalf("Priority: got %q want high", task.Priority)
+	}
 	if !strings.Contains(task.Text, "[priority:: high]") {
 		t.Fatalf("foreign inline field stripped from Text: %q", task.Text)
 	}
@@ -359,6 +362,40 @@ func TestParseFormat_ForeignInlineFieldSurvives(t *testing.T) {
 	}
 	if out != line {
 		t.Fatalf("round-trip mismatch:\n got  %q\n want %q", out, line)
+	}
+}
+
+func TestParseFormat_RecurrenceBeforePriority_preserves_both_fields(t *testing.T) {
+	// Given
+	const line = "- [ ] Review metrics 🔁 every week [priority:: 10] ^qi-a1b2c3d4"
+
+	// When
+	task, ok, err := ParseTaskLine(line)
+
+	// Then
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if task.Recurrence != "every week" {
+		t.Fatalf("Recurrence: got %q want every week", task.Recurrence)
+	}
+	if task.Priority != "10" {
+		t.Fatalf("Priority: got %q want 10", task.Priority)
+	}
+	formatted, err := FormatTaskLine(task)
+	if err != nil {
+		t.Fatalf("format: %v", err)
+	}
+	reparsed, ok, err := ParseTaskLine(formatted)
+	if err != nil || !ok {
+		t.Fatalf("reparse: ok=%v err=%v", ok, err)
+	}
+	formattedAgain, err := FormatTaskLine(reparsed)
+	if err != nil {
+		t.Fatalf("second format: %v", err)
+	}
+	if formattedAgain != formatted {
+		t.Fatalf("round-trip unstable:\n first %q\nsecond %q", formatted, formattedAgain)
 	}
 }
 

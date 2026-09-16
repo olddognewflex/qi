@@ -15,7 +15,7 @@ import (
 )
 
 func newNoteCommand(cfg config.Config) *cobra.Command {
-	noteSvc := service.NoteService{NotesDir: cfg.NotesPath}
+	noteSvc := service.NewNoteService(cfg.NotesPath)
 
 	// Bare `qi note` shows help, like every other command group. It used to
 	// silently create an untitled inbox note and open Obsidian — an undocumented
@@ -44,7 +44,7 @@ func newNoteCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			svc := service.NoteService{NotesDir: notesDir}
+			svc := service.NewNoteService(notesDir)
 			note, err := svc.AddNote(args[0], body)
 			if err != nil {
 				return err

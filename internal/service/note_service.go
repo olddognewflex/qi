@@ -11,6 +11,13 @@ type NoteService struct {
 	NotesDir string
 }
 
+// NewNoteService builds a NoteService writing into notesDir. A constructor
+// (alongside NewTaskService / NewCaptureService) so the command layer has one
+// consistent construction idiom per service.
+func NewNoteService(notesDir string) NoteService {
+	return NoteService{NotesDir: notesDir}
+}
+
 func (s NoteService) AddNote(title, body string) (domain.Note, error) {
 	path, err := vault.WriteNote(s.NotesDir, title, body)
 	if err != nil {
