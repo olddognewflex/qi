@@ -8,10 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make test                       # go test ./...
 make tidy                       # go mod tidy
 make run                        # go run ./cmd/qi
+make build                      # build all three into bin/
+make install                    # build + install to ~/.local/bin (PREFIX overridable)
+make install QI_SIGN_IDENTITY="qi-local"   # + codesign (macOS TCC survives rebuilds; docs/macos-launchd.md, #47)
 go test ./internal/vault -run TestParseTaskLine   # single test
-go build -o bin/qi ./cmd/qi     # build CLI (no `make build` target)
-go build -o bin/qid ./cmd/qid   # build daemon
-go build -o bin/qi-mcp ./cmd/qi-mcp   # build MCP server
+go build -o bin/qi ./cmd/qi     # build one binary directly
 ```
 
 Go 1.25+. Module path is `qi`; import internal packages as `qi/internal/...`.
