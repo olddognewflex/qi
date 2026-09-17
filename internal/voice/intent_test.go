@@ -163,6 +163,28 @@ func TestParse(t *testing.T) {
 			want: Intent{Kind: IntentUnknown},
 		},
 		{name: "unknown: inverted form unsupported", in: "Run the tests, Codex", want: Intent{Kind: IntentUnknown}},
+		{
+			name: "state qualifier after kind plus that-introducer",
+			in:   "Tell claude working in the Qi workspace that I merged the latest PR and would like to move on to the next step.",
+			want: Intent{Kind: IntentInstruct, Target: Target{Kind: agentrt.KindClaude, Workspace: "qi", State: agentrt.StateWorking}, Instruction: "I merged the latest PR and would like to move on to the next step"},
+		},
+		{
+			name: "state qualifier with that's and commas",
+			in:   "Tell Claude, that's idle in qi, that the build is green.",
+			want: Intent{Kind: IntentInstruct, Target: Target{Kind: agentrt.KindClaude, Workspace: "qi", State: agentrt.StateIdle}, Instruction: "the build is green"},
+		},
+		{
+			name: "state word before kind",
+			in:   "Ask the idle Codex to run the tests.",
+			want: Intent{Kind: IntentInstruct, Target: Target{Kind: agentrt.KindCodex, State: agentrt.StateIdle}, Instruction: "run the tests"},
+		},
+		{name: "clarify: the one in qi", in: "the one in qi", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "qi"}}},
+		{name: "clarify: the one in the qi workspace", in: "The one in the qi workspace.", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "qi"}}},
+		{name: "clarify: in this workspace", in: "the one in this workspace", want: Intent{Kind: IntentClarify, Target: Target{ThisWorkspace: true}}},
+		{name: "clarify: the qi one", in: "the qi one", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "qi"}}},
+		{name: "clarify: the ai map one", in: "the ai map one", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "ai map"}}},
+		{name: "clarify: the one that's idle", in: "the one that's idle", want: Intent{Kind: IntentClarify, Target: Target{State: agentrt.StateIdle}}},
+		{name: "clarify: bare state", in: "idle", want: Intent{Kind: IntentClarify, Target: Target{State: agentrt.StateIdle}}},
 		{name: "unknown: two addressees joined by and", in: "Tell Claude and Codex to run the tests.", want: Intent{Kind: IntentUnknown}},
 		{name: "unknown: two workspace-qualified addressees", in: "Tell Claude in qi and Codex in ai-map to run the tests", want: Intent{Kind: IntentUnknown}},
 		{

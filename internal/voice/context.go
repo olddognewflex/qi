@@ -55,6 +55,9 @@ type Context struct {
 	// PendingIntent is the instruction that could not be addressed until the
 	// user answers Pending.
 	PendingIntent *Intent
+	// Env is where qi runs, so a clarification answer of "the one in this
+	// workspace" can be resolved. Set by the loop from Options.Env.
+	Env Env
 }
 
 // pronouns are the back-references [Context.Expand] annotates. An agent
@@ -133,6 +136,7 @@ func (c *Context) Query(t Target, env Env) service.AgentQuery {
 	if t.Focused {
 		q.Focused = true
 	}
+	q.State = t.State
 	if t.ThisWorkspace {
 		if env.WorkspaceID != "" {
 			q.Workspace = env.WorkspaceID
@@ -188,6 +192,26 @@ func (c *Context) Choose(t Target) (agentrt.AgentInstance, error) {
 			return agentrt.AgentInstance{}, fmt.Errorf("I don't have exactly one candidate in pane %s", t.Pane)
 		}
 		chosen = matches[0]
+
+	case t.Workspace != "" || t.ThisWorkspace:
+		matches := make([]agentrt.AgentInstance, 0, 1)
+		for _, a := range cands {
+			if t.ThisWorkspace {
+				if c.Env.WorkspaceID != "" && a.Workspace.ID == c.Env.WorkspaceID {
+					matches = append(matches, a)
+				}
+			} else if service.WorkspaceMatches(a.Workspace, t.Workspace) {
+				matches = append(matches, a)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			return agentrt.AgentInstance{}, fmt.Errorf("none of them is in that workspace")
+		case 1:
+			chosen = matches[0]
+		default:
+			return agentrt.AgentInstance{}, fmt.Errorf("%s of them are in that workspace, so tell me the pane instead", pluralCount(len(matches), "one"))
+		}
 
 	case t.State != "":
 		matches := make([]agentrt.AgentInstance, 0, 1)

@@ -29,6 +29,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 		textMode bool
 		once     string
 		quiet    bool
+		dryRun   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "voice",
@@ -56,7 +57,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := voice.Options{Env: voice.EnvFromOS()}
+			opts := voice.Options{Env: voice.EnvFromOS(), DryRun: dryRun}
 			if cfg.Voice.WaitTimeoutSeconds > 0 {
 				opts.WaitTimeout = time.Duration(cfg.Voice.WaitTimeoutSeconds) * time.Second
 			}
@@ -79,6 +80,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 	cmd.Flags().BoolVar(&textMode, "text", false, "type utterances instead of speaking (overrides [voice] stt)")
 	cmd.Flags().StringVar(&once, "once", "", "handle one utterance and exit")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "print replies only; never speak aloud")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "resolve and announce the agent but never send or wait")
 	return cmd
 }
 

@@ -67,6 +67,13 @@ type AgentQuery struct {
 	// ask-when-ambiguous path instead of receiving someone else's follow-up.
 	PreferID        agentrt.AgentID
 	PreferSessionID string
+
+	// State is a *soft* lifecycle filter from speech ("the Claude working in
+	// qi"). It narrows when it can; when no candidate is in that state the
+	// filter is dropped rather than failing, because people use "working"
+	// loosely for "the one over there" and the state may have changed
+	// between their glance and their sentence.
+	State agentrt.State
 }
 
 // isEmpty reports whether the query constrains nothing at all.
@@ -291,15 +298,25 @@ func (s *AgentService) Resolve(ctx context.Context, q AgentQuery) (agentrt.Agent
 		return agentrt.AgentInstance{}, err
 	}
 
-	candidates := make([]agentrt.AgentInstance, 0, len(agents))
-	for _, a := range agents {
-		if q.Focused && a.ID != focusID {
-			continue
+	filter := func(withState bool) []agentrt.AgentInstance {
+		out := make([]agentrt.AgentInstance, 0, len(agents))
+		for _, a := range agents {
+			if q.Focused && a.ID != focusID {
+				continue
+			}
+			if !matchesQuery(a, q) {
+				continue
+			}
+			if withState && q.State != "" && a.State != q.State {
+				continue
+			}
+			out = append(out, a)
 		}
-		if !matchesQuery(a, q) {
-			continue
-		}
-		candidates = append(candidates, a)
+		return out
+	}
+	candidates := filter(true)
+	if len(candidates) == 0 && q.State != "" {
+		candidates = filter(false)
 	}
 
 	if q.PreferID != "" {
@@ -473,6 +490,10 @@ func matchesQuery(a agentrt.AgentInstance, q AgentQuery) bool {
 
 // matchesWorkspace accepts the human label case-insensitively or the runtime
 // handle exactly: the user says "qi", a script passes "w9".
+// WorkspaceMatches reports whether a spoken or typed workspace reference
+// names ws: its id, or its label case-insensitively with separators folded.
+func WorkspaceMatches(ws agentrt.Workspace, want string) bool { return matchesWorkspace(ws, want) }
+
 func matchesWorkspace(ws agentrt.Workspace, want string) bool {
 	if ws.Label != "" && (strings.EqualFold(ws.Label, want) || foldLabel(ws.Label) == foldLabel(want)) {
 		return true
