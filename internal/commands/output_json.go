@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"qi/internal/agentrt"
 	"qi/internal/domain"
 )
 
@@ -110,4 +111,52 @@ type searchResultJSON struct {
 	Path  string  `json:"path"`
 	Match string  `json:"match"`
 	Rank  float64 `json:"rank"`
+}
+
+// agentJSON is the stable shape of one agent instance for `qi agent list
+// --json`. `id` is the runtime's opaque handle (for Herdr, the pane id);
+// `session_id` is the agent's own session identity when the runtime knows it.
+type agentJSON struct {
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Name            string `json:"name,omitempty"`
+	State           string `json:"state"`
+	SessionID       string `json:"session_id,omitempty"`
+	WorkspaceID     string `json:"workspace_id"`
+	WorkspaceLabel  string `json:"workspace_label,omitempty"`
+	WorkspaceNumber int    `json:"workspace_number,omitempty"`
+	PaneID          string `json:"pane_id"`
+	PaneLabel       string `json:"pane_label"`
+	Cwd             string `json:"cwd,omitempty"`
+	Focused         bool   `json:"focused"`
+	Title           string `json:"title,omitempty"`
+}
+
+// agentListJSON wraps the agent list with the runtime that produced it, so a
+// consumer can tell "no agents" from "no runtime".
+type agentListJSON struct {
+	Runtime string      `json:"runtime"`
+	Agents  []agentJSON `json:"agents"`
+}
+
+func agentsToJSON(runtime string, agents []agentrt.AgentInstance) agentListJSON {
+	out := make([]agentJSON, 0, len(agents))
+	for _, a := range agents {
+		out = append(out, agentJSON{
+			ID:              string(a.ID),
+			Kind:            string(a.Kind),
+			Name:            a.Name,
+			State:           string(a.State),
+			SessionID:       a.SessionID,
+			WorkspaceID:     a.Workspace.ID,
+			WorkspaceLabel:  a.Workspace.Label,
+			WorkspaceNumber: a.Workspace.Number,
+			PaneID:          a.PaneID,
+			PaneLabel:       a.PaneLabel(),
+			Cwd:             a.Cwd,
+			Focused:         a.Focused,
+			Title:           a.Title,
+		})
+	}
+	return agentListJSON{Runtime: runtime, Agents: out}
 }
