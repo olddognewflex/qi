@@ -100,8 +100,10 @@ type AgentsConfig struct {
 // utterances on stdin — the reference path) or "http" (record with ffmpeg,
 // transcribe via an OpenAI-compatible /v1/audio/transcriptions endpoint at
 // STTURL with STTModel; the API key is read from the env var NAMED by
-// STTAPIKeyEnv; STTPrompt is an optional vocabulary hint sent as the
-// endpoint's "prompt" field). TTS is "say" (macOS `say`, default on darwin), "echo"
+// STTAPIKeyEnv; STTPrompt is optional extra vocabulary appended to the
+// hint qi builds from the live workspace labels and agent kinds — keep it
+// a list of names, never a sentence, which Whisper would copy onto
+// near-matching audio). TTS is "say" (macOS `say`, default on darwin), "echo"
 // (print only), or "none". RecordSeconds/RecordDevice bound the ffmpeg
 // capture (avfoundation audio device index). WaitTimeoutSeconds caps how
 // long qi waits for an agent to settle after an instruction (default 300).

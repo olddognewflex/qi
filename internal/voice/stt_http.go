@@ -233,3 +233,24 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// STTHint builds the vocabulary hint sent as the transcription endpoint's
+// "prompt". Whisper treats that field as preceding transcript, so a
+// sentence-shaped hint ("Tell Claude in the qi workspace ...") gets copied
+// onto near-matching audio — "kitchen workspace" came back as "qi
+// workspace" in a live session. A bare list of proper nouns primes the
+// spelling of names without offering a sentence to echo. Labels are the
+// live workspace labels; extra is the user's own additions from config.
+func STTHint(kinds []string, labels []string, extra string) string {
+	var parts []string
+	if len(kinds) > 0 {
+		parts = append(parts, "Agents: "+strings.Join(kinds, ", ")+".")
+	}
+	if len(labels) > 0 {
+		parts = append(parts, "Workspaces: "+strings.Join(labels, ", ")+".")
+	}
+	if e := strings.TrimSpace(extra); e != "" {
+		parts = append(parts, e)
+	}
+	return strings.Join(parts, " ")
+}
