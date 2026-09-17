@@ -107,7 +107,17 @@ func (t *HTTPTranscriber) Listen(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("transcribe: decode response: %w", err)
 	}
-	return strings.TrimSpace(out.Text), nil
+	text := strings.TrimSpace(out.Text)
+	if t.Prompt != nil {
+		// Show what was heard: without this a mis-transcription is
+		// indistinguishable from a grammar gap.
+		if text == "" {
+			fmt.Fprintln(t.Prompt, "You: (nothing heard)")
+		} else {
+			fmt.Fprintf(t.Prompt, "You: %s\n", text)
+		}
+	}
+	return text, nil
 }
 
 // buildRequest assembles the multipart body: the audio file, the model, and
@@ -222,4 +232,28 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// STTHint builds the vocabulary hint sent as the transcription endpoint's
+// "prompt". Whisper treats that field as preceding transcript, so a
+// sentence-shaped hint ("Tell Claude in the qi workspace ...") gets copied
+// onto near-matching audio — "kitchen workspace" came back as "qi
+// workspace" in a live session. A bare list of proper nouns primes the
+// spelling of names without offering a sentence to echo. Labels are the
+// live workspace labels; extra is the user's own additions from config.
+func STTHint(kinds []string, labels []string, extra string) string {
+	var parts []string
+	if len(kinds) > 0 {
+		// The verbs go in as a list too: on short clips Whisper turned
+		// "Tell" into "Tel", "Tele", and "Tail-".
+		parts = append(parts, "Commands: Tell, Ask, Have, Quit.")
+		parts = append(parts, "Agents: "+strings.Join(kinds, ", ")+".")
+	}
+	if len(labels) > 0 {
+		parts = append(parts, "Workspaces: "+strings.Join(labels, ", ")+".")
+	}
+	if e := strings.TrimSpace(extra); e != "" {
+		parts = append(parts, e)
+	}
+	return strings.Join(parts, " ")
 }

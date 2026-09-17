@@ -100,8 +100,10 @@ type AgentsConfig struct {
 // utterances on stdin — the reference path) or "http" (record with ffmpeg,
 // transcribe via an OpenAI-compatible /v1/audio/transcriptions endpoint at
 // STTURL with STTModel; the API key is read from the env var NAMED by
-// STTAPIKeyEnv; STTPrompt is an optional vocabulary hint sent as the
-// endpoint's "prompt" field). TTS is "say" (macOS `say`, default on darwin), "echo"
+// STTAPIKeyEnv; STTPrompt is optional extra vocabulary appended to the
+// hint qi builds from the live workspace labels and agent kinds — keep it
+// a list of names, never a sentence, which Whisper would copy onto
+// near-matching audio). TTS is "say" (macOS `say`, default on darwin), "echo"
 // (print only), or "none". RecordSeconds/RecordDevice bound the ffmpeg
 // capture (avfoundation audio device index). WaitTimeoutSeconds caps how
 // long qi waits for an agent to settle after an instruction (default 300).
@@ -116,6 +118,10 @@ type VoiceConfig struct {
 	RecordSeconds      int    `json:"record_seconds,omitempty"`
 	RecordDevice       string `json:"record_device,omitempty"`
 	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty"`
+	// WorkspaceAliases maps a spoken label to the real workspace label, for
+	// names speech-to-text cannot spell ("key" → "qi"). TOML:
+	// [voice.workspace_aliases] key = "qi".
+	WorkspaceAliases map[string]string `json:"workspace_aliases,omitempty"`
 }
 
 type Config struct {
@@ -213,15 +219,16 @@ type agentsTOML struct {
 }
 
 type voiceTOML struct {
-	STT                string `toml:"stt"`
-	STTURL             string `toml:"stt_url"`
-	STTModel           string `toml:"stt_model"`
-	STTAPIKeyEnv       string `toml:"stt_api_key_env"`
-	STTPrompt          string `toml:"stt_prompt"`
-	TTS                string `toml:"tts"`
-	RecordSeconds      int    `toml:"record_seconds"`
-	RecordDevice       string `toml:"record_device"`
-	WaitTimeoutSeconds int    `toml:"wait_timeout_seconds"`
+	STT                string            `toml:"stt"`
+	STTURL             string            `toml:"stt_url"`
+	STTModel           string            `toml:"stt_model"`
+	STTAPIKeyEnv       string            `toml:"stt_api_key_env"`
+	STTPrompt          string            `toml:"stt_prompt"`
+	TTS                string            `toml:"tts"`
+	RecordSeconds      int               `toml:"record_seconds"`
+	RecordDevice       string            `toml:"record_device"`
+	WaitTimeoutSeconds int               `toml:"wait_timeout_seconds"`
+	WorkspaceAliases   map[string]string `toml:"workspace_aliases"`
 }
 
 type tomlFile struct {
@@ -563,6 +570,7 @@ func LoadFrom(path string) (Config, error) {
 			RecordSeconds:      raw.Voice.RecordSeconds,
 			RecordDevice:       raw.Voice.RecordDevice,
 			WaitTimeoutSeconds: raw.Voice.WaitTimeoutSeconds,
+			WorkspaceAliases:   raw.Voice.WorkspaceAliases,
 		},
 	}, nil
 }

@@ -244,3 +244,14 @@ func TestHTTPTranscriber_SendsHintAsPrompt(t *testing.T) {
 		t.Errorf("prompt = %q", gotPrompt)
 	}
 }
+
+func TestSTTHint_IsANounListNotASentence(t *testing.T) {
+	got := STTHint([]string{"Claude", "Codex"}, []string{"qi", "ai-map"}, " Herdr, pane ")
+	want := "Commands: Tell, Ask, Have, Quit. Agents: Claude, Codex. Workspaces: qi, ai-map. Herdr, pane"
+	if got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+	if STTHint(nil, nil, "") != "" {
+		t.Error("empty inputs should give an empty hint")
+	}
+}

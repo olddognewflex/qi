@@ -122,7 +122,7 @@ func TestAgentSend_BlockedNotWritten(t *testing.T) {
 func TestAgentSend_NoMatch(t *testing.T) {
 	fakeAgentRuntime(t)
 	_, err := runAgentCmd(t, "send", "--kind", "codex", "--workspace", "nope", "hello")
-	if err == nil || !strings.Contains(err.Error(), "can't find") {
+	if err == nil || !strings.Contains(err.Error(), "I don't have a workspace called nope. Your workspaces are qi and handyman.") {
 		t.Fatalf("err = %v", err)
 	}
 }

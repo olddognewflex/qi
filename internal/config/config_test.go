@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -1296,6 +1297,9 @@ tts = "echo"
 record_seconds = 6
 record_device = "1"
 wait_timeout_seconds = 42
+
+[voice.workspace_aliases]
+key = "qi"
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -1307,8 +1311,8 @@ wait_timeout_seconds = 42
 	if cfg.Agents.Runtime != "herdr" || cfg.Agents.HerdrBin != "/opt/herdr" {
 		t.Errorf("Agents = %+v", cfg.Agents)
 	}
-	want := config.VoiceConfig{STT: "http", STTURL: "http://localhost:8000/v1/audio/transcriptions", STTModel: "whisper-1", STTAPIKeyEnv: "STT_KEY", TTS: "echo", RecordSeconds: 6, RecordDevice: "1", WaitTimeoutSeconds: 42}
-	if cfg.Voice != want {
+	want := config.VoiceConfig{STT: "http", STTURL: "http://localhost:8000/v1/audio/transcriptions", STTModel: "whisper-1", STTAPIKeyEnv: "STT_KEY", TTS: "echo", RecordSeconds: 6, RecordDevice: "1", WaitTimeoutSeconds: 42, WorkspaceAliases: map[string]string{"key": "qi"}}
+	if !reflect.DeepEqual(cfg.Voice, want) {
 		t.Errorf("Voice = %+v, want %+v", cfg.Voice, want)
 	}
 }
@@ -1323,7 +1327,7 @@ func TestLoadFrom_AgentsAndVoiceDefaultsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFrom: %v", err)
 	}
-	if cfg.Agents != (config.AgentsConfig{}) || cfg.Voice != (config.VoiceConfig{}) {
+	if cfg.Agents != (config.AgentsConfig{}) || !reflect.DeepEqual(cfg.Voice, config.VoiceConfig{}) {
 		t.Errorf("expected zero Agents/Voice, got %+v %+v", cfg.Agents, cfg.Voice)
 	}
 }

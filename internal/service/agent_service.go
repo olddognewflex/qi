@@ -67,6 +67,13 @@ type AgentQuery struct {
 	// ask-when-ambiguous path instead of receiving someone else's follow-up.
 	PreferID        agentrt.AgentID
 	PreferSessionID string
+
+	// State is a *soft* lifecycle filter from speech ("the Claude working in
+	// qi"). It narrows when it can; when no candidate is in that state the
+	// filter is dropped rather than failing, because people use "working"
+	// loosely for "the one over there" and the state may have changed
+	// between their glance and their sentence.
+	State agentrt.State
 }
 
 // isEmpty reports whether the query constrains nothing at all.
@@ -177,6 +184,12 @@ func (e *AmbiguousAgentError) Prompt() string {
 // phrased to be spoken back to the user.
 type NoAgentError struct {
 	Query AgentQuery
+	// WorkspaceUnknown is set when Query.Workspace names no live workspace
+	// at all (as opposed to a real workspace with no matching agent), and
+	// KnownWorkspaces then lists the labels that do exist so a misheard
+	// name is obvious.
+	WorkspaceUnknown bool
+	KnownWorkspaces  []string
 }
 
 func (e *NoAgentError) Error() string {
@@ -189,6 +202,20 @@ func (e *NoAgentError) Error() string {
 	}
 	if q.isEmpty() {
 		return "I can't find any agents."
+	}
+	if q.Workspace != "" && e.WorkspaceUnknown {
+		msg := "I don't have a workspace called " + q.Workspace + "."
+		if len(e.KnownWorkspaces) > 0 {
+			msg += " Your workspaces are " + joinClauses(e.KnownWorkspaces) + "."
+		}
+		return msg
+	}
+	if q.Workspace != "" && q.Name == "" && q.Cwd == "" && !q.Focused {
+		// A real workspace with nobody matching in it.
+		if q.Kind != "" {
+			return displayKind(q.Kind) + " is not running in the " + q.Workspace + " workspace."
+		}
+		return "No agent is running in the " + q.Workspace + " workspace."
 	}
 
 	var b strings.Builder
@@ -291,15 +318,25 @@ func (s *AgentService) Resolve(ctx context.Context, q AgentQuery) (agentrt.Agent
 		return agentrt.AgentInstance{}, err
 	}
 
-	candidates := make([]agentrt.AgentInstance, 0, len(agents))
-	for _, a := range agents {
-		if q.Focused && a.ID != focusID {
-			continue
+	filter := func(withState bool) []agentrt.AgentInstance {
+		out := make([]agentrt.AgentInstance, 0, len(agents))
+		for _, a := range agents {
+			if q.Focused && a.ID != focusID {
+				continue
+			}
+			if !matchesQuery(a, q) {
+				continue
+			}
+			if withState && q.State != "" && a.State != q.State {
+				continue
+			}
+			out = append(out, a)
 		}
-		if !matchesQuery(a, q) {
-			continue
-		}
-		candidates = append(candidates, a)
+		return out
+	}
+	candidates := filter(true)
+	if len(candidates) == 0 && q.State != "" {
+		candidates = filter(false)
 	}
 
 	if q.PreferID != "" {
@@ -314,12 +351,38 @@ func (s *AgentService) Resolve(ctx context.Context, q AgentQuery) (agentrt.Agent
 
 	switch len(candidates) {
 	case 0:
-		return agentrt.AgentInstance{}, &NoAgentError{Query: q}
+		return agentrt.AgentInstance{}, s.noAgent(ctx, q)
 	case 1:
 		return candidates[0], nil
 	default:
 		return agentrt.AgentInstance{}, &AmbiguousAgentError{Query: q, Candidates: candidates}
 	}
+}
+
+// noAgent builds the no-match error, checking whether a named workspace
+// exists at all so the message can say "no such workspace" rather than
+// "no such agent in it". Best-effort: if the runtime can't list
+// workspaces the plain form is returned.
+func (s *AgentService) noAgent(ctx context.Context, q AgentQuery) *NoAgentError {
+	e := &NoAgentError{Query: q}
+	if q.Workspace == "" {
+		return e
+	}
+	wss, err := s.Workspaces(ctx)
+	if err != nil {
+		return e
+	}
+	known := false
+	for _, w := range wss {
+		if matchesWorkspace(w, q.Workspace) {
+			known = true
+		}
+		if w.Label != "" {
+			e.KnownWorkspaces = append(e.KnownWorkspaces, w.Label)
+		}
+	}
+	e.WorkspaceUnknown = !known
+	return e
 }
 
 // Instruct sends text to the agent as a prompt. The runtime's error is
@@ -473,6 +536,10 @@ func matchesQuery(a agentrt.AgentInstance, q AgentQuery) bool {
 
 // matchesWorkspace accepts the human label case-insensitively or the runtime
 // handle exactly: the user says "qi", a script passes "w9".
+// WorkspaceMatches reports whether a spoken or typed workspace reference
+// names ws: its id, or its label case-insensitively with separators folded.
+func WorkspaceMatches(ws agentrt.Workspace, want string) bool { return matchesWorkspace(ws, want) }
+
 func matchesWorkspace(ws agentrt.Workspace, want string) bool {
 	if ws.Label != "" && (strings.EqualFold(ws.Label, want) || foldLabel(ws.Label) == foldLabel(want)) {
 		return true

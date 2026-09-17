@@ -29,6 +29,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 		textMode bool
 		once     string
 		quiet    bool
+		dryRun   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "voice",
@@ -56,7 +57,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := voice.Options{Env: voice.EnvFromOS()}
+			opts := voice.Options{Env: voice.EnvFromOS(), DryRun: dryRun, WorkspaceAliases: cfg.Voice.WorkspaceAliases}
 			if cfg.Voice.WaitTimeoutSeconds > 0 {
 				opts.WaitTimeout = time.Duration(cfg.Voice.WaitTimeoutSeconds) * time.Second
 			}
@@ -68,7 +69,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 				return err
 			}
 
-			in, err := buildTranscriber(cfg, textMode, cmd.InOrStdin(), out)
+			in, err := buildTranscriber(cfg, textMode, cmd.InOrStdin(), out, sttHint(cmd.Context(), cfg, svc))
 			if err != nil {
 				return err
 			}
@@ -79,13 +80,30 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 	cmd.Flags().BoolVar(&textMode, "text", false, "type utterances instead of speaking (overrides [voice] stt)")
 	cmd.Flags().StringVar(&once, "once", "", "handle one utterance and exit")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "print replies only; never speak aloud")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "resolve and announce the agent but never send or wait")
 	return cmd
 }
 
 // buildTranscriber picks the speech-to-text path. "text" reads lines from
 // stdin. "http" records a clip with ffmpeg and posts it to an OpenAI-
 // compatible transcription endpoint; it is never selected implicitly.
-func buildTranscriber(cfg config.Config, forceText bool, stdin io.Reader, out io.Writer) (voice.Transcriber, error) {
+// sttHint primes the transcriber with the names it must spell: the live
+// workspace labels and the agent kinds qi's grammar knows, plus any extra
+// words from [voice] stt_prompt. Best-effort: an unreachable runtime just
+// means fewer names in the hint.
+func sttHint(ctx context.Context, cfg config.Config, svc *service.AgentService) string {
+	var labels []string
+	if wss, err := svc.Workspaces(ctx); err == nil {
+		for _, w := range wss {
+			if w.Label != "" {
+				labels = append(labels, w.Label)
+			}
+		}
+	}
+	return voice.STTHint([]string{"Claude", "Codex"}, labels, cfg.Voice.STTPrompt)
+}
+
+func buildTranscriber(cfg config.Config, forceText bool, stdin io.Reader, out io.Writer, hint string) (voice.Transcriber, error) {
 	mode := strings.ToLower(cfg.Voice.STT)
 	if forceText || mode == "" || mode == "text" {
 		return voice.NewTextTranscriber(stdin, out), nil
@@ -116,7 +134,7 @@ func buildTranscriber(cfg config.Config, forceText bool, stdin io.Reader, out io
 		Client: &http.Client{Timeout: 60 * time.Second},
 		Record: rec,
 		Prompt: out,
-		Hint:   cfg.Voice.STTPrompt,
+		Hint:   hint,
 	}, nil
 }
 

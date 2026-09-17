@@ -106,6 +106,33 @@ var instructVerbs = map[string]bool{
 	"have":     true,
 	"get":      true,
 	"instruct": true,
+	// Speech-to-text mishearings of "tell" on short clips, observed live:
+	// "Tel", "Tele", "Tail-clawed". None of these is a word that starts an
+	// utterance qi would otherwise act on, so accepting them is safe.
+	"tel":  true,
+	"tele": true,
+	"tail": true,
+	"tale": true,
+	"till": true,
+	"tel.": true,
+}
+
+// kindAliases maps mishearings of agent names to the real kind. Only
+// spellings that cannot be an English word the user would say at that
+// position are included; "cloud" is borderline but "Tell cloud to ..." has
+// no other reading in this grammar.
+var kindAliases = map[string]agentrt.Kind{
+	"clawed":   agentrt.KindClaude,
+	"claud":    agentrt.KindClaude,
+	"clod":     agentrt.KindClaude,
+	"cloud":    agentrt.KindClaude,
+	"klaud":    agentrt.KindClaude,
+	"claude's": agentrt.KindClaude,
+	"codecs":   agentrt.KindCodex,
+	"kodak":    agentrt.KindCodex,
+	"codecs.":  agentrt.KindCodex,
+	"codex's":  agentrt.KindCodex,
+	"co-dex":   agentrt.KindCodex,
 }
 
 // statusPhrases are the canonicalised utterances that mean "report on the
@@ -222,7 +249,9 @@ func Parse(utterance string) Intent {
 	// An explicit "to" separates target from instruction ("ask X to run the
 	// tests"). Without it the remainder is the instruction verbatim ("ask X
 	// whether the build is green").
-	if len(rest) > 0 && restLow[0] == "to" {
+	// "tell X that I merged the PR" relays "I merged the PR": the "that"
+	// belongs to the verb, not the message.
+	if len(rest) > 0 && (restLow[0] == "to" || restLow[0] == "that") {
 		rest, restLow = rest[1:], restLow[1:]
 	}
 	for len(rest) > 0 && restLow[0] == "please" {
@@ -280,6 +309,15 @@ func parseTarget(toks, low []string) (Target, int, bool) {
 		i += 5
 		matched = true
 	default:
+		// "the idle Claude" / "the working Codex agent": a state word before
+		// the kind narrows to agents in that state (softly, see
+		// service.AgentQuery.State).
+		if st, ok := stateWords[low[i]]; ok && i+1 < len(low) {
+			if _, n := matchKind(low[i+1:]); n > 0 {
+				t.State = st
+				i++
+			}
+		}
 		if k, n := matchKind(low[i:]); n > 0 {
 			t.Kind = k
 			i += n
@@ -292,6 +330,14 @@ func parseTarget(toks, low []string) (Target, int, bool) {
 			if i+1 < len(low) && (low[i] == "named" || low[i] == "called") {
 				t.Name = strings.Trim(toks[i+1], ",.")
 				i += 2
+			}
+		}
+		// "Claude working in qi" / "Claude that's idle" / "Claude currently
+		// blocked": a state qualifier after the kind.
+		if matched {
+			if st, n := matchStateQualifier(low[i:]); n > 0 {
+				t.State = st
+				i += n
 			}
 		}
 		// "... I'm looking at" attaches to whatever was just named, and
@@ -316,6 +362,15 @@ func parseTarget(toks, low []string) (Target, int, bool) {
 			t.ThisWorkspace = this
 			i += n
 		}
+	} else if i < len(low) && low[i] == "and" {
+		// Speech-to-text hears "in" as "and". Only the fully explicit form
+		// ("and the qi workspace") is accepted, where the trailing keyword
+		// proves a workspace was meant and not a second addressee.
+		if ws, this, n := matchWorkspace(toks[i:], low[i:]); n > 0 && (this || low[i+n-1] == "workspace") {
+			t.Workspace = ws
+			t.ThisWorkspace = this
+			i += n
+		}
 	}
 	return t, i, true
 }
@@ -332,7 +387,7 @@ func namesAnotherAgent(restLow []string) bool {
 	case "and", "&", "plus", "then", "or":
 		return true
 	}
-	for j := 0; j < len(restLow) && restLow[j] != "to"; j++ {
+	for j := 0; j < len(restLow) && restLow[j] != "to" && restLow[j] != "that"; j++ {
 		if _, n := matchKind(restLow[j:]); n > 0 {
 			return true
 		}
@@ -359,6 +414,9 @@ func matchKind(low []string) (agentrt.Kind, int) {
 		return agentrt.KindClaude, 1
 	case "codex":
 		return agentrt.KindCodex, 1
+	}
+	if k, ok := kindAliases[low[0]]; ok {
+		return k, 1
 	}
 	return "", 0
 }
@@ -389,6 +447,13 @@ func matchWorkspace(toks, low []string) (label string, thisWS bool, n int) {
 	if low[j] == "this" && j+1 < len(low) && low[j+1] == "workspace" {
 		return "", true, j + 2
 	}
+	// "in the workspace qi": keyword first, then a single-token label, with
+	// the instruction separator (or the end) proving where the label stops.
+	if low[j] == "workspace" && j+1 < len(low) && low[j+1] != "to" && low[j+1] != "that" {
+		if j+2 == len(low) || low[j+2] == "to" || low[j+2] == "that" {
+			return strings.Trim(low[j+1], ",."), false, j + 2
+		}
+	}
 	// "in the qi workspace" / "in the ai map workspace": everything up to an
 	// explicit "workspace" is the label.
 	for k := j; k < len(low) && k < j+3; k++ {
@@ -408,7 +473,7 @@ func matchWorkspace(toks, low []string) (label string, thisWS bool, n int) {
 	if low[j] == "to" {
 		return "", false, 0
 	}
-	if j+1 < len(low) && low[j+1] != "to" {
+	if j+1 < len(low) && low[j+1] != "to" && low[j+1] != "that" {
 		return "", false, 0
 	}
 	return strings.Trim(low[j], ",."), false, j + 1
@@ -439,18 +504,95 @@ func parseClarification(low []string) (Target, bool) {
 		// Not a bare ordinal ("one that is working"): fall through to the
 		// remaining clarification shapes.
 	}
-	// "the working one" / "the one that is working"
+	// "the working one" / "the one that is working" / "the one that's idle"
+	// / "the one which is done" / bare "idle"
 	if len(c) == 2 && c[1] == "one" {
 		if s, ok := stateWords[c[0]]; ok {
 			return Target{State: s}, true
 		}
 	}
-	if hasPrefix(c, "one", "that", "is") && len(c) == 4 {
-		if s, ok := stateWords[c[3]]; ok {
+	if len(c) == 1 {
+		if s, ok := stateWords[c[0]]; ok {
 			return Target{State: s}, true
 		}
 	}
+	if len(c) >= 2 && c[0] == "one" {
+		if st, n := matchStateQualifier(c[1:]); n > 0 && 1+n == len(c) {
+			return Target{State: st}, true
+		}
+		// "the one in qi" / "the one in the qi workspace"
+		if c[1] == "in" {
+			if ws, this, n := matchWorkspaceAnswer(c[1:]); n > 0 && 1+n == len(c) {
+				return Target{Workspace: ws, ThisWorkspace: this}, true
+			}
+		}
+	}
+	// "the qi one" / "the ai map one"
+	if len(c) >= 2 && len(c) <= 4 && c[len(c)-1] == "one" {
+		label := strings.Join(c[:len(c)-1], " ")
+		if _, isState := stateWords[c[0]]; !isState {
+			if _, isOrd := ordinalWords[c[0]]; !isOrd {
+				return Target{Workspace: label}, true
+			}
+		}
+	}
+	// "in qi" / "in the qi workspace"
+	if c[0] == "in" {
+		if ws, this, n := matchWorkspaceAnswer(c); n > 0 && n == len(c) {
+			return Target{Workspace: ws, ThisWorkspace: this}, true
+		}
+	}
 	return Target{}, false
+}
+
+// matchWorkspaceAnswer parses an "in [the] <label...> [workspace]" phrase at
+// the head of low for a clarification answer, where the whole remainder is
+// the label (no instruction follows). Returns the label, whether it was
+// "this workspace", and the tokens consumed (0 when none).
+func matchWorkspaceAnswer(low []string) (label string, thisWS bool, n int) {
+	if len(low) < 2 || low[0] != "in" {
+		return "", false, 0
+	}
+	j := 1
+	if low[j] == "the" {
+		j++
+	}
+	if j >= len(low) {
+		return "", false, 0
+	}
+	if low[j] == "this" && j+1 < len(low) && low[j+1] == "workspace" {
+		return "", true, j + 2
+	}
+	end := len(low)
+	if low[end-1] == "workspace" {
+		end--
+	}
+	if end <= j {
+		return "", false, 0
+	}
+	return strings.Join(low[j:end], " "), false, len(low)
+}
+
+// matchStateQualifier matches "[that is|that's|who is|who's|which is|
+// currently|now] <state>" at the head of low and returns the state plus the
+// tokens consumed.
+func matchStateQualifier(low []string) (agentrt.State, int) {
+	i := 0
+	switch {
+	case hasPrefix(low, "that", "is"), hasPrefix(low, "who", "is"), hasPrefix(low, "which", "is"):
+		i = 2
+	case len(low) > 0 && (low[0] == "that's" || low[0] == "who's" || low[0] == "which's"):
+		i = 1
+	}
+	if i < len(low) && (low[i] == "currently" || low[i] == "now") {
+		i++
+	}
+	if i < len(low) {
+		if st, ok := stateWords[low[i]]; ok {
+			return st, i + 1
+		}
+	}
+	return "", 0
 }
 
 // matchPanePhrase matches a pane reference, with or without the "the one in"
@@ -477,6 +619,13 @@ func tokenize(utterance string) []string {
 	s = strings.TrimRight(s, " .!?,;")
 	toks := strings.Fields(s)
 	toks = dropWakeWords(toks)
+	// Speech-to-text sometimes glues the verb to the name with a hyphen
+	// ("Tail-clawed in qi ..."). Split only the leading token: hyphens
+	// elsewhere are workspace labels ("ai-map") and must survive.
+	if len(toks) > 0 && strings.Contains(toks[0], "-") {
+		parts := strings.Split(toks[0], "-")
+		toks = append(parts, toks[1:]...)
+	}
 	return toks
 }
 

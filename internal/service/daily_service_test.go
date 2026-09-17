@@ -20,7 +20,7 @@ func TestRenderAgenda_Events(t *testing.T) {
 	var s DailyService
 	base := time.Date(2026, 5, 24, 9, 0, 0, 0, time.Local)
 	events := []domain.Event{
-		{Title: "Standup", Start: base},                                                // no end
+		{Title: "Standup", Start: base}, // no end
 		{Title: "Planning", Start: base.Add(time.Hour), End: base.Add(2 * time.Hour), Project: "qi"}, // range + project
 	}
 	got := s.RenderAgenda(events)

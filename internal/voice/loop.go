@@ -42,6 +42,13 @@ type Options struct {
 	// Log, when non-nil, receives every reply as a plain line. Replies are
 	// spoken either way; this is for a visible transcript alongside audio.
 	Log io.Writer
+	// DryRun resolves and announces the addressed agent but never sends the
+	// instruction or waits on it. For testing the grammar and resolution
+	// against live agents without disturbing them.
+	DryRun bool
+	// WorkspaceAliases maps spoken labels to real ones ("key" → "qi"); see
+	// Context.Aliases.
+	WorkspaceAliases map[string]string
 }
 
 // Loop is one voice conversation: listen, parse, resolve, act, reply.
@@ -67,7 +74,7 @@ func NewLoop(svc *service.AgentService, in Transcriber, out Speaker, opts Option
 	if opts.OutputLines <= 0 {
 		opts.OutputLines = DefaultOutputLines
 	}
-	return &Loop{svc: svc, in: in, out: out, opts: opts}
+	return &Loop{svc: svc, in: in, out: out, opts: opts, convo: Context{Env: opts.Env, Aliases: lowerKeys(opts.WorkspaceAliases)}}
 }
 
 // Context exposes the conversational memory, for a caller that wants to seed
@@ -112,6 +119,11 @@ func (l *Loop) Run(ctx context.Context) error {
 // loop's speaker and also returns them, so commands and tests can drive a
 // whole conversation without audio.
 func (l *Loop) HandleUtterance(ctx context.Context, utterance string) ([]string, error) {
+	if strings.TrimSpace(utterance) == "" {
+		// Silence (or a transcriber that heard nothing). Not a reason to
+		// forget a pending question.
+		return l.say(ctx, "I didn't hear anything.")
+	}
 	in := Parse(utterance)
 	switch in.Kind {
 	case IntentQuit:
@@ -136,6 +148,12 @@ func (l *Loop) HandleUtterance(ctx context.Context, utterance string) ([]string,
 		return l.instruct(ctx, in.Target, in.Instruction)
 
 	default:
+		if l.convo.Pending != nil {
+			// The user is mid-answer and said something the grammar
+			// doesn't know. Keep the question open and restate the
+			// choices instead of dropping their instruction.
+			return l.say(ctx, "I didn't catch which one. "+l.convo.Pending.Prompt()+" You can say first or second, the idle one, the one in a workspace, or a pane number.")
+		}
 		return l.say(ctx, helpReply)
 	}
 }
@@ -206,12 +224,17 @@ func (l *Loop) instruct(ctx context.Context, t Target, instruction string) ([]st
 
 // send relays the instruction to a resolved agent and reports what came back.
 func (l *Loop) send(ctx context.Context, agent agentrt.AgentInstance, instruction string) ([]string, error) {
+	text := l.convo.Expand(instruction)
+	if l.opts.DryRun {
+		l.convo.LastAgent = &agent
+		l.convo.LastInstruction = instruction
+		return l.say(ctx, fmt.Sprintf("Found %s. Dry run: I would send %q.", service.DescribeAgent(agent), text))
+	}
 	replies, err := l.say(ctx, fmt.Sprintf("Found %s. Sending the request.", service.DescribeAgent(agent)))
 	if err != nil {
 		return replies, err
 	}
 
-	text := l.convo.Expand(instruction)
 	if err := l.svc.Instruct(ctx, agent.ID, text); err != nil {
 		if errors.Is(err, agentrt.ErrAgentBlocked) {
 			more, serr := l.say(ctx, fmt.Sprintf("%s in %s is blocked on an approval or question. Please handle it in pane %s first.",
@@ -371,4 +394,17 @@ func capitalizeFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// lowerKeys copies m with lowercased keys so spoken labels match regardless
+// of how the config author cased them.
+func lowerKeys(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	return out
 }

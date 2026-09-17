@@ -55,6 +55,13 @@ type Context struct {
 	// PendingIntent is the instruction that could not be addressed until the
 	// user answers Pending.
 	PendingIntent *Intent
+	// Env is where qi runs, so a clarification answer of "the one in this
+	// workspace" can be resolved. Set by the loop from Options.Env.
+	Env Env
+	// Aliases maps a spoken (lowercased) workspace label to the real one,
+	// for labels speech-to-text cannot spell: "key" → "qi". Set by the loop
+	// from Options.WorkspaceAliases.
+	Aliases map[string]string
 }
 
 // pronouns are the back-references [Context.Expand] annotates. An agent
@@ -127,12 +134,13 @@ func hasPronoun(instruction string) bool {
 func (c *Context) Query(t Target, env Env) service.AgentQuery {
 	q := service.AgentQuery{
 		Kind:      t.Kind,
-		Workspace: t.Workspace,
+		Workspace: c.workspaceLabel(t.Workspace),
 		Name:      t.Name,
 	}
 	if t.Focused {
 		q.Focused = true
 	}
+	q.State = t.State
 	if t.ThisWorkspace {
 		if env.WorkspaceID != "" {
 			q.Workspace = env.WorkspaceID
@@ -189,6 +197,26 @@ func (c *Context) Choose(t Target) (agentrt.AgentInstance, error) {
 		}
 		chosen = matches[0]
 
+	case t.Workspace != "" || t.ThisWorkspace:
+		matches := make([]agentrt.AgentInstance, 0, 1)
+		for _, a := range cands {
+			if t.ThisWorkspace {
+				if c.Env.WorkspaceID != "" && a.Workspace.ID == c.Env.WorkspaceID {
+					matches = append(matches, a)
+				}
+			} else if service.WorkspaceMatches(a.Workspace, c.workspaceLabel(t.Workspace)) {
+				matches = append(matches, a)
+			}
+		}
+		switch len(matches) {
+		case 0:
+			return agentrt.AgentInstance{}, fmt.Errorf("none of them is in that workspace")
+		case 1:
+			chosen = matches[0]
+		default:
+			return agentrt.AgentInstance{}, fmt.Errorf("%s of them are in that workspace, so tell me the pane instead", pluralCount(len(matches), "one"))
+		}
+
 	case t.State != "":
 		matches := make([]agentrt.AgentInstance, 0, 1)
 		for _, a := range cands {
@@ -227,4 +255,16 @@ func pluralCount(n int, noun string) string {
 		return word + " " + noun
 	}
 	return word + " " + noun + "s"
+}
+
+// workspaceLabel applies Aliases to a spoken label; unknown labels pass
+// through unchanged.
+func (c *Context) workspaceLabel(label string) string {
+	if c == nil || label == "" {
+		return label
+	}
+	if real, ok := c.Aliases[strings.ToLower(strings.TrimSpace(label))]; ok {
+		return real
+	}
+	return label
 }
