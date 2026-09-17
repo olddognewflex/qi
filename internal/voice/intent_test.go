@@ -178,6 +178,11 @@ func TestParse(t *testing.T) {
 			in:   "Ask the idle Codex to run the tests.",
 			want: Intent{Kind: IntentInstruct, Target: Target{Kind: agentrt.KindCodex, State: agentrt.StateIdle}, Instruction: "run the tests"},
 		},
+		{
+			name: "workspace keyword before the label",
+			in:   "Tell claude in the workspace key to stop.",
+			want: Intent{Kind: IntentInstruct, Target: Target{Kind: agentrt.KindClaude, Workspace: "key"}, Instruction: "stop"},
+		},
 		{name: "clarify: the one in qi", in: "the one in qi", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "qi"}}},
 		{name: "clarify: the one in the qi workspace", in: "The one in the qi workspace.", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "qi"}}},
 		{name: "clarify: in this workspace", in: "the one in this workspace", want: Intent{Kind: IntentClarify, Target: Target{ThisWorkspace: true}}},

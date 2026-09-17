@@ -260,7 +260,7 @@ func TestLoopNoSuchAgent(t *testing.T) {
 	fake := fixture()
 	l, _ := newLoop(t, fake)
 	replies := handle(t, l, "Tell Codex in ai-map to run the tests")
-	if len(replies) != 1 || !strings.Contains(replies[0], "can't find") {
+	if len(replies) != 1 || replies[0] != "Codex is not running in the ai-map workspace." {
 		t.Fatalf("replies = %q, want a spoken not-found message", replies)
 	}
 	if len(fake.SentMessages) != 0 {
@@ -492,7 +492,7 @@ func TestLoop_WorkspaceAliasAndNoMatchListsWorkspaces(t *testing.T) {
 		t.Errorf("alias: %v", replies)
 	}
 	replies, _ = loop.HandleUtterance(ctx, "Tell Codex in the kitchen workspace to stop.")
-	if len(replies) != 1 || !strings.Contains(replies[0], "kitchen") || !strings.Contains(replies[0], "Your workspaces are qi, ai-map, and handyman.") {
+	if len(replies) != 1 || replies[0] != "I don't have a workspace called kitchen. Your workspaces are qi, ai-map and handyman." {
 		t.Errorf("no-match should list workspaces: %v", replies)
 	}
 	// Clarification answers honour the alias too (fresh loop: the dry run
