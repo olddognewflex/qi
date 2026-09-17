@@ -335,6 +335,15 @@ func parseTarget(toks, low []string) (Target, int, bool) {
 			t.ThisWorkspace = this
 			i += n
 		}
+	} else if i < len(low) && low[i] == "and" {
+		// Speech-to-text hears "in" as "and". Only the fully explicit form
+		// ("and the qi workspace") is accepted, where the trailing keyword
+		// proves a workspace was meant and not a second addressee.
+		if ws, this, n := matchWorkspace(toks[i:], low[i:]); n > 0 && (this || low[i+n-1] == "workspace") {
+			t.Workspace = ws
+			t.ThisWorkspace = this
+			i += n
+		}
 	}
 	return t, i, true
 }

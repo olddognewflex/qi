@@ -185,6 +185,12 @@ func TestParse(t *testing.T) {
 		{name: "clarify: the ai map one", in: "the ai map one", want: Intent{Kind: IntentClarify, Target: Target{Workspace: "ai map"}}},
 		{name: "clarify: the one that's idle", in: "the one that's idle", want: Intent{Kind: IntentClarify, Target: Target{State: agentrt.StateIdle}}},
 		{name: "clarify: bare state", in: "idle", want: Intent{Kind: IntentClarify, Target: Target{State: agentrt.StateIdle}}},
+		{
+			name: "STT hears in as and: explicit workspace keyword rescues it",
+			in:   "Tell Claude and the qi workspace to move on to the next step",
+			want: Intent{Kind: IntentInstruct, Target: Target{Kind: agentrt.KindClaude, Workspace: "qi"}, Instruction: "move on to the next step"},
+		},
+		{name: "unknown: and without the workspace keyword is still a second addressee", in: "Tell Claude and qi to run the tests.", want: Intent{Kind: IntentUnknown}},
 		{name: "unknown: two addressees joined by and", in: "Tell Claude and Codex to run the tests.", want: Intent{Kind: IntentUnknown}},
 		{name: "unknown: two workspace-qualified addressees", in: "Tell Claude in qi and Codex in ai-map to run the tests", want: Intent{Kind: IntentUnknown}},
 		{

@@ -46,6 +46,9 @@ type Options struct {
 	// instruction or waits on it. For testing the grammar and resolution
 	// against live agents without disturbing them.
 	DryRun bool
+	// WorkspaceAliases maps spoken labels to real ones ("key" → "qi"); see
+	// Context.Aliases.
+	WorkspaceAliases map[string]string
 }
 
 // Loop is one voice conversation: listen, parse, resolve, act, reply.
@@ -71,7 +74,7 @@ func NewLoop(svc *service.AgentService, in Transcriber, out Speaker, opts Option
 	if opts.OutputLines <= 0 {
 		opts.OutputLines = DefaultOutputLines
 	}
-	return &Loop{svc: svc, in: in, out: out, opts: opts, convo: Context{Env: opts.Env}}
+	return &Loop{svc: svc, in: in, out: out, opts: opts, convo: Context{Env: opts.Env, Aliases: lowerKeys(opts.WorkspaceAliases)}}
 }
 
 // Context exposes the conversational memory, for a caller that wants to seed
@@ -208,7 +211,23 @@ func (l *Loop) instruct(ctx context.Context, t Target, instruction string) ([]st
 		}
 		var none *service.NoAgentError
 		if errors.As(err, &none) {
-			return l.say(ctx, none.Error())
+			reply := none.Error()
+			if q.Workspace != "" {
+				// A named workspace that matched nothing is usually a
+				// mishearing; naming the real ones makes that obvious.
+				if wss, werr := l.svc.Workspaces(ctx); werr == nil && len(wss) > 0 {
+					labels := make([]string, 0, len(wss))
+					for _, w := range wss {
+						if w.Label != "" {
+							labels = append(labels, w.Label)
+						}
+					}
+					if len(labels) > 0 {
+						reply += " Your workspaces are " + joinAnd(labels) + "."
+					}
+				}
+			}
+			return l.say(ctx, reply)
 		}
 		replies, serr := l.say(ctx, "I can't reach the agent runtime right now.")
 		if serr != nil {
@@ -391,4 +410,30 @@ func capitalizeFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// lowerKeys copies m with lowercased keys so spoken labels match regardless
+// of how the config author cased them.
+func lowerKeys(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[strings.ToLower(strings.TrimSpace(k))] = v
+	}
+	return out
+}
+
+// joinAnd renders "a", "a and b", "a, b, and c".
+func joinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + ", and " + items[len(items)-1]
 }

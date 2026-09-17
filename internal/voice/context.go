@@ -58,6 +58,10 @@ type Context struct {
 	// Env is where qi runs, so a clarification answer of "the one in this
 	// workspace" can be resolved. Set by the loop from Options.Env.
 	Env Env
+	// Aliases maps a spoken (lowercased) workspace label to the real one,
+	// for labels speech-to-text cannot spell: "key" → "qi". Set by the loop
+	// from Options.WorkspaceAliases.
+	Aliases map[string]string
 }
 
 // pronouns are the back-references [Context.Expand] annotates. An agent
@@ -130,7 +134,7 @@ func hasPronoun(instruction string) bool {
 func (c *Context) Query(t Target, env Env) service.AgentQuery {
 	q := service.AgentQuery{
 		Kind:      t.Kind,
-		Workspace: t.Workspace,
+		Workspace: c.workspaceLabel(t.Workspace),
 		Name:      t.Name,
 	}
 	if t.Focused {
@@ -200,7 +204,7 @@ func (c *Context) Choose(t Target) (agentrt.AgentInstance, error) {
 				if c.Env.WorkspaceID != "" && a.Workspace.ID == c.Env.WorkspaceID {
 					matches = append(matches, a)
 				}
-			} else if service.WorkspaceMatches(a.Workspace, t.Workspace) {
+			} else if service.WorkspaceMatches(a.Workspace, c.workspaceLabel(t.Workspace)) {
 				matches = append(matches, a)
 			}
 		}
@@ -251,4 +255,16 @@ func pluralCount(n int, noun string) string {
 		return word + " " + noun
 	}
 	return word + " " + noun + "s"
+}
+
+// workspaceLabel applies Aliases to a spoken label; unknown labels pass
+// through unchanged.
+func (c *Context) workspaceLabel(label string) string {
+	if c == nil || label == "" {
+		return label
+	}
+	if real, ok := c.Aliases[strings.ToLower(strings.TrimSpace(label))]; ok {
+		return real
+	}
+	return label
 }
