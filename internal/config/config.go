@@ -116,6 +116,10 @@ type VoiceConfig struct {
 	RecordSeconds      int    `json:"record_seconds,omitempty"`
 	RecordDevice       string `json:"record_device,omitempty"`
 	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty"`
+	// WorkspaceAliases maps a spoken label to the real workspace label, for
+	// names speech-to-text cannot spell ("key" → "qi"). TOML:
+	// [voice.workspace_aliases] key = "qi".
+	WorkspaceAliases map[string]string `json:"workspace_aliases,omitempty"`
 }
 
 type Config struct {
@@ -213,15 +217,16 @@ type agentsTOML struct {
 }
 
 type voiceTOML struct {
-	STT                string `toml:"stt"`
-	STTURL             string `toml:"stt_url"`
-	STTModel           string `toml:"stt_model"`
-	STTAPIKeyEnv       string `toml:"stt_api_key_env"`
-	STTPrompt          string `toml:"stt_prompt"`
-	TTS                string `toml:"tts"`
-	RecordSeconds      int    `toml:"record_seconds"`
-	RecordDevice       string `toml:"record_device"`
-	WaitTimeoutSeconds int    `toml:"wait_timeout_seconds"`
+	STT                string            `toml:"stt"`
+	STTURL             string            `toml:"stt_url"`
+	STTModel           string            `toml:"stt_model"`
+	STTAPIKeyEnv       string            `toml:"stt_api_key_env"`
+	STTPrompt          string            `toml:"stt_prompt"`
+	TTS                string            `toml:"tts"`
+	RecordSeconds      int               `toml:"record_seconds"`
+	RecordDevice       string            `toml:"record_device"`
+	WaitTimeoutSeconds int               `toml:"wait_timeout_seconds"`
+	WorkspaceAliases   map[string]string `toml:"workspace_aliases"`
 }
 
 type tomlFile struct {
@@ -563,6 +568,7 @@ func LoadFrom(path string) (Config, error) {
 			RecordSeconds:      raw.Voice.RecordSeconds,
 			RecordDevice:       raw.Voice.RecordDevice,
 			WaitTimeoutSeconds: raw.Voice.WaitTimeoutSeconds,
+			WorkspaceAliases:   raw.Voice.WorkspaceAliases,
 		},
 	}, nil
 }

@@ -482,3 +482,28 @@ func TestLoop_StateQualifierIsSoft(t *testing.T) {
 		t.Errorf("expected ambiguity after soft state drop, got %v", replies)
 	}
 }
+
+func TestLoop_WorkspaceAliasAndNoMatchListsWorkspaces(t *testing.T) {
+	f := fixture()
+	loop := NewLoop(service.NewAgentService(f), nil, NewEchoSpeaker(io.Discard), Options{DryRun: true, WorkspaceAliases: map[string]string{"Key": "qi"}})
+	ctx := context.Background()
+	replies, _ := loop.HandleUtterance(ctx, "Tell Claude working in the key workspace to move on.")
+	if len(replies) != 1 || !strings.Contains(replies[0], "Found Claude in qi, pane 5-1") {
+		t.Errorf("alias: %v", replies)
+	}
+	replies, _ = loop.HandleUtterance(ctx, "Tell Codex in the kitchen workspace to stop.")
+	if len(replies) != 1 || !strings.Contains(replies[0], "kitchen") || !strings.Contains(replies[0], "Your workspaces are qi, ai-map, and handyman.") {
+		t.Errorf("no-match should list workspaces: %v", replies)
+	}
+	// Clarification answers honour the alias too (fresh loop: the dry run
+	// above remembered Claude in qi, which would otherwise answer this).
+	loop = NewLoop(service.NewAgentService(f), nil, NewEchoSpeaker(io.Discard), Options{DryRun: true, WorkspaceAliases: map[string]string{"eye map": "ai-map"}})
+	loop.HandleUtterance(ctx, "Have Claude review the diff.")
+	if loop.Context().Pending == nil {
+		t.Fatal("expected ambiguity")
+	}
+	loop.HandleUtterance(ctx, "the one in eye map")
+	if loop.Context().Pending != nil || loop.Context().LastAgent == nil || loop.Context().LastAgent.Workspace.Label != "ai-map" {
+		t.Errorf("alias in clarification: pending=%v last=%+v", loop.Context().Pending, loop.Context().LastAgent)
+	}
+}

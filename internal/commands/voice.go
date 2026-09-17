@@ -57,7 +57,7 @@ func newVoiceCommand(cfg config.Config) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := voice.Options{Env: voice.EnvFromOS(), DryRun: dryRun}
+			opts := voice.Options{Env: voice.EnvFromOS(), DryRun: dryRun, WorkspaceAliases: cfg.Voice.WorkspaceAliases}
 			if cfg.Voice.WaitTimeoutSeconds > 0 {
 				opts.WaitTimeout = time.Duration(cfg.Voice.WaitTimeoutSeconds) * time.Second
 			}
