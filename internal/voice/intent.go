@@ -106,6 +106,33 @@ var instructVerbs = map[string]bool{
 	"have":     true,
 	"get":      true,
 	"instruct": true,
+	// Speech-to-text mishearings of "tell" on short clips, observed live:
+	// "Tel", "Tele", "Tail-clawed". None of these is a word that starts an
+	// utterance qi would otherwise act on, so accepting them is safe.
+	"tel":  true,
+	"tele": true,
+	"tail": true,
+	"tale": true,
+	"till": true,
+	"tel.": true,
+}
+
+// kindAliases maps mishearings of agent names to the real kind. Only
+// spellings that cannot be an English word the user would say at that
+// position are included; "cloud" is borderline but "Tell cloud to ..." has
+// no other reading in this grammar.
+var kindAliases = map[string]agentrt.Kind{
+	"clawed":   agentrt.KindClaude,
+	"claud":    agentrt.KindClaude,
+	"clod":     agentrt.KindClaude,
+	"cloud":    agentrt.KindClaude,
+	"klaud":    agentrt.KindClaude,
+	"claude's": agentrt.KindClaude,
+	"codecs":   agentrt.KindCodex,
+	"kodak":    agentrt.KindCodex,
+	"codecs.":  agentrt.KindCodex,
+	"codex's":  agentrt.KindCodex,
+	"co-dex":   agentrt.KindCodex,
 }
 
 // statusPhrases are the canonicalised utterances that mean "report on the
@@ -388,6 +415,9 @@ func matchKind(low []string) (agentrt.Kind, int) {
 	case "codex":
 		return agentrt.KindCodex, 1
 	}
+	if k, ok := kindAliases[low[0]]; ok {
+		return k, 1
+	}
 	return "", 0
 }
 
@@ -589,6 +619,13 @@ func tokenize(utterance string) []string {
 	s = strings.TrimRight(s, " .!?,;")
 	toks := strings.Fields(s)
 	toks = dropWakeWords(toks)
+	// Speech-to-text sometimes glues the verb to the name with a hyphen
+	// ("Tail-clawed in qi ..."). Split only the leading token: hyphens
+	// elsewhere are workspace labels ("ai-map") and must survive.
+	if len(toks) > 0 && strings.Contains(toks[0], "-") {
+		parts := strings.Split(toks[0], "-")
+		toks = append(parts, toks[1:]...)
+	}
 	return toks
 }
 
