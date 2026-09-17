@@ -3,6 +3,7 @@ package voice
 import (
 	"bytes"
 	"context"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -409,5 +410,75 @@ func TestSummarizeIsCapped(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "...") {
 		t.Errorf("a truncated summary should say so, got %q", got[max(0, len(got)-20):])
+	}
+}
+
+func TestLoop_UnknownWhilePendingReasks(t *testing.T) {
+	f := fixture()
+	loop := NewLoop(service.NewAgentService(f), nil, NewEchoSpeaker(io.Discard), Options{})
+	ctx := context.Background()
+	replies, _ := loop.HandleUtterance(ctx, "Tell Claude in qi to run the tests.")
+	if len(replies) == 0 || !strings.Contains(replies[0], "Which one do you mean?") {
+		t.Fatalf("expected a clarification, got %v", replies)
+	}
+	replies, _ = loop.HandleUtterance(ctx, "blorp")
+	if loop.Context().Pending == nil {
+		t.Fatal("an unrecognised answer must not drop the pending question")
+	}
+	if len(replies) == 0 || !strings.Contains(replies[0], "I didn't catch which one") {
+		t.Errorf("replies = %v", replies)
+	}
+	replies, _ = loop.HandleUtterance(ctx, "")
+	if loop.Context().Pending == nil || len(replies) == 0 || replies[0] != "I didn't hear anything." {
+		t.Errorf("silence: pending=%v replies=%v", loop.Context().Pending, replies)
+	}
+	replies, _ = loop.HandleUtterance(ctx, "the idle one")
+	if len(f.SentMessages) != 1 || f.SentMessages[0].ID != "w9:p2" {
+		t.Errorf("sent = %+v", f.SentMessages)
+	}
+}
+
+func TestLoop_ClarifyByWorkspace(t *testing.T) {
+	f := fixture()
+	loop := NewLoop(service.NewAgentService(f), nil, NewEchoSpeaker(io.Discard), Options{})
+	ctx := context.Background()
+	loop.HandleUtterance(ctx, "Have Claude review the diff.") // three Claudes across workspaces
+	if loop.Context().Pending == nil {
+		t.Fatal("expected ambiguity")
+	}
+	loop.HandleUtterance(ctx, "the one in ai-map")
+	if len(f.SentMessages) != 1 || f.SentMessages[0].ID != "w10:p1" {
+		t.Errorf("sent = %+v", f.SentMessages)
+	}
+}
+
+func TestLoop_DryRunNeverSends(t *testing.T) {
+	f := fixture()
+	loop := NewLoop(service.NewAgentService(f), nil, NewEchoSpeaker(io.Discard), Options{DryRun: true})
+	replies, err := loop.HandleUtterance(context.Background(), "Tell the Codex agent in the qi workspace to run the tests.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.SentMessages) != 0 || len(f.Waits) != 0 {
+		t.Errorf("dry run sent/waited: %+v %+v", f.SentMessages, f.Waits)
+	}
+	if len(replies) != 1 || !strings.Contains(replies[0], "Dry run") || !strings.Contains(replies[0], "Found Codex in qi, pane 5-3") {
+		t.Errorf("replies = %v", replies)
+	}
+}
+
+func TestLoop_StateQualifierIsSoft(t *testing.T) {
+	f := fixture()
+	loop := NewLoop(service.NewAgentService(f), nil, NewEchoSpeaker(io.Discard), Options{DryRun: true})
+	ctx := context.Background()
+	// Two Claudes in qi: w9:p1 working, w9:p2 idle. "working" narrows to one.
+	replies, _ := loop.HandleUtterance(ctx, "Tell Claude working in the qi workspace that I merged the PR.")
+	if len(replies) != 1 || !strings.Contains(replies[0], "pane 5-1") || !strings.Contains(replies[0], `"I merged the PR"`) {
+		t.Errorf("replies = %v", replies)
+	}
+	// Nobody is blocked in qi: the state is dropped and the two Claudes are asked about.
+	replies, _ = loop.HandleUtterance(ctx, "Tell the blocked Claude in qi to stop.")
+	if loop.Context().Pending == nil || !strings.Contains(replies[0], "two Claude agents") {
+		t.Errorf("expected ambiguity after soft state drop, got %v", replies)
 	}
 }

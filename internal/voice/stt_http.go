@@ -107,7 +107,17 @@ func (t *HTTPTranscriber) Listen(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("transcribe: decode response: %w", err)
 	}
-	return strings.TrimSpace(out.Text), nil
+	text := strings.TrimSpace(out.Text)
+	if t.Prompt != nil {
+		// Show what was heard: without this a mis-transcription is
+		// indistinguishable from a grammar gap.
+		if text == "" {
+			fmt.Fprintln(t.Prompt, "You: (nothing heard)")
+		} else {
+			fmt.Fprintf(t.Prompt, "You: %s\n", text)
+		}
+	}
+	return text, nil
 }
 
 // buildRequest assembles the multipart body: the audio file, the model, and
