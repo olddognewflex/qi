@@ -247,7 +247,7 @@ func TestHTTPTranscriber_SendsHintAsPrompt(t *testing.T) {
 
 func TestSTTHint_IsANounListNotASentence(t *testing.T) {
 	got := STTHint([]string{"Claude", "Codex"}, []string{"qi", "ai-map"}, " Herdr, pane ")
-	want := "Agents: Claude, Codex. Workspaces: qi, ai-map. Herdr, pane"
+	want := "Commands: Tell, Ask, Have, Quit. Agents: Claude, Codex. Workspaces: qi, ai-map. Herdr, pane"
 	if got != want {
 		t.Errorf("got %q want %q", got, want)
 	}

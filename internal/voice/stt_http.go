@@ -244,6 +244,9 @@ func truncate(s string, n int) string {
 func STTHint(kinds []string, labels []string, extra string) string {
 	var parts []string
 	if len(kinds) > 0 {
+		// The verbs go in as a list too: on short clips Whisper turned
+		// "Tell" into "Tel", "Tele", and "Tail-".
+		parts = append(parts, "Commands: Tell, Ask, Have, Quit.")
 		parts = append(parts, "Agents: "+strings.Join(kinds, ", ")+".")
 	}
 	if len(labels) > 0 {
