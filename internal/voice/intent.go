@@ -417,6 +417,13 @@ func matchWorkspace(toks, low []string) (label string, thisWS bool, n int) {
 	if low[j] == "this" && j+1 < len(low) && low[j+1] == "workspace" {
 		return "", true, j + 2
 	}
+	// "in the workspace qi": keyword first, then a single-token label, with
+	// the instruction separator (or the end) proving where the label stops.
+	if low[j] == "workspace" && j+1 < len(low) && low[j+1] != "to" && low[j+1] != "that" {
+		if j+2 == len(low) || low[j+2] == "to" || low[j+2] == "that" {
+			return strings.Trim(low[j+1], ",."), false, j + 2
+		}
+	}
 	// "in the qi workspace" / "in the ai map workspace": everything up to an
 	// explicit "workspace" is the label.
 	for k := j; k < len(low) && k < j+3; k++ {

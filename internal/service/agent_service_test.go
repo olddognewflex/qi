@@ -329,7 +329,7 @@ func TestResolveNoMatch(t *testing.T) {
 	if !errors.As(err, &none) {
 		t.Fatalf("err = %v, want *NoAgentError", err)
 	}
-	if got, want := none.Error(), "I can't find a Codex agent in the ai-map workspace."; got != want {
+	if got, want := none.Error(), "Codex is not running in the ai-map workspace."; got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
@@ -620,5 +620,30 @@ func TestAwaitResult_ReadNotStarvedByWaitDeadline(t *testing.T) {
 	}
 	if !f.readHadDeadline || f.readExpired {
 		t.Errorf("read ctx: hadDeadline=%v expired=%v; want a fresh, unexpired deadline", f.readHadDeadline, f.readExpired)
+	}
+}
+
+func TestResolve_UnknownWorkspaceNamesTheRealOnes(t *testing.T) {
+	rt := &agentrttest.Fake{
+		Workspaces: []agentrt.Workspace{{ID: "w9", Number: 5, Label: "qi"}, {ID: "w10", Number: 6, Label: "ai-map"}},
+		Agents:     []agentrt.AgentInstance{{ID: "w9:p1", Kind: agentrt.KindClaude, State: agentrt.StateIdle, PaneID: "w9:p1", Workspace: agentrt.Workspace{ID: "w9", Number: 5, Label: "qi"}}},
+	}
+	svc := NewAgentService(rt)
+	_, err := svc.Resolve(context.Background(), AgentQuery{Kind: agentrt.KindClaude, Workspace: "key"})
+	var none *NoAgentError
+	if !errors.As(err, &none) {
+		t.Fatalf("err = %v", err)
+	}
+	if got, want := none.Error(), "I don't have a workspace called key. Your workspaces are qi and ai-map."; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	_, err = svc.Resolve(context.Background(), AgentQuery{Workspace: "ai-map"})
+	if !errors.As(err, &none) || none.Error() != "No agent is running in the ai-map workspace." {
+		t.Errorf("err = %v", err)
+	}
+	// Alias-folded label counts as known.
+	_, err = svc.Resolve(context.Background(), AgentQuery{Kind: agentrt.KindCodex, Workspace: "AI Map"})
+	if !errors.As(err, &none) || none.Error() != "Codex is not running in the AI Map workspace." {
+		t.Errorf("err = %v", err)
 	}
 }

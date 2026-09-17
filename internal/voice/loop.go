@@ -211,23 +211,7 @@ func (l *Loop) instruct(ctx context.Context, t Target, instruction string) ([]st
 		}
 		var none *service.NoAgentError
 		if errors.As(err, &none) {
-			reply := none.Error()
-			if q.Workspace != "" {
-				// A named workspace that matched nothing is usually a
-				// mishearing; naming the real ones makes that obvious.
-				if wss, werr := l.svc.Workspaces(ctx); werr == nil && len(wss) > 0 {
-					labels := make([]string, 0, len(wss))
-					for _, w := range wss {
-						if w.Label != "" {
-							labels = append(labels, w.Label)
-						}
-					}
-					if len(labels) > 0 {
-						reply += " Your workspaces are " + joinAnd(labels) + "."
-					}
-				}
-			}
-			return l.say(ctx, reply)
+			return l.say(ctx, none.Error())
 		}
 		replies, serr := l.say(ctx, "I can't reach the agent runtime right now.")
 		if serr != nil {
@@ -423,17 +407,4 @@ func lowerKeys(m map[string]string) map[string]string {
 		out[strings.ToLower(strings.TrimSpace(k))] = v
 	}
 	return out
-}
-
-// joinAnd renders "a", "a and b", "a, b, and c".
-func joinAnd(items []string) string {
-	switch len(items) {
-	case 0:
-		return ""
-	case 1:
-		return items[0]
-	case 2:
-		return items[0] + " and " + items[1]
-	}
-	return strings.Join(items[:len(items)-1], ", ") + ", and " + items[len(items)-1]
 }
