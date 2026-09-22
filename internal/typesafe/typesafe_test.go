@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -166,58 +167,132 @@ func TestSystemOneHonoursContextDuringBackoff(t *testing.T) {
 	}
 }
 
-func TestInboxClassifierRequestAndMapping(t *testing.T) {
+func TestInboxClassifierBatchRequestShape(t *testing.T) {
 	var got struct {
-		State     map[string]any      `json:"state"`
+		State struct {
+			Context  string              `json:"context"`
+			Captures []map[string]string `json:"captures"`
+		} `json:"state"`
 		Model     string              `json:"model"`
 		Questions map[string]Question `json:"questions"`
 	}
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("decode: %v", err)
 		}
-		io.WriteString(w, choiceResponse)
+		io.WriteString(w, `{"model":"jev","answers":{
+			"action_0":{"type":"choice","choice":"task","probabilities":{"task":0.9},"confidence":0.81},
+			"action_1":{"type":"choice","choice":"note","confidence":0.6},
+			"action_2":{"type":"choice","choice":"archive","confidence":0.7}}}`)
 	}))
 	defer srv.Close()
 
-	cls, err := InboxClassifier{Client: newTestClient(srv)}.ClassifyInbox(context.Background(), []string{"buy milk", "and eggs"})
+	bodies := [][]string{{"buy milk", "and eggs"}, {"idea: cache the index"}, {"asdf"}}
+	res, err := InboxClassifier{Client: newTestClient(srv)}.ClassifyInbox(context.Background(), bodies)
 	if err != nil {
 		t.Fatalf("ClassifyInbox: %v", err)
 	}
-	if cls.Action != InboxTask || cls.Confidence != 0.81 || cls.Probabilities["task"] != 0.9 {
-		t.Errorf("classification = %+v", cls)
+	if calls.Load() != 1 {
+		t.Errorf("requests = %d, want 1 for the whole batch", calls.Load())
 	}
 
-	capture, _ := got.State["capture"].(map[string]any)
-	if capture["text"] != "buy milk\nand eggs" || got.State["context"] != inboxContext {
-		t.Errorf("state = %v", got.State)
+	if got.State.Context != inboxContext || len(got.State.Captures) != 3 {
+		t.Fatalf("state = %+v", got.State)
 	}
-	q, ok := got.Questions["action"]
-	if !ok || q.Type != TypeChoice {
-		t.Fatalf("questions = %+v", got.Questions)
+	if got.State.Captures[0]["text"] != "buy milk\nand eggs" || got.State.Captures[2]["text"] != "asdf" {
+		t.Errorf("captures = %v", got.State.Captures)
 	}
-	instr, _ := q.Instructions.(map[string]any)
-	if !strings.Contains(instr["question"].(string), "`capture.text`") || instr["focus"] == nil {
-		t.Errorf("instructions = %v", q.Instructions)
+	if len(got.Questions) != 3 {
+		t.Fatalf("questions = %d, want 3", len(got.Questions))
 	}
-	crit, _ := q.Criteria.(map[string]any)
-	for _, opt := range []string{InboxTask, InboxNote, InboxArchive} {
-		if s, _ := crit[opt].(string); s == "" {
-			t.Errorf("criteria missing %q: %v", opt, crit)
+	for i := range bodies {
+		id := fmt.Sprintf("action_%d", i)
+		q, ok := got.Questions[id]
+		if !ok || q.Type != TypeChoice {
+			t.Fatalf("question %s = %+v", id, q)
+		}
+		instr, _ := q.Instructions.(map[string]any)
+		wantPath := fmt.Sprintf("`captures[%d].text`", i)
+		if s, _ := instr["question"].(string); !strings.Contains(s, wantPath) {
+			t.Errorf("%s question %q does not reference %s", id, s, wantPath)
+		}
+		if s, _ := instr["focus"].(string); !strings.Contains(s, "Judge only this capture") {
+			t.Errorf("%s focus = %q", id, s)
+		}
+		crit, _ := q.Criteria.(map[string]any)
+		if len(crit) != 3 {
+			t.Errorf("%s criteria has %d options, want 3", id, len(crit))
+		}
+		for _, opt := range []string{InboxTask, InboxNote, InboxArchive} {
+			if s, _ := crit[opt].(string); s == "" {
+				t.Errorf("%s criteria missing %q: %v", id, opt, crit)
+			}
 		}
 	}
-	if len(crit) != 3 {
-		t.Errorf("criteria has %d options, want 3", len(crit))
+
+	want := []InboxClassification{
+		{Action: InboxTask, Confidence: 0.81, Probabilities: map[string]float64{"task": 0.9}},
+		{Action: InboxNote, Confidence: 0.6},
+		{Action: InboxArchive, Confidence: 0.7},
+	}
+	if len(res) != len(want) {
+		t.Fatalf("results = %d, want %d", len(res), len(want))
+	}
+	for i, w := range want {
+		if res[i].Err != nil || res[i].Action != w.Action || res[i].Confidence != w.Confidence {
+			t.Errorf("result %d = %+v, want %+v", i, res[i], w)
+		}
+	}
+	if res[0].Probabilities["task"] != 0.9 {
+		t.Errorf("probabilities not mapped: %v", res[0].Probabilities)
 	}
 }
 
-func TestInboxClassifierMissingAnswer(t *testing.T) {
+func TestInboxClassifierMissingAnswerIsPerItem(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"model":"jev","answers":{}}`)
+		// action_1 absent, action_2 present but empty.
+		io.WriteString(w, `{"model":"jev","answers":{
+			"action_0":{"type":"choice","choice":"note","confidence":0.9},
+			"action_2":{"type":"choice"}}}`)
 	}))
 	defer srv.Close()
 
-	if _, err := (InboxClassifier{Client: newTestClient(srv)}).ClassifyInbox(context.Background(), []string{"x"}); err == nil {
-		t.Fatal("want error for missing answer")
+	res, err := InboxClassifier{Client: newTestClient(srv)}.ClassifyInbox(context.Background(), [][]string{{"a"}, {"b"}, {"c"}})
+	if err != nil {
+		t.Fatalf("a missing answer must not fail the batch: %v", err)
+	}
+	if res[0].Err != nil || res[0].Action != InboxNote {
+		t.Errorf("result 0 = %+v", res[0])
+	}
+	for _, i := range []int{1, 2} {
+		if res[i].Err == nil || !strings.Contains(res[i].Err.Error(), fmt.Sprintf("action_%d", i)) {
+			t.Errorf("result %d err = %v, want missing action_%d", i, res[i].Err, i)
+		}
+	}
+}
+
+func TestInboxClassifierBatchError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(422)
+	}))
+	defer srv.Close()
+
+	res, err := InboxClassifier{Client: newTestClient(srv)}.ClassifyInbox(context.Background(), [][]string{{"a"}, {"b"}})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || res != nil {
+		t.Fatalf("res, err = %v, %v; want nil, APIError", res, err)
+	}
+}
+
+func TestInboxClassifierEmptyBatchSendsNothing(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	defer srv.Close()
+
+	res, err := InboxClassifier{Client: newTestClient(srv)}.ClassifyInbox(context.Background(), nil)
+	if res != nil || err != nil || calls.Load() != 0 {
+		t.Errorf("empty batch: res=%v err=%v calls=%d", res, err, calls.Load())
 	}
 }
