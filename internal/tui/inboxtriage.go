@@ -7,13 +7,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// InboxCard is one capture presented for triage. Proposed is the action the
-// triage heuristics suggest (task/note/archive); the user may accept it or
-// choose another.
+// InboxCard is one capture presented for triage. Proposed is the suggested
+// action (task/note/archive) and Reason says where it came from — the
+// heuristic rule or the opt-in classifier with its confidence; the user may
+// accept it or choose another.
 type InboxCard struct {
 	Summary  string
 	Body     []string
 	Proposed string
+	Reason   string
 }
 
 // Triage action labels returned by TriageInbox, one per input card. An empty
@@ -99,6 +101,9 @@ func (m triageModel) View() string {
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "%s\n", helpStyle.Render("proposed: "+labelFor(c.Proposed)))
+	if c.Reason != "" {
+		fmt.Fprintf(&b, "%s\n", helpStyle.Render("why:      "+c.Reason))
+	}
 
 	if cur := m.actions[m.cursor]; cur != triageSkip {
 		fmt.Fprintf(&b, "%s\n", cursorStyle.Render("chosen:   "+labelFor(cur)))
