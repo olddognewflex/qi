@@ -180,7 +180,7 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 
 			cards := make([]tui.InboxCard, len(items))
 			for i, it := range items {
-				cards[i] = tui.InboxCard{Summary: it.Summary, Body: it.Body, Proposed: it.Action}
+				cards[i] = tui.InboxCard{Summary: it.Summary, Body: it.Body, Proposed: it.Action, Reason: it.Reason}
 			}
 
 			actions, err := tui.TriageInbox(cards)
