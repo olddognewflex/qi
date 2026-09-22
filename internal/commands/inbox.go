@@ -127,9 +127,17 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inbox",
 		Short: "Triage 00-inbox captures interactively",
-		Long: "Walk each capture in 00-inbox and turn it into a task or note, archive\n" +
-			"it, or delete it. Each capture is shown with a proposed action you can\n" +
-			"accept or override. --dry-run prints the proposals without writing.\n\n" +
+		Long: "Triage each capture in 00-inbox: turn it into a task or note, archive\n" +
+			"it, or delete it. Captures open in a paged list showing each one's\n" +
+			"proposed action (dimmed with a ? until you decide) and its source (rule,\n" +
+			"ts 0.91, ts? unsure, lim over classify_limit). --dry-run prints the\n" +
+			"proposals without writing.\n\n" +
+			"List keys: j/k or arrows move, pgup/pgdn (ctrl+u/ctrl+d) page, g/G top/\n" +
+			"bottom; t task, n note, a archive, d delete, s skip, enter accept the\n" +
+			"proposal (each moves down); A accepts every undecided proposal. space/tab\n" +
+			"opens the full card (←/→ move, same decision keys, tab/esc back). w\n" +
+			"finishes and applies; undecided captures are skipped. q quits without\n" +
+			"applying anything.\n\n" +
 			"Proposals come from deterministic heuristics by default. Opt in to the\n" +
 			"TypeSafe classifier with --classifier typesafe (or [inbox] classifier =\n" +
 			"\"typesafe\") to refine the non-obvious ones: this SENDS CAPTURE TEXT to\n" +
