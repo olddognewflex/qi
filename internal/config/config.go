@@ -124,6 +124,46 @@ type VoiceConfig struct {
 	WorkspaceAliases map[string]string `json:"workspace_aliases,omitempty"`
 }
 
+// TypeSafeConfig configures the TypeSafe System One API client used by the
+// opt-in `qi inbox` classifier (see InboxConfig). The API key is read from the
+// env var NAMED by APIKeyEnv (default DefaultTypeSafeAPIKeyEnv) — a var name,
+// not a secret, so it is safe to surface in `qi config show`. Empty URL/Model
+// let internal/typesafe apply DefaultURL / DefaultModel.
+type TypeSafeConfig struct {
+	APIKeyEnv string `json:"api_key_env"`
+	URL       string `json:"url,omitempty"`
+	Model     string `json:"model,omitempty"`
+}
+
+// DefaultTypeSafeAPIKeyEnv is the env var read for the TypeSafe API key when
+// [typesafe] api_key_env is unset.
+const DefaultTypeSafeAPIKeyEnv = "TYPESAFE_API_KEY"
+
+// Inbox classifier names for [inbox] classifier / `qi inbox --classifier`.
+const (
+	InboxClassifierHeuristic = "heuristic"
+	InboxClassifierTypeSafe  = "typesafe"
+)
+
+// DefaultInboxMinConfidence is the TypeSafe confidence below which `qi inbox`
+// keeps the heuristic proposal.
+const DefaultInboxMinConfidence = 0.5
+
+// InboxConfig configures `qi inbox` triage proposals. Classifier is
+// "heuristic" (default: deterministic, offline) or "typesafe" (opt-in:
+// refines non-obvious proposals via the TypeSafe API, sending capture text to
+// it). MinConfidence in [0,1] is the TypeSafe confidence required to override
+// the heuristic (default DefaultInboxMinConfidence).
+type InboxConfig struct {
+	Classifier    string  `json:"classifier"`
+	MinConfidence float64 `json:"min_confidence"`
+}
+
+// ValidInboxClassifier reports whether name is a known inbox classifier.
+func ValidInboxClassifier(name string) bool {
+	return name == InboxClassifierHeuristic || name == InboxClassifierTypeSafe
+}
+
 type Config struct {
 	VaultPath       string
 	TaskFilePath    string
@@ -148,6 +188,8 @@ type Config struct {
 	Embeddings      EmbeddingsConfig
 	Agents          AgentsConfig
 	Voice           VoiceConfig
+	TypeSafe        TypeSafeConfig
+	Inbox           InboxConfig
 }
 
 type mcpServerTOML struct {
@@ -231,6 +273,19 @@ type voiceTOML struct {
 	WorkspaceAliases   map[string]string `toml:"workspace_aliases"`
 }
 
+type typeSafeTOML struct {
+	APIKeyEnv string `toml:"api_key_env"`
+	URL       string `toml:"url"`
+	Model     string `toml:"model"`
+}
+
+// inboxTOML keeps MinConfidence a pointer so an explicit 0 ("always trust
+// TypeSafe") is distinguishable from unset.
+type inboxTOML struct {
+	Classifier    string   `toml:"classifier"`
+	MinConfidence *float64 `toml:"min_confidence"`
+}
+
 type tomlFile struct {
 	VaultPath       string          `toml:"vault_path"`
 	TaskFilePath    string          `toml:"task_file_path"`
@@ -251,6 +306,8 @@ type tomlFile struct {
 	Embeddings      embeddingsTOML  `toml:"embeddings"`
 	Agents          agentsTOML      `toml:"agents"`
 	Voice           voiceTOML       `toml:"voice"`
+	TypeSafe        typeSafeTOML    `toml:"typesafe"`
+	Inbox           inboxTOML       `toml:"inbox"`
 }
 
 func ConfigPath() string {
@@ -394,6 +451,15 @@ func LoadFrom(path string) (Config, error) {
 			Args:    s.Args,
 			Env:     s.Env,
 		})
+	}
+
+	inbox, err := inboxFromTOML(raw.Inbox)
+	if err != nil {
+		return Config{}, err
+	}
+	typeSafeKeyEnv := raw.TypeSafe.APIKeyEnv
+	if typeSafeKeyEnv == "" {
+		typeSafeKeyEnv = DefaultTypeSafeAPIKeyEnv
 	}
 
 	clients := make([]ClientConfig, 0, len(raw.Clients))
@@ -572,7 +638,35 @@ func LoadFrom(path string) (Config, error) {
 			WaitTimeoutSeconds: raw.Voice.WaitTimeoutSeconds,
 			WorkspaceAliases:   raw.Voice.WorkspaceAliases,
 		},
+		// URL/Model stay raw (internal/typesafe applies defaults); the key env
+		// name is defaulted here because the command reads it directly.
+		TypeSafe: TypeSafeConfig{
+			APIKeyEnv: typeSafeKeyEnv,
+			URL:       raw.TypeSafe.URL,
+			Model:     raw.TypeSafe.Model,
+		},
+		Inbox: inbox,
 	}, nil
+}
+
+// inboxFromTOML applies [inbox] defaults and rejects an unknown classifier or
+// an out-of-range min_confidence — a typo here would otherwise silently fall
+// back to the heuristic.
+func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
+	out := InboxConfig{Classifier: raw.Classifier, MinConfidence: DefaultInboxMinConfidence}
+	if out.Classifier == "" {
+		out.Classifier = InboxClassifierHeuristic
+	}
+	if !ValidInboxClassifier(out.Classifier) {
+		return InboxConfig{}, fmt.Errorf("inbox: unknown classifier %q (want %q or %q)", raw.Classifier, InboxClassifierHeuristic, InboxClassifierTypeSafe)
+	}
+	if raw.MinConfidence != nil {
+		if *raw.MinConfidence < 0 || *raw.MinConfidence > 1 {
+			return InboxConfig{}, fmt.Errorf("inbox: min_confidence %v out of range [0,1]", *raw.MinConfidence)
+		}
+		out.MinConfidence = *raw.MinConfidence
+	}
+	return out, nil
 }
 
 var tokenRe = regexp.MustCompile(`YYYY|MMMM|MMM|MM|DD`)

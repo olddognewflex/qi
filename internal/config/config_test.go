@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1329,5 +1330,67 @@ func TestLoadFrom_AgentsAndVoiceDefaultsEmpty(t *testing.T) {
 	}
 	if cfg.Agents != (config.AgentsConfig{}) || !reflect.DeepEqual(cfg.Voice, config.VoiceConfig{}) {
 		t.Errorf("expected zero Agents/Voice, got %+v %+v", cfg.Agents, cfg.Voice)
+	}
+}
+
+func TestLoadFrom_TypeSafeAndInboxDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOML(t, path, `vault_path = "`+dir+`"`)
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if want := (config.TypeSafeConfig{APIKeyEnv: "TYPESAFE_API_KEY"}); cfg.TypeSafe != want {
+		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
+	}
+	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5}); cfg.Inbox != want {
+		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
+	}
+}
+
+func TestLoadFrom_TypeSafeAndInboxSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOML(t, path, `vault_path = "`+dir+`"
+
+[typesafe]
+api_key_env = "TS_KEY"
+url = "https://ts.example"
+model = "jev-1.13.0"
+
+[inbox]
+classifier = "typesafe"
+min_confidence = 0
+`)
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if want := (config.TypeSafeConfig{APIKeyEnv: "TS_KEY", URL: "https://ts.example", Model: "jev-1.13.0"}); cfg.TypeSafe != want {
+		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
+	}
+	// An explicit 0 is honoured, not replaced by the default.
+	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0}); cfg.Inbox != want {
+		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
+	}
+}
+
+func TestLoadFrom_InboxInvalid(t *testing.T) {
+	cases := []struct{ name, section, wantErr string }{
+		{"unknown classifier", `classifier = "llm"`, `unknown classifier "llm"`},
+		{"confidence above 1", `min_confidence = 1.5`, "out of range"},
+		{"negative confidence", `min_confidence = -0.1`, "out of range"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.toml")
+			writeTOML(t, path, `vault_path = "`+dir+`"`+"\n\n[inbox]\n"+tc.section+"\n")
+			_, err := config.LoadFrom(path)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }

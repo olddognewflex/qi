@@ -82,3 +82,20 @@ func TestRedactViewSurfacesSyntheticProjects(t *testing.T) {
 		t.Errorf("client-projection project should be marked synthetic")
 	}
 }
+
+func TestRedactViewSurfacesTypeSafeAndInbox(t *testing.T) {
+	c := Config{
+		TypeSafe: TypeSafeConfig{APIKeyEnv: "TS_KEY", URL: "https://ts", Model: "jev-latest"},
+		Inbox:    InboxConfig{Classifier: InboxClassifierTypeSafe, MinConfidence: 0.7},
+	}
+	b, err := json.Marshal(RedactView(c, ""))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// api_key_env is a var NAME, not a secret: shown as-is.
+	for _, want := range []string{`"typesafe":{"api_key_env":"TS_KEY","url":"https://ts","model":"jev-latest"}`, `"inbox":{"classifier":"typesafe","min_confidence":0.7}`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("config show missing %s: %s", want, b)
+		}
+	}
+}
