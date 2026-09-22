@@ -120,7 +120,9 @@ func parseLine(line string, day time.Time) (domain.Event, bool) {
 func extractProject(s string) (title, project string) {
 	parts := strings.Fields(s)
 	for i := len(parts) - 1; i >= 0; i-- {
-		if strings.HasPrefix(parts[i], "#") {
+		// An all-digit "#14" (e.g. "Review PR #14") is not an Obsidian tag, so
+		// it stays in the title rather than becoming the project.
+		if strings.HasPrefix(parts[i], "#") && !domain.IsNumericTag(strings.TrimPrefix(parts[i], "#")) {
 			project = strings.TrimPrefix(parts[i], "#")
 			title = strings.Join(parts[:i], " ")
 			if title == "" {

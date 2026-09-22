@@ -14,12 +14,12 @@ import (
 
 // harness builds a main vault with a 10-tasks dir and one project vault "foo".
 type harness struct {
-	t         *testing.T
-	cfg       config.Config
-	idx       *index.Indexer
-	tasksDir  string
-	projFile  string // foo projection file abs path
-	canonFoo  string // main vault foo canon file abs path
+	t        *testing.T
+	cfg      config.Config
+	idx      *index.Indexer
+	tasksDir string
+	projFile string // foo projection file abs path
+	canonFoo string // main vault foo canon file abs path
 }
 
 func newHarness(t *testing.T, projects ...string) *harness {
@@ -46,9 +46,9 @@ func newHarness(t *testing.T, projects ...string) *harness {
 	}
 
 	cfg := config.Config{
-		VaultPath:     mainVault,
-		TaskFilePath:  filepath.Join(tasksDir, "inbox.md"),
-		Projects: pvs,
+		VaultPath:    mainVault,
+		TaskFilePath: filepath.Join(tasksDir, "inbox.md"),
+		Projects:     pvs,
 	}
 
 	idx, err := index.Open()
@@ -322,5 +322,27 @@ func TestReconcile_TOCTOU_AbortOnMtimeBump(t *testing.T) {
 	// The guarded write must NOT have modified the file.
 	if strings.Contains(readFile(t, h.projFile), "qi-00000009") {
 		t.Errorf("guarded write should have been refused")
+	}
+}
+
+// TestReconcile_NumericHashStaysInInbox is the regression for the reported
+// bug: a task in the default task file whose text mentions "PR #14" used to
+// parse with Project "14", and reconcile then relocated it into a brand-new
+// 10-tasks/14.md. "#14" is not an Obsidian tag, so the task has no project and
+// must stay put, byte-for-byte.
+func TestReconcile_NumericHashStaysInInbox(t *testing.T) {
+	h := newHarness(t)
+	inbox := h.cfg.TaskFilePath
+	const line = "- [ ] Reply on PR #14 review ^qi-0000000e\n"
+	writeFile(t, inbox, line)
+
+	h.reconcile()
+	h.reconcile() // a second pass must not move it either
+
+	if _, err := os.Stat(filepath.Join(h.tasksDir, "14.md")); !os.IsNotExist(err) {
+		t.Fatalf("14.md must not be created (stat err=%v): %q", err, readFile(t, filepath.Join(h.tasksDir, "14.md")))
+	}
+	if got := readFile(t, inbox); !strings.Contains(got, strings.TrimSuffix(line, "\n")) {
+		t.Fatalf("inbox lost the task: %q", got)
 	}
 }

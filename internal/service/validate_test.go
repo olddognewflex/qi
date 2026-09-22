@@ -22,6 +22,9 @@ func TestValidateAddInput(t *testing.T) {
 		{name: "del char in text", input: AddTaskInput{Text: "a\x7fb"}, wantErr: true},
 		{name: "bad project charset", input: AddTaskInput{Text: "x"}, project: "bad tag!", wantErr: true},
 		{name: "project traversal", input: AddTaskInput{Text: "x"}, project: "../escape", wantErr: true},
+		{name: "all-digit project", input: AddTaskInput{Text: "x"}, project: "14", wantErr: true},
+		{name: "digit-leading project ok", input: AddTaskInput{Text: "x"}, project: "14a"},
+		{name: "alnum project ok", input: AddTaskInput{Text: "x"}, project: "q3"},
 		{name: "unknown client", input: AddTaskInput{Text: "x"}, client: "ghost", wantErr: true},
 		{name: "mutual exclusion", input: AddTaskInput{Text: "x"}, project: "home", client: "acme", wantErr: true},
 	}
