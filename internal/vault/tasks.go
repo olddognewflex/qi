@@ -23,7 +23,10 @@ var (
 	// lookahead, so a negated character class bounds the rule: it runs until the
 	// next field/tag marker (#, [, 📅, ⏳, ✅, 🔁), a block-ref caret, or end of line.
 	recurrenceRe = regexp.MustCompile(`🔁\s*([^#📅⏳✅🔁\^\[\n]+)`)
-	tagRe        = regexp.MustCompile(`#([A-Za-z0-9_\-\/]+)`)
+	// tagRe matches an Obsidian #tag. The body pattern is shared with
+	// domain.IsTag and rejects all-digit bodies ("#14" is not a tag), which
+	// then stay verbatim in Text and never become the task's Project.
+	tagRe = regexp.MustCompile(`#(` + domain.TagBodyPattern + `)`)
 	// parentRe captures the Dataview inline field linking a child task to its
 	// parent's qi block-ref id, e.g. "[parent:: qi-1a2b3c4d]". Extracted before
 	// tag parsing so it never leaks into Text/Tags. See docs/subtasks-design.md.

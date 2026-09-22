@@ -725,3 +725,50 @@ func TestDoneDate_RoundTripStable(t *testing.T) {
 		t.Fatalf("not stable:\n  %q\n  %q", out1, out2)
 	}
 }
+
+// TestParseTaskLine_NumericHashIsNotATag: Obsidian refuses an all-digit "#14"
+// as a tag, so qi must too — it stays verbatim in Text, never becomes the
+// Project (which would route the task into 10-tasks/14.md), and the line
+// round-trips byte-for-byte.
+func TestParseTaskLine_NumericHashIsNotATag(t *testing.T) {
+	cases := []struct {
+		name        string
+		line        string
+		wantText    string
+		wantProject string
+		wantTags    []string
+	}{
+		{"numeric only", "- [ ] Reply on PR #14 fix", "Reply on PR #14 fix", "", nil},
+		{"year", "- [ ] Plan #2026 budget", "Plan #2026 budget", "", nil},
+		{"numeric then real tag", "- [ ] fix #14 #work", "fix #14 #work", "work", []string{"work"}},
+		{"alnum tags", "- [ ] ship #q3 #v2 #14a #a-1", "ship #q3 #v2 #14a #a-1", "q3", []string{"q3", "v2", "14a", "a-1"}},
+		{"real tag then numeric", "- [ ] Buy milk #home (#14)", "Buy milk #home (#14)", "home", []string{"home"}},
+		{"with fields", "- [ ] PR #14 review #work 📅 2026-04-22 ^qi-0a1b2c3d", "PR #14 review #work", "work", []string{"work"}},
+		{"the reported capture", "- [ ] Email: Re: [auctionedge/spark-ui] add \"last 4 days\" note to PSI+ card (PR #14) — Jonathan Thomas [reply_needed]",
+			"Email: Re: [auctionedge/spark-ui] add \"last 4 days\" note to PSI+ card (PR #14) — Jonathan Thomas [reply_needed]", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task, ok, err := ParseTaskLine(tc.line)
+			if err != nil || !ok {
+				t.Fatalf("parse: ok=%v err=%v", ok, err)
+			}
+			if task.Text != tc.wantText {
+				t.Errorf("Text = %q, want %q", task.Text, tc.wantText)
+			}
+			if task.Project != tc.wantProject {
+				t.Errorf("Project = %q, want %q", task.Project, tc.wantProject)
+			}
+			if fmt.Sprint(task.Tags) != fmt.Sprint(append([]string{}, tc.wantTags...)) {
+				t.Errorf("Tags = %v, want %v", task.Tags, tc.wantTags)
+			}
+			out, err := FormatTaskLine(task)
+			if err != nil {
+				t.Fatalf("format: %v", err)
+			}
+			if out != tc.line {
+				t.Errorf("round-trip changed line:\n got %q\nwant %q", out, tc.line)
+			}
+		})
+	}
+}

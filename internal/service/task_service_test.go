@@ -523,3 +523,69 @@ func TestSubtasksOf(t *testing.T) {
 		t.Errorf("unknown parent id: want 0, got %d", len(got))
 	}
 }
+
+// TestCreateTask_NumericHashTag: an all-digit "#14" in task text is not an
+// Obsidian tag. It must not become the task's project, so the task stays in
+// the default task file (and a later ParseTaskLine / sync pass cannot route it
+// to 10-tasks/14.md). A real tag in the same text still wins.
+func TestCreateTask_NumericHashTag(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       AddTaskInput
+		wantFile    string // relative to tasksDir
+		wantText    string
+		wantProject string
+	}{
+		{"numeric in text", AddTaskInput{Text: "PR #14 fix"}, "inbox.md", "PR #14 fix", ""},
+		{"real tag unchanged", AddTaskInput{Text: "Buy milk #home"}, "inbox.md", "Buy milk #home", "home"},
+		{"numeric then real tag", AddTaskInput{Text: "fix #14 #work"}, "inbox.md", "fix #14 #work", "work"},
+		{"explicit project with numeric text", AddTaskInput{Text: "PR #14 fix", Project: "work"}, "work.md", "PR #14 fix #work", "work"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tasksDir := filepath.Join(t.TempDir(), "10-tasks")
+			svc := NewTaskService(filepath.Join(tasksDir, "inbox.md"))
+
+			created, err := svc.CreateTask(tc.input)
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if want := filepath.Join(tasksDir, tc.wantFile); created.FilePath != want {
+				t.Fatalf("FilePath = %q, want %q", created.FilePath, want)
+			}
+			if _, err := os.Stat(filepath.Join(tasksDir, "14.md")); !os.IsNotExist(err) {
+				t.Fatalf("14.md must not exist (stat err=%v)", err)
+			}
+			tasks, err := vault.ReadTasks(created.FilePath)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if len(tasks) != 1 {
+				t.Fatalf("want 1 task, got %d", len(tasks))
+			}
+			if tasks[0].Text != tc.wantText {
+				t.Errorf("Text = %q, want %q", tasks[0].Text, tc.wantText)
+			}
+			if tasks[0].Project != tc.wantProject {
+				t.Errorf("Project = %q, want %q", tasks[0].Project, tc.wantProject)
+			}
+		})
+	}
+}
+
+// TestCreateTask_RejectsNumericProject: an explicit all-digit project would be
+// written as "#14", which re-parses with no project — it cannot round-trip, so
+// CreateTask refuses it rather than minting 10-tasks/14.md.
+func TestCreateTask_RejectsNumericProject(t *testing.T) {
+	tasksDir := filepath.Join(t.TempDir(), "10-tasks")
+	svc := NewTaskService(filepath.Join(tasksDir, "inbox.md"))
+	if _, err := svc.CreateTask(AddTaskInput{Text: "x", Project: "14"}); err == nil {
+		t.Fatal("expected error for all-digit project")
+	}
+	if _, err := os.Stat(filepath.Join(tasksDir, "14.md")); !os.IsNotExist(err) {
+		t.Fatalf("14.md must not exist (stat err=%v)", err)
+	}
+	if _, err := svc.CreateTask(AddTaskInput{Text: "x", Project: "q3"}); err != nil {
+		t.Fatalf("q3 project should be allowed: %v", err)
+	}
+}

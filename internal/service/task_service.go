@@ -90,6 +90,12 @@ func (s TaskService) AddTask(input AddTaskInput) error {
 func (s TaskService) CreateTask(input AddTaskInput) (domain.Task, error) {
 	text := strings.TrimSpace(input.Text)
 	project := strings.TrimSpace(input.Project)
+	if domain.IsNumericTag(project) {
+		// "#14" is not an Obsidian tag, so an all-digit project would be
+		// written as "#14", re-parse with NO project, and not round-trip
+		// (it would also mint a stray 10-tasks/14.md). Refuse it explicitly.
+		return domain.Task{}, fmt.Errorf("invalid project %q: an all-digit tag is not an Obsidian tag", project)
+	}
 
 	if input.ID != "" {
 		existing, found, err := s.findByID(input.ID)

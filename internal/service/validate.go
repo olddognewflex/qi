@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"qi/internal/domain"
 )
 
 // projectTagRe is the charset a free-form project tag may use. It matches the
@@ -47,6 +49,11 @@ func ValidateAddInput(input AddTaskInput, project, client string, isClient func(
 		// project becomes a #tag and a filename; constrain it to the tag charset
 		// so it can neither break the line nor escape the tasks dir.
 		return fmt.Errorf("invalid project %q (allowed: letters, digits, _-/)", project)
+	}
+	if project != "" && domain.IsNumericTag(project) {
+		// An all-digit "#14" is not an Obsidian tag: written out, it would
+		// re-parse with no project and the routing would not round-trip.
+		return fmt.Errorf("invalid project %q (must contain a non-digit)", project)
 	}
 
 	if client != "" {

@@ -34,8 +34,8 @@ func TestParseLine(t *testing.T) {
 			startH: 9, startM: 30, endH: 10, endM: 30,
 		},
 		{
-			line:    "- 14:00 Coffee with Jane #qi",
-			wantOK:  true, title: "Coffee with Jane",
+			line:   "- 14:00 Coffee with Jane #qi",
+			wantOK: true, title: "Coffee with Jane",
 			project: "qi",
 			startH:  14, startM: 0, endH: 15, endM: 0,
 		},
@@ -156,6 +156,9 @@ func TestExtractProject(t *testing.T) {
 		{"Team standup", "Team standup", ""},
 		{"Coffee with Jane #qi", "Coffee with Jane", "qi"},
 		{"#qi", "#qi", ""},
+		{"Review PR #14", "Review PR #14", ""},
+		{"Q3 planning #q3", "Q3 planning", "q3"},
+		{"Ship #2026", "Ship #2026", ""},
 	}
 
 	for _, tt := range tests {
