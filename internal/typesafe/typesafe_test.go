@@ -1,0 +1,223 @@
+package typesafe
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// newTestClient points a Client at srv with a negligible backoff.
+func newTestClient(srv *httptest.Server) *Client {
+	c := NewClient(srv.URL, "sk-test", "", srv.Client())
+	c.backoff = time.Millisecond
+	return c
+}
+
+const choiceResponse = `{
+  "model": "jev-1.13.0",
+  "answers": {"action": {"type": "choice", "choice": "task",
+    "probabilities": {"task": 0.9, "note": 0.08, "archive": 0.02}, "confidence": 0.81}},
+  "usage": {"input_tokens": 318, "output_tokens": 34}
+}`
+
+func TestNewClientDefaults(t *testing.T) {
+	c := NewClient("", "k", "", nil)
+	if c.baseURL != DefaultURL || c.model != DefaultModel || c.http != http.DefaultClient {
+		t.Errorf("defaults not applied: %+v", c)
+	}
+}
+
+func TestSystemOneRequestShapeAndDecode(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/systemone" {
+			t.Errorf("request = %s %s, want POST /v1/systemone", r.Method, r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer sk-test" {
+			t.Errorf("Authorization = %q", auth)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q", ct)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		io.WriteString(w, choiceResponse)
+	}))
+	defer srv.Close()
+
+	resp, err := newTestClient(srv).SystemOne(context.Background(), Request{
+		State:     "hello",
+		Questions: map[string]Question{"q": {Type: TypeNoul, Instructions: "Is it?"}},
+	})
+	if err != nil {
+		t.Fatalf("SystemOne: %v", err)
+	}
+	if got["model"] != DefaultModel || got["state"] != "hello" {
+		t.Errorf("body = %v", got)
+	}
+	q := got["questions"].(map[string]any)["q"].(map[string]any)
+	if _, has := q["criteria"]; has {
+		t.Errorf("criteria should be omitted when nil: %v", q)
+	}
+	if q["type"] != "noul" || q["instructions"] != "Is it?" {
+		t.Errorf("question = %v", q)
+	}
+
+	ans := resp.Answers["action"]
+	if resp.Model != "jev-1.13.0" || ans.Choice != "task" || ans.Confidence != 0.81 || ans.Probabilities["note"] != 0.08 {
+		t.Errorf("decoded = %+v", resp)
+	}
+	if resp.Usage.InputTokens != 318 || resp.Usage.OutputTokens != 34 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+}
+
+func TestSystemOneStatusHandling(t *testing.T) {
+	cases := []struct {
+		name      string
+		statuses  []int // status per attempt; 200 serves choiceResponse
+		wantCalls int32
+		wantErr   int // 0 = success, else expected APIError.Status
+	}{
+		{"401 not retried", []int{401}, 1, 401},
+		{"422 not retried", []int{422}, 1, 422},
+		{"429 then 200 retries", []int{429, 200}, 2, 0},
+		{"529 twice then 200", []int{529, 529, 200}, 3, 0},
+		{"429 exhausts attempts", []int{429, 429, 429, 200}, 3, 429},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := calls.Add(1)
+				status := tc.statuses[n-1]
+				if status != 200 {
+					w.WriteHeader(status)
+					io.WriteString(w, `{"error":"nope"}`)
+					return
+				}
+				io.WriteString(w, choiceResponse)
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(srv).SystemOne(context.Background(), Request{State: "x"})
+			if got := calls.Load(); got != tc.wantCalls {
+				t.Errorf("calls = %d, want %d", got, tc.wantCalls)
+			}
+			if tc.wantErr == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != tc.wantErr {
+				t.Fatalf("err = %v, want APIError %d", err, tc.wantErr)
+			}
+			if !strings.Contains(apiErr.Body, "nope") {
+				t.Errorf("APIError.Body = %q", apiErr.Body)
+			}
+		})
+	}
+}
+
+func TestSystemOneTruncatesErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(422)
+		io.WriteString(w, strings.Repeat("x", 3*errBodyLimit))
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(srv).SystemOne(context.Background(), Request{State: "x"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || len(apiErr.Body) != errBodyLimit {
+		t.Fatalf("err = %v (body len %d), want truncated to %d", err, len(apiErr.Body), errBodyLimit)
+	}
+}
+
+func TestSystemOneHonoursContextDuringBackoff(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	c.backoff = time.Hour // a cancel must cut the wait short
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.SystemOne(ctx, Request{State: "x"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if time.Since(start) > 5*time.Second || calls.Load() != 1 {
+		t.Errorf("backoff not interrupted: calls=%d elapsed=%s", calls.Load(), time.Since(start))
+	}
+}
+
+func TestInboxClassifierRequestAndMapping(t *testing.T) {
+	var got struct {
+		State     map[string]any      `json:"state"`
+		Model     string              `json:"model"`
+		Questions map[string]Question `json:"questions"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		io.WriteString(w, choiceResponse)
+	}))
+	defer srv.Close()
+
+	cls, err := InboxClassifier{Client: newTestClient(srv)}.ClassifyInbox(context.Background(), []string{"buy milk", "and eggs"})
+	if err != nil {
+		t.Fatalf("ClassifyInbox: %v", err)
+	}
+	if cls.Action != InboxTask || cls.Confidence != 0.81 || cls.Probabilities["task"] != 0.9 {
+		t.Errorf("classification = %+v", cls)
+	}
+
+	capture, _ := got.State["capture"].(map[string]any)
+	if capture["text"] != "buy milk\nand eggs" || got.State["context"] != inboxContext {
+		t.Errorf("state = %v", got.State)
+	}
+	q, ok := got.Questions["action"]
+	if !ok || q.Type != TypeChoice {
+		t.Fatalf("questions = %+v", got.Questions)
+	}
+	instr, _ := q.Instructions.(map[string]any)
+	if !strings.Contains(instr["question"].(string), "`capture.text`") || instr["focus"] == nil {
+		t.Errorf("instructions = %v", q.Instructions)
+	}
+	crit, _ := q.Criteria.(map[string]any)
+	for _, opt := range []string{InboxTask, InboxNote, InboxArchive} {
+		if s, _ := crit[opt].(string); s == "" {
+			t.Errorf("criteria missing %q: %v", opt, crit)
+		}
+	}
+	if len(crit) != 3 {
+		t.Errorf("criteria has %d options, want 3", len(crit))
+	}
+}
+
+func TestInboxClassifierMissingAnswer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"model":"jev","answers":{}}`)
+	}))
+	defer srv.Close()
+
+	if _, err := (InboxClassifier{Client: newTestClient(srv)}).ClassifyInbox(context.Background(), []string{"x"}); err == nil {
+		t.Fatal("want error for missing answer")
+	}
+}
