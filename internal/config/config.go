@@ -149,14 +149,21 @@ const (
 // keeps the heuristic proposal.
 const DefaultInboxMinConfidence = 0.5
 
+// DefaultInboxClassifyLimit caps how many non-rule-decided captures one
+// `qi inbox` run sends to TypeSafe; the rest keep their heuristic proposals.
+const DefaultInboxClassifyLimit = 100
+
 // InboxConfig configures `qi inbox` triage proposals. Classifier is
 // "heuristic" (default: deterministic, offline) or "typesafe" (opt-in:
 // refines non-obvious proposals via the TypeSafe API, sending capture text to
 // it). MinConfidence in [0,1] is the TypeSafe confidence required to override
-// the heuristic (default DefaultInboxMinConfidence).
+// the heuristic (default DefaultInboxMinConfidence). ClassifyLimit caps how
+// many captures are sent per run (default DefaultInboxClassifyLimit; 0 = no
+// limit).
 type InboxConfig struct {
 	Classifier    string  `json:"classifier"`
 	MinConfidence float64 `json:"min_confidence"`
+	ClassifyLimit int     `json:"classify_limit"`
 }
 
 // ValidInboxClassifier reports whether name is a known inbox classifier.
@@ -279,11 +286,12 @@ type typeSafeTOML struct {
 	Model     string `toml:"model"`
 }
 
-// inboxTOML keeps MinConfidence a pointer so an explicit 0 ("always trust
-// TypeSafe") is distinguishable from unset.
+// inboxTOML keeps MinConfidence and ClassifyLimit pointers so an explicit 0
+// ("always trust TypeSafe" / "no limit") is distinguishable from unset.
 type inboxTOML struct {
 	Classifier    string   `toml:"classifier"`
 	MinConfidence *float64 `toml:"min_confidence"`
+	ClassifyLimit *int     `toml:"classify_limit"`
 }
 
 type tomlFile struct {
@@ -650,10 +658,10 @@ func LoadFrom(path string) (Config, error) {
 }
 
 // inboxFromTOML applies [inbox] defaults and rejects an unknown classifier or
-// an out-of-range min_confidence — a typo here would otherwise silently fall
-// back to the heuristic.
+// an out-of-range min_confidence or classify_limit — a typo here would
+// otherwise silently fall back to the heuristic.
 func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
-	out := InboxConfig{Classifier: raw.Classifier, MinConfidence: DefaultInboxMinConfidence}
+	out := InboxConfig{Classifier: raw.Classifier, MinConfidence: DefaultInboxMinConfidence, ClassifyLimit: DefaultInboxClassifyLimit}
 	if out.Classifier == "" {
 		out.Classifier = InboxClassifierHeuristic
 	}
@@ -665,6 +673,12 @@ func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
 			return InboxConfig{}, fmt.Errorf("inbox: min_confidence %v out of range [0,1]", *raw.MinConfidence)
 		}
 		out.MinConfidence = *raw.MinConfidence
+	}
+	if raw.ClassifyLimit != nil {
+		if *raw.ClassifyLimit < 0 {
+			return InboxConfig{}, fmt.Errorf("inbox: classify_limit %d must be >= 0 (0 = no limit)", *raw.ClassifyLimit)
+		}
+		out.ClassifyLimit = *raw.ClassifyLimit
 	}
 	return out, nil
 }

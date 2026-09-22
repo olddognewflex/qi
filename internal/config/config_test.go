@@ -1344,7 +1344,7 @@ func TestLoadFrom_TypeSafeAndInboxDefaults(t *testing.T) {
 	if want := (config.TypeSafeConfig{APIKeyEnv: "TYPESAFE_API_KEY"}); cfg.TypeSafe != want {
 		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
 	}
-	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5}); cfg.Inbox != want {
+	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5, ClassifyLimit: 100}); cfg.Inbox != want {
 		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
 	}
 }
@@ -1362,6 +1362,7 @@ model = "jev-1.13.0"
 [inbox]
 classifier = "typesafe"
 min_confidence = 0
+classify_limit = 0
 `)
 	cfg, err := config.LoadFrom(path)
 	if err != nil {
@@ -1371,7 +1372,7 @@ min_confidence = 0
 		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
 	}
 	// An explicit 0 is honoured, not replaced by the default.
-	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0}); cfg.Inbox != want {
+	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0, ClassifyLimit: 0}); cfg.Inbox != want {
 		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
 	}
 }
@@ -1381,6 +1382,7 @@ func TestLoadFrom_InboxInvalid(t *testing.T) {
 		{"unknown classifier", `classifier = "llm"`, `unknown classifier "llm"`},
 		{"confidence above 1", `min_confidence = 1.5`, "out of range"},
 		{"negative confidence", `min_confidence = -0.1`, "out of range"},
+		{"negative classify_limit", `classify_limit = -1`, "classify_limit -1 must be >= 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1392,5 +1394,18 @@ func TestLoadFrom_InboxInvalid(t *testing.T) {
 				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadFrom_InboxClassifyLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeTOML(t, path, `vault_path = "`+dir+`"`+"\n\n[inbox]\nclassify_limit = 250\n")
+	cfg, err := config.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.Inbox.ClassifyLimit != 250 {
+		t.Errorf("ClassifyLimit = %d, want 250", cfg.Inbox.ClassifyLimit)
 	}
 }
