@@ -104,7 +104,8 @@ type AgentsConfig struct {
 // hint qi builds from the live workspace labels and agent kinds — keep it
 // a list of names, never a sentence, which Whisper would copy onto
 // near-matching audio). TTS is "say" (macOS `say`, default on darwin), "echo"
-// (print only), or "none". RecordSeconds/RecordDevice bound the ffmpeg
+// (print only), or "none"; TTSVoice names the `say -v` voice (e.g. "Rishi";
+// empty = the system default voice — list installed ones with `say -v '?'`). RecordSeconds/RecordDevice bound the ffmpeg
 // capture (avfoundation audio device index). WaitTimeoutSeconds caps how
 // long qi waits for an agent to settle after an instruction (default 300).
 // STTAPIKeyEnv is the NAME of an environment variable, not a secret.
@@ -115,6 +116,7 @@ type VoiceConfig struct {
 	STTAPIKeyEnv       string `json:"stt_api_key_env,omitempty"`
 	STTPrompt          string `json:"stt_prompt,omitempty"`
 	TTS                string `json:"tts,omitempty"`
+	TTSVoice           string `json:"tts_voice,omitempty"`
 	RecordSeconds      int    `json:"record_seconds,omitempty"`
 	RecordDevice       string `json:"record_device,omitempty"`
 	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty"`
@@ -274,6 +276,7 @@ type voiceTOML struct {
 	STTAPIKeyEnv       string            `toml:"stt_api_key_env"`
 	STTPrompt          string            `toml:"stt_prompt"`
 	TTS                string            `toml:"tts"`
+	TTSVoice           string            `toml:"tts_voice"`
 	RecordSeconds      int               `toml:"record_seconds"`
 	RecordDevice       string            `toml:"record_device"`
 	WaitTimeoutSeconds int               `toml:"wait_timeout_seconds"`
@@ -641,6 +644,7 @@ func LoadFrom(path string) (Config, error) {
 			STTAPIKeyEnv:       raw.Voice.STTAPIKeyEnv,
 			STTPrompt:          raw.Voice.STTPrompt,
 			TTS:                raw.Voice.TTS,
+			TTSVoice:           raw.Voice.TTSVoice,
 			RecordSeconds:      raw.Voice.RecordSeconds,
 			RecordDevice:       raw.Voice.RecordDevice,
 			WaitTimeoutSeconds: raw.Voice.WaitTimeoutSeconds,

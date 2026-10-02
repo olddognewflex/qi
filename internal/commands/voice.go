@@ -140,7 +140,8 @@ func buildTranscriber(cfg config.Config, forceText bool, stdin io.Reader, out io
 
 // buildSpeaker picks text-to-speech: always echo the reply to out; on
 // darwin additionally speak via `say` unless [voice] tts = "echo"/"none" or
-// --quiet. Off darwin `say` is unavailable, so echo only.
+// --quiet. Off darwin `say` is unavailable, so echo only. [voice] tts_voice
+// selects the `say -v` voice.
 func buildSpeaker(cfg config.Config, out io.Writer, quiet bool) (voice.Speaker, error) {
 	mode := strings.ToLower(cfg.Voice.TTS)
 	if mode == "" {
@@ -159,7 +160,9 @@ func buildSpeaker(cfg config.Config, out io.Writer, quiet bool) (voice.Speaker, 
 		if quiet || runtime.GOOS != "darwin" {
 			return voice.NewEchoSpeaker(out), nil
 		}
-		return voice.NewSaySpeaker(out, runCommand), nil
+		s := voice.NewSaySpeaker(out, runCommand)
+		s.Voice = cfg.Voice.TTSVoice
+		return s, nil
 	}
 	return nil, fmt.Errorf("[voice] tts = %q: want \"say\", \"echo\", or \"none\"", cfg.Voice.TTS)
 }

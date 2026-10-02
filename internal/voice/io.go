@@ -117,10 +117,11 @@ func (s *EchoSpeaker) Speak(ctx context.Context, text string) error {
 // knows runtime.GOOS and the user's flags); this package only knows how to
 // drive it.
 type SaySpeaker struct {
-	Bin  string // default "say"
-	Args []string
-	run  Runner
-	w    io.Writer
+	Bin   string // default "say"
+	Voice string // passed as `-v <Voice>` when set; empty = system default
+	Args  []string
+	run   Runner
+	w     io.Writer
 }
 
 // NewSaySpeaker builds a speaker over run. When w is non-nil the text is also
@@ -146,7 +147,11 @@ func (s *SaySpeaker) Speak(ctx context.Context, text string) error {
 	if bin == "" {
 		bin = "say"
 	}
-	args := append(append([]string(nil), s.Args...), text)
+	var args []string
+	if s.Voice != "" {
+		args = append(args, "-v", s.Voice)
+	}
+	args = append(append(args, s.Args...), text)
 	return s.run(ctx, bin, args...)
 }
 

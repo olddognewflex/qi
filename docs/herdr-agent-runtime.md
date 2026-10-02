@@ -109,7 +109,7 @@ even when they share a workspace. Herdr may also assign a unique live
    `[voice] stt = "http"`: ffmpeg captures a fixed-length clip from the
    macOS microphone and an OpenAI-compatible `/v1/audio/transcriptions`
    endpoint (local Whisper server or hosted) transcribes it. TTS is macOS
-   `say`. Neither is exercised by CI; the loop above them is.
+   `say`, with `[voice] tts_voice` choosing the voice (`say -v`). Neither is exercised by CI; the loop above them is.
 
 ## Not yet
 
