@@ -101,9 +101,14 @@ func (s InboxService) List() ([]InboxItem, error) {
 	return items, nil
 }
 
-// Apply executes a single action on one capture: create a task or note (then
+// Apply executes a single action on one capture: create a task or note (and
 // archive the capture), archive it, or delete it outright. The capture path is
 // validated to sit directly inside InboxDir, blocking traversal.
+//
+// For task/note the capture is archived FIRST and the task or note created
+// second; if creation fails the capture is moved back. So a created task or
+// note never leaves its capture behind in the inbox to be proposed — and
+// created — again on the next run.
 func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 	src, err := validateInboxPath(s.InboxDir, in.Path)
 	if err != nil {
@@ -112,6 +117,7 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 	body := captureBody(src)
 
 	out := InboxApplyOutput{Action: in.Action, Source: src}
+	var create func() (string, error)
 	switch in.Action {
 	case InboxActionArchive:
 		// nothing to create.
@@ -125,21 +131,25 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 		if strings.TrimSpace(text) == "" {
 			return InboxApplyOutput{}, fmt.Errorf("inbox: capture has no text for a task")
 		}
-		created, err := s.Tasks.CreateTask(AddTaskInput{Text: text, Project: in.Project})
-		if err != nil {
-			return InboxApplyOutput{}, fmt.Errorf("inbox: add task: %w", err)
+		create = func() (string, error) {
+			created, err := s.Tasks.CreateTask(AddTaskInput{Text: text, Project: in.Project})
+			if err != nil {
+				return "", fmt.Errorf("inbox: add task: %w", err)
+			}
+			return created.FilePath, nil
 		}
-		out.Created = created.FilePath
 	case InboxActionNote:
 		title := firstNonEmptyValue(in.Title, summarizeBody(body))
 		if strings.TrimSpace(title) == "" || title == "(empty)" {
 			title = "Inbox note"
 		}
-		note, err := s.Notes.AddNote(title, strings.Join(body, "\n"))
-		if err != nil {
-			return InboxApplyOutput{}, fmt.Errorf("inbox: add note: %w", err)
+		create = func() (string, error) {
+			note, err := s.Notes.AddNote(title, strings.Join(body, "\n"))
+			if err != nil {
+				return "", fmt.Errorf("inbox: add note: %w", err)
+			}
+			return note.Path, nil
 		}
-		out.Created = note.Path
 	default:
 		return InboxApplyOutput{}, fmt.Errorf("inbox: unknown action %q (want task, note, archive, or delete)", in.Action)
 	}
@@ -148,43 +158,49 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 	if err != nil {
 		return InboxApplyOutput{}, fmt.Errorf("inbox: archive: %w", err)
 	}
+	if create != nil {
+		created, err := create()
+		if err != nil {
+			if rerr := os.Rename(dest, src); rerr != nil {
+				return InboxApplyOutput{}, fmt.Errorf("%w (and restoring the capture from %s failed: %v)", err, dest, rerr)
+			}
+			return InboxApplyOutput{}, err
+		}
+		out.Created = created
+	}
 	out.Archived = dest
 	return out, nil
 }
 
-// ApplyGroup applies one decision to a collapsed item: the action itself to
-// it.Path (creating at most one task or note), then the same disposition to
-// every repeat — archived for task/note/archive, deleted for delete.
-//
-// If the first path fails, nothing was written and its error is returned.
-// Once it succeeds, every repeat is still attempted — stopping early would
-// leave repeats behind that re-propose the task already created on the next
-// run. A repeat that has already vanished is skipped (nothing left to do);
-// other repeat errors are joined. The outputs of everything applied are
-// returned alongside any error.
+// ApplyGroup applies one decision to a collapsed item. The repeats are
+// disposed of FIRST — archived for task/note/archive, deleted for delete —
+// and the action itself (the only step that creates anything) is applied to
+// it.Path last. A repeat that has already vanished is skipped; any other
+// repeat error stops the group before the task or note is created, so a
+// failure can leave captures behind but never a created item whose captures
+// will propose it again. Outputs for everything applied are returned
+// alongside any error, the representative's first when it was applied.
 func (s InboxService) ApplyGroup(it InboxItem, action string) ([]InboxApplyOutput, error) {
-	first, err := s.Apply(InboxApplyInput{Path: it.Path, Action: action})
-	if err != nil {
-		return nil, err
-	}
-	outs := []InboxApplyOutput{first}
 	rest := InboxActionArchive
 	if action == InboxActionDelete {
 		rest = InboxActionDelete
 	}
-	var errs []error
+	var disposed []InboxApplyOutput
 	for _, p := range it.Repeats {
 		o, err := s.Apply(InboxApplyInput{Path: p, Action: rest})
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 			continue
 		case err != nil:
-			errs = append(errs, fmt.Errorf("repeat %s: %w", filepath.Base(p), err))
-			continue
+			return disposed, fmt.Errorf("repeat %s: %w", filepath.Base(p), err)
 		}
-		outs = append(outs, o)
+		disposed = append(disposed, o)
 	}
-	return outs, errors.Join(errs...)
+	first, err := s.Apply(InboxApplyInput{Path: it.Path, Action: action})
+	if err != nil {
+		return disposed, err
+	}
+	return append([]InboxApplyOutput{first}, disposed...), nil
 }
 
 // proposeInboxAction applies deterministic heuristics to a capture's body:

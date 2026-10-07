@@ -239,14 +239,13 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 					action == service.InboxActionDelete {
 					res, err := inbox.ApplyGroup(items[i], action)
 					applied += len(res)
-					if len(res) > 0 {
-						fmt.Fprintf(out, "%-7s %s%s\n", action, repeatPrefix(items[i]), items[i].Summary)
-					}
 					if err != nil {
-						// Say what was already written before stopping.
-						fmt.Fprintf(out, "\n%d applied before the error.\n", applied)
+						// No task or note was created for this row (creation is
+						// ApplyGroup's last step); say what was already moved.
+						fmt.Fprintf(out, "\n%d capture(s) applied before the error; %s left for the next run.\n", applied, items[i].Summary)
 						return fmt.Errorf("apply %s: %w", items[i].Summary, err)
 					}
+					fmt.Fprintf(out, "%-7s %s%s\n", action, repeatPrefix(items[i]), items[i].Summary)
 					continue
 				}
 				skipped += 1 + len(items[i].Repeats)

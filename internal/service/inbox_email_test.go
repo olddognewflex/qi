@@ -147,37 +147,61 @@ func TestApplyGroupSkipsVanishedRepeat(t *testing.T) {
 	}
 }
 
-func TestApplyGroupContinuesPastRepeatError(t *testing.T) {
+func TestApplyGroupRepeatErrorCreatesNothing(t *testing.T) {
 	inbox := filepath.Join(t.TempDir(), "00-inbox")
 	svc := newInboxService(t, inbox)
-	writeInboxCapture(t, inbox, "a.md", "spam")
-	writeInboxCapture(t, inbox, "b.md", "spam")
-	c := writeInboxCapture(t, inbox, "c.md", "spam")
+	a := writeInboxCapture(t, inbox, "a.md", "call the plumber")
+	writeInboxCapture(t, inbox, "b.md", "call the plumber")
 	items, _ := svc.List()
 	g := CollapseRepeats(items)[0]
-	g.Repeats = append([]string{filepath.Join(inbox, "sub", "x.md")}, g.Repeats...) // outside the inbox: rejected
-	outs, err := svc.ApplyGroup(g, InboxActionArchive)
-	if err == nil || len(outs) != 3 {
-		t.Fatalf("outs=%d err=%v, want first + 2 repeats applied and a joined error", len(outs), err)
+	g.Repeats = append(g.Repeats, filepath.Join(inbox, "sub", "x.md")) // outside the inbox: rejected
+	_, err := svc.ApplyGroup(g, InboxActionTask)
+	if err == nil {
+		t.Fatal("want an error for the rejected repeat")
 	}
-	if _, err := os.Stat(c); !os.IsNotExist(err) {
-		t.Errorf("repeats after the failing one were not applied")
+	if _, err := os.Stat(svc.Tasks.TaskFilePath); !os.IsNotExist(err) {
+		t.Errorf("no task may be created when a repeat could not be disposed of")
+	}
+	if _, err := os.Stat(a); err != nil {
+		t.Errorf("representative must stay in the inbox to be re-triaged: %v", err)
 	}
 }
 
-func TestApplyGroupFirstFailureWritesNothing(t *testing.T) {
+func TestApplyCreateFailureRestoresCapture(t *testing.T) {
 	inbox := filepath.Join(t.TempDir(), "00-inbox")
 	svc := newInboxService(t, inbox)
-	a := writeInboxCapture(t, inbox, "a.md", "spam")
-	b := writeInboxCapture(t, inbox, "b.md", "spam")
-	items, _ := svc.List()
-	g := CollapseRepeats(items)[0]
-	os.Remove(a)
-	outs, err := svc.ApplyGroup(g, InboxActionArchive)
-	if err == nil || outs != nil {
-		t.Fatalf("outs=%v err=%v, want nil and an error", outs, err)
+	blocker := filepath.Join(filepath.Dir(inbox), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(b); err != nil {
-		t.Errorf("repeat must be left alone when the first path fails: %v", err)
+	svc.Tasks = TaskService{TaskFilePath: filepath.Join(blocker, "tasks", "inbox.md")} // parent is a file
+	a := writeInboxCapture(t, inbox, "a.md", "call the plumber")
+
+	if _, err := svc.Apply(InboxApplyInput{Path: a, Action: InboxActionTask}); err == nil {
+		t.Fatal("want the task write to fail")
+	}
+	if _, err := os.Stat(a); err != nil {
+		t.Errorf("capture must be restored to the inbox after a failed create: %v", err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(inbox, "archive")); len(left) != 0 {
+		t.Errorf("archive should be empty after restore: %v", left)
+	}
+}
+
+func TestApplyGroupRepresentativeFailureAfterRepeats(t *testing.T) {
+	inbox := filepath.Join(t.TempDir(), "00-inbox")
+	svc := newInboxService(t, inbox)
+	blocker := filepath.Join(filepath.Dir(inbox), "blocker")
+	os.WriteFile(blocker, nil, 0o644)
+	svc.Tasks = TaskService{TaskFilePath: filepath.Join(blocker, "tasks", "inbox.md")}
+	a := writeInboxCapture(t, inbox, "a.md", "call the plumber")
+	writeInboxCapture(t, inbox, "b.md", "call the plumber")
+	items, _ := svc.List()
+	outs, err := svc.ApplyGroup(CollapseRepeats(items)[0], InboxActionTask)
+	if err == nil || len(outs) != 1 {
+		t.Fatalf("outs=%v err=%v, want the archived repeat and an error", outs, err)
+	}
+	if _, err := os.Stat(a); err != nil {
+		t.Errorf("representative must remain to be re-triaged: %v", err)
 	}
 }
