@@ -1,0 +1,43 @@
+{"id": "syn-00", "captured": "2026-10-06T08:15:00", "text": "call dentist to reschedule cleaning friday", "action": "task", "dest": "none", "date": "2026-10-09", "role": "scheduled", "dup_of": ""}
+{"id": "syn-01", "captured": "2026-10-06T08:15:00", "text": "renew passport by march 3", "action": "task", "dest": "none", "date": "2027-03-03", "role": "due", "dup_of": ""}
+{"id": "syn-02", "captured": "2026-10-06T08:15:00", "text": "pay water bill tomorrow", "action": "task", "dest": "none", "date": "2026-10-07", "role": "due", "dup_of": ""}
+{"id": "syn-03", "captured": "2026-10-06T08:15:00", "text": "TPS: send September hours invoice by the 15th", "action": "task", "dest": "tps", "date": "REVIEW", "role": "", "dup_of": "Send TPS September invoice"}
+{"id": "syn-04", "captured": "2026-10-06T08:15:00", "text": "TPS invoice for sept hours due Oct 15", "action": "task", "dest": "tps", "date": "2026-10-15", "role": "due", "dup_of": "Send TPS September invoice"}
+{"id": "syn-05", "captured": "2026-10-06T08:15:00", "text": "fix flaky preview teardown job in portal CI", "action": "task", "dest": "portal", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-06", "captured": "2026-10-06T08:15:00", "text": "portal: review Sam's listing-filters PR before standup tomorrow", "action": "task", "dest": "portal", "date": "2026-10-07", "role": "due", "dup_of": ""}
+{"id": "syn-07", "captured": "2026-10-06T08:15:00", "text": "graphhub: write ADR for federated schema stitching next tuesday", "action": "task", "dest": "graphhub", "date": "2026-10-13", "role": "scheduled", "dup_of": ""}
+{"id": "syn-08", "captured": "2026-10-06T08:15:00", "text": "quant - backtest the momentum strategy on 2025 data", "action": "task", "dest": "quant", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-09", "captured": "2026-10-06T08:15:00", "text": "mapper needs the column mapping fixed before Friday's demo", "action": "task", "dest": "mapper", "date": "2026-10-09", "role": "due", "dup_of": ""}
+{"id": "syn-10", "captured": "2026-10-06T08:15:00", "text": "email Initech about the Q4 retainer", "action": "task", "dest": "Initech", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-11", "captured": "2026-10-06T08:15:00", "text": "ask Globex IT for a new security key", "action": "task", "dest": "Globex", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-12", "captured": "2026-10-06T08:15:00", "text": "buy milk", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-13", "captured": "2026-10-06T08:15:00", "text": "pick up dry cleaning today", "action": "task", "dest": "none", "date": "2026-10-06", "role": "scheduled", "dup_of": ""}
+{"id": "syn-14", "captured": "2026-10-06T08:15:00", "text": "mom's birthday dinner this sunday - book table", "action": "task", "dest": "none", "date": "2026-10-11", "role": "scheduled", "dup_of": ""}
+{"id": "syn-15", "captured": "2026-10-06T08:15:00", "text": "dentist appt next thursday 2pm", "action": "task", "dest": "none", "date": "2026-10-15", "role": "scheduled", "dup_of": ""}
+{"id": "syn-16", "captured": "2026-10-06T08:15:00", "text": "submit expense report", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-17", "captured": "2026-10-06T08:15:00", "text": "finish the inbox spike sometime this month", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-18", "captured": "2026-10-06T08:15:00", "text": "call the bank about the card fraud alert the day after tomorrow", "action": "task", "dest": "none", "date": "2026-10-08", "role": "scheduled", "dup_of": ""}
+{"id": "syn-19", "captured": "2026-09-28T21:40:00", "text": "tomorrow: dry run of the launch post", "action": "task", "dest": "none", "date": "2026-09-29", "role": "scheduled", "dup_of": ""}
+{"id": "syn-20", "captured": "2026-09-28T21:40:00", "text": "friday - ship TPS contract amendment", "action": "task", "dest": "tps", "date": "2026-10-02", "role": "due", "dup_of": ""}
+{"id": "syn-21", "captured": "2026-10-06T08:15:00", "text": "renew car registration before 2/30", "action": "task", "dest": "none", "date": "REVIEW", "role": "due", "dup_of": ""}
+{"id": "syn-22", "captured": "2026-10-06T08:15:00", "text": "Re-read README from a stranger's perspective and fix confusing bits", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": "Re-read README from a stranger"}
+{"id": "syn-23", "captured": "2026-10-06T08:15:00", "text": "send 5 more outreach DMs", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": "Send 5 more outreach DMs"}
+{"id": "syn-24", "captured": "2026-10-06T08:15:00", "text": "sync work calendars into the local calendar app", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": "Sync work calendars"}
+{"id": "syn-25", "captured": "2026-10-06T08:15:00", "text": "post to the gardening forum about the compost bin build", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": "Post to the gardening forum"}
+{"id": "syn-26", "captured": "2026-10-06T08:15:00", "text": "draft a cold outreach email template", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": "Draft cold outreach template"}
+{"id": "syn-27", "captured": "2026-10-06T08:15:00", "text": "book a call with the beta tester from the forum", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-28", "captured": "2026-10-06T08:15:00", "text": "idea: group email captures by thread before triage", "action": "note", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-29", "captured": "2026-10-06T08:15:00", "text": "Kahneman: System 1 is fast, automatic, and associative; System 2 is slow and deliberate.", "action": "note", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-30", "captured": "2026-10-06T08:15:00", "text": "meeting w/ Pat: Globex wants the events panel split into two tiers; Sam owns the contract re-pin", "action": "note", "dest": "Globex", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-31", "captured": "2026-10-06T08:15:00", "text": "portal deploys go out via preview envs per vertical since sept; staging mirrors the demo env", "action": "note", "dest": "portal", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-32", "captured": "2026-10-06T08:15:00", "text": "wifi password at the cabin is on the fridge, not the router", "action": "note", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-33", "captured": "2026-10-06T08:15:00", "text": "https://go.dev/blog/range-functions - good explanation of iterators", "action": "note", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-34", "captured": "2026-10-06T08:15:00", "text": "quant: mean reversion underperformed on low-vol days in august", "action": "note", "dest": "quant", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-35", "captured": "2026-10-06T08:15:00", "text": "Initech prefers TPS invoices as PDF, net 30", "action": "note", "dest": "tps", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-36", "captured": "2026-10-06T08:15:00", "text": "the 14th is when the HOA meeting happened, they approved the fence", "action": "note", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-37", "captured": "2026-10-06T08:15:00", "text": "asdf", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-38", "captured": "2026-10-06T08:15:00", "text": "test", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-39", "captured": "2026-10-06T08:15:00", "text": "....", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-40", "captured": "2026-10-06T08:15:00", "text": "lol", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-41", "captured": "2026-10-06T08:15:00", "text": "probe 3", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-42", "captured": "2026-10-06T08:15:00", "text": "renew the business license by march 3, 2029", "action": "task", "dest": "none", "date": "2029-03-03", "role": "due", "dup_of": ""}

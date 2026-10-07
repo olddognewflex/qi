@@ -69,6 +69,14 @@ type InboxClassifier struct {
 // inboxRequest builds one System One request over a batch of capture bodies:
 // every capture in state.captures and one Choice question per capture.
 func inboxRequest(bodies [][]string) Request {
+	req, _ := inboxRequestParts(bodies)
+	return req
+}
+
+// inboxRequestParts is inboxRequest that also hands back the typed captures
+// slice in its state, so fan-out can extend each capture without asserting on
+// the State's dynamic type.
+func inboxRequestParts(bodies [][]string) (Request, []map[string]string) {
 	captures := make([]map[string]string, len(bodies))
 	questions := make(map[string]Question, len(bodies))
 	for i, body := range bodies {
@@ -81,7 +89,7 @@ func inboxRequest(bodies [][]string) Request {
 			"captures": captures,
 		},
 		Questions: questions,
-	}
+	}, captures
 }
 
 // ClassifyInbox classifies a batch of capture bodies (each its non-empty
