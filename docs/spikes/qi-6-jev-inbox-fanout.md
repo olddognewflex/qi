@@ -40,7 +40,7 @@ All in `internal/typesafe` (still a stdlib-only leaf; nothing wired into
   shortlisted open task) pair, one request per batch. The shortlist is a
   lexical Jaccard top-5 in code.
 - Live eval harness (`inbox_eval_test.go`, build tag `typesafe_eval`, never in
-  `go test ./...`) + a 42-capture synthetic labelled set in `testdata/`.
+  `go test ./...`) + a 43-capture synthetic labelled set in `testdata/`.
 
 ## Results
 
