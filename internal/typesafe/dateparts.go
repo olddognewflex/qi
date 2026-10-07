@@ -16,7 +16,7 @@ type Part struct {
 // DateParts are the model's answers to the date-part questions for one
 // capture. They are structure, not a date: ResolveDate does the calendar math.
 type DateParts struct {
-	Mode, Role, Month, Day, Anchor, Weekday, Week Part
+	Mode, Role, Month, Day, Year, Anchor, Weekday, Week Part
 }
 
 // Date resolution outcomes.
@@ -38,14 +38,16 @@ type ResolvedDate struct {
 // ResolveDate turns date parts into a calendar date relative to captured (the
 // day the capture was written), following the TypeSafe date-extraction
 // cookbook:
-//   - absolute: month and day must be given and valid; the year is inferred as
-//     captured's, rolling to the next year when the date would be more than 31
-//     days before captured;
+//   - absolute: month and day must be given and valid; a stated year is used
+//     as is, otherwise the year is inferred as captured's, rolling to the next
+//     year when the date would be more than 31 days before captured;
 //   - relative: today/tomorrow/day_after offset from captured; a weekday is the
 //     next one on or after captured ("bare"), the one in captured's Monday-start
 //     week ("current"), or the one in the following week ("next").
 //
-// A zero captured time, a date with no due/scheduled role, an impossible date (February 30), a
+// Only an explicit "none" mode is DateNone; a missing or unknown mode answer is
+// DateReview, as is a year outside the offered range ("other"). A zero
+// captured time, a date with no due/scheduled role, an impossible date (February 30), a
 // missing part needed by the mode, or a date before captured (the questions
 // ask about the user's upcoming action, so a past date is a misreading) is
 // DateReview, never a guess.
@@ -65,7 +67,7 @@ func ResolveDate(p DateParts, captured time.Time) ResolvedDate {
 	var date time.Time
 	switch p.Mode.Value {
 	case "absolute":
-		use(p.Month, p.Day)
+		use(p.Month, p.Day, p.Year)
 		month, ok := monthByName(p.Month.Value)
 		if !ok {
 			return review()
@@ -77,9 +79,17 @@ func ResolveDate(p DateParts, captured time.Time) ResolvedDate {
 		// Pick the year from (month, day) alone, then build the date once, so a
 		// Feb 29 is validated in the year it actually lands in.
 		year := day0.Year()
-		cutoff := day0.AddDate(0, 0, -31)
-		if before(year, month, d, cutoff) {
-			year++
+		switch p.Year.Value {
+		case "none":
+			if before(year, month, d, day0.AddDate(0, 0, -31)) {
+				year++
+			}
+		default:
+			y, err := strconv.Atoi(p.Year.Value)
+			if err != nil { // "other", missing, or unknown
+				return review()
+			}
+			year = y
 		}
 		date = time.Date(year, month, d, 0, 0, 0, 0, day0.Location())
 		if date.Month() != month { // normalised past the month's end
@@ -115,8 +125,10 @@ func ResolveDate(p DateParts, captured time.Time) ResolvedDate {
 		default:
 			return review()
 		}
-	default:
+	case "none":
 		return ResolvedDate{Status: DateNone, Confidence: conf}
+	default: // missing or unknown answer: not evidence of "no date"
+		return review()
 	}
 
 	use(p.Role)

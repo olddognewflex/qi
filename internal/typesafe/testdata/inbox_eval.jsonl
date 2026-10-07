@@ -40,3 +40,4 @@
 {"id": "syn-39", "captured": "2026-10-06T08:15:00", "text": "....", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
 {"id": "syn-40", "captured": "2026-10-06T08:15:00", "text": "lol", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
 {"id": "syn-41", "captured": "2026-10-06T08:15:00", "text": "probe 3", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-42", "captured": "2026-10-06T08:15:00", "text": "renew the business license by march 3, 2029", "action": "task", "dest": "none", "date": "2029-03-03", "role": "due", "dup_of": ""}

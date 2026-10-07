@@ -27,11 +27,17 @@ func TestResolveDate(t *testing.T) {
 		wantConf float64
 	}{
 		{"none", DateParts{Mode: p("none", 0.95)}, DateNone, time.Time{}, 0.95},
-		{"absolute this year", DateParts{Mode: p("absolute", 0.9), Month: p("november", 0.8), Day: p("3", 0.7), Role: due}, DateOK, day(2026, 11, 3), 0.7},
-		{"absolute recent past is review", DateParts{Mode: p("absolute", 0.9), Month: p("september", 0.9), Day: p("20", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
-		{"absolute rolls to next year", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("3", 0.9), Role: due}, DateOK, day(2027, 3, 3), 0.9},
-		{"impossible date", DateParts{Mode: p("absolute", 0.9), Month: p("february", 0.9), Day: p("30", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
-		{"absolute missing day", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("none", 0.6), Role: due}, DateReview, time.Time{}, 0.6},
+		{"absolute this year", DateParts{Mode: p("absolute", 0.9), Month: p("november", 0.8), Day: p("3", 0.7), Year: p("none", 0.9), Role: due}, DateOK, day(2026, 11, 3), 0.7},
+		{"absolute recent past is review", DateParts{Mode: p("absolute", 0.9), Month: p("september", 0.9), Day: p("20", 0.9), Year: p("none", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
+		{"absolute rolls to next year", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("3", 0.9), Year: p("none", 0.9), Role: due}, DateOK, day(2027, 3, 3), 0.9},
+		{"explicit year honoured", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("3", 0.9), Year: p("2029", 0.6), Role: due}, DateOK, day(2029, 3, 3), 0.6},
+		{"explicit past year is review", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("3", 0.9), Year: p("2025", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
+		{"year other is review", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("3", 0.9), Year: p("other", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
+		{"year missing is review", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("3", 0.9), Role: due}, DateReview, time.Time{}, 0},
+		{"missing mode is review", DateParts{}, DateReview, time.Time{}, 0},
+		{"unknown mode is review", DateParts{Mode: p("sometime", 0.8)}, DateReview, time.Time{}, 0.8},
+		{"impossible date", DateParts{Mode: p("absolute", 0.9), Month: p("february", 0.9), Day: p("30", 0.9), Year: p("none", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
+		{"absolute missing day", DateParts{Mode: p("absolute", 0.9), Month: p("march", 0.9), Day: p("none", 0.6), Year: p("none", 0.9), Role: due}, DateReview, time.Time{}, 0.6},
 		{"today", DateParts{Mode: p("relative", 0.9), Anchor: p("today", 0.9), Role: due}, DateOK, day(2026, 10, 6), 0.9},
 		{"tomorrow", DateParts{Mode: p("relative", 0.9), Anchor: p("tomorrow", 0.5), Role: due}, DateOK, day(2026, 10, 7), 0.5},
 		{"day after", DateParts{Mode: p("relative", 0.9), Anchor: p("day_after", 0.9), Role: due}, DateOK, day(2026, 10, 8), 0.9},
@@ -61,7 +67,7 @@ func TestResolveDate(t *testing.T) {
 }
 
 func TestResolveDateLeapDayRollover(t *testing.T) {
-	feb29 := DateParts{Mode: p("absolute", 0.9), Month: p("february", 0.9), Day: p("29", 0.9), Role: p("due", 0.9)}
+	feb29 := DateParts{Mode: p("absolute", 0.9), Month: p("february", 0.9), Day: p("29", 0.9), Year: p("none", 0.9), Role: p("due", 0.9)}
 	tests := []struct {
 		captured time.Time
 		status   string
@@ -112,9 +118,17 @@ func TestProposeInboxRequestAndParse(t *testing.T) {
 		t.Fatalf("ProposeInbox: %v", err)
 	}
 
-	// 2 captures × (action + dest + 7 date parts).
-	if len(got.Questions) != 18 {
-		t.Errorf("questions = %d, want 18", len(got.Questions))
+	// 2 captures × (action + dest + 8 date parts).
+	if len(got.Questions) != 20 {
+		t.Errorf("questions = %d, want 20", len(got.Questions))
+	}
+	years, _ := got.Questions["date_year_0"].Criteria.(map[string]any)
+	if years["2025"] == nil || years["2031"] == nil || years["2032"] != nil || years["other"] == nil {
+		t.Errorf("year options around 2026 = %v", years)
+	}
+	noYears, _ := got.Questions["date_year_1"].Criteria.(map[string]any)
+	if len(noYears) != 2 {
+		t.Errorf("zero capture time should offer only none/other: %v", noYears)
 	}
 	if got.State.Captures[0]["captured_on"] != "Tuesday, October 6, 2026" {
 		t.Errorf("captured_on = %q", got.State.Captures[0]["captured_on"])
@@ -245,8 +259,8 @@ func TestProposeInboxLeanAsksDateDetailsOnlyForDatedCaptures(t *testing.T) {
 		t.Errorf("lean criteria should point at state: %v", crit["Globex"])
 	}
 	q2 := reqs[1]["questions"].(map[string]any)
-	if len(q2) != 6 { // role, month, day, anchor, weekday, week for one capture
-		t.Errorf("second request questions = %d, want 6: %v", len(q2), q2)
+	if len(q2) != 7 { // role, month, day, year, anchor, weekday, week for one capture
+		t.Errorf("second request questions = %d, want 7: %v", len(q2), q2)
 	}
 	caps2 := reqs[1]["state"].(map[string]any)["captures"].([]any)
 	if len(caps2) != 1 || caps2[0].(map[string]any)["text"] != "pay bill tomorrow" {

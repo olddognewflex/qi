@@ -7,8 +7,9 @@
 //	TYPESAFE_API_KEY=... go test -tags typesafe_eval -run TestInboxFanoutEval -v ./internal/typesafe
 //
 // QI_EVAL_SET (default testdata/inbox_eval.jsonl) and QI_EVAL_OPEN_TASKS
-// (default testdata/inbox_eval_open_tasks.txt) point it at another labelled
-// set, and QI_EVAL_DESTINATIONS at real destinations — keep real captures,
+// (default testdata/inbox_eval_open_tasks.txt; "none" for no open tasks)
+// point it at another labelled set, and QI_EVAL_DESTINATIONS at real
+// destinations — keep real captures,
 // tasks, and config out of the repo (it is public). QI_EVAL_REPORT
 // writes the markdown report to a file as well as the test log.
 package typesafe
@@ -82,6 +83,7 @@ func loadEval(t *testing.T) ([]evalItem, []string) {
 	defer f.Close()
 	var items []evalItem
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		var it evalItem
 		if err := json.Unmarshal(sc.Bytes(), &it); err != nil {
@@ -89,12 +91,20 @@ func loadEval(t *testing.T) ([]evalItem, []string) {
 		}
 		items = append(items, it)
 	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("%s: %v", set, err)
+	}
 	var tasks []string
-	if b, err := os.ReadFile(tasksPath); err == nil {
-		for _, l := range strings.Split(string(b), "\n") {
-			if l = strings.TrimSpace(l); l != "" {
-				tasks = append(tasks, l)
-			}
+	if tasksPath == "none" { // explicitly evaluate without open tasks
+		return items, nil
+	}
+	b, err := os.ReadFile(tasksPath)
+	if err != nil {
+		t.Fatalf("open tasks (set QI_EVAL_OPEN_TASKS=none to skip): %v", err)
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			tasks = append(tasks, l)
 		}
 	}
 	return items, tasks
@@ -288,6 +298,9 @@ func TestInboxFanoutEval(t *testing.T) {
 		if p.Err != nil {
 			misses = append(misses, fmt.Sprintf("%s: %v", it.ID, p.Err))
 			continue
+		}
+		if p.DateErr != nil { // an incomplete run must not publish date accuracy
+			t.Fatalf("%s: %v", it.ID, p.DateErr)
 		}
 		ok := p.Action == it.Action
 		action.add(ok)

@@ -110,7 +110,7 @@ func destinationQuestion(i int, dests []InboxDestination, lean bool) Question {
 // dateQuestions are the cookbook's date-part questions for capture i plus a
 // role question (due vs scheduled). Each part is a closed set; ResolveDate
 // combines them.
-func dateQuestions(i int) map[string]Question {
+func dateQuestions(i int, captured time.Time) map[string]Question {
 	ref := fmt.Sprintf("`captures[%d].text` (written on `captures[%d].captured_on`)", i, i)
 	months := map[string]string{"none": "No month is named."}
 	for m := time.January; m <= time.December; m++ {
@@ -119,6 +119,17 @@ func dateQuestions(i int) map[string]Question {
 	days := map[string]string{"none": "No day of the month is given as a number."}
 	for d := 1; d <= 31; d++ {
 		days[fmt.Sprint(d)] = fmt.Sprintf("Day %d of the month.", d)
+	}
+	// Years are offered around the capture year; anything else is "other",
+	// which ResolveDate sends to review rather than re-dating.
+	years := map[string]string{
+		"none":  "No year is stated.",
+		"other": "A year is stated but it is not one of the listed years.",
+	}
+	if !captured.IsZero() {
+		for y := captured.Year() - 1; y <= captured.Year()+5; y++ {
+			years[fmt.Sprint(y)] = fmt.Sprintf("The year %d.", y)
+		}
 	}
 	weekdays := map[string]string{"none": "No weekday is named."}
 	for w := time.Sunday; w <= time.Saturday; w++ {
@@ -147,6 +158,7 @@ func dateQuestions(i int) map[string]Question {
 			},
 		},
 		fanoutQuestionID("date_month", i): {Type: TypeChoice, Instructions: fmt.Sprintf("If %s names a calendar date for the user's action, which month?", ref), Criteria: months},
+		fanoutQuestionID("date_year", i):  {Type: TypeChoice, Instructions: fmt.Sprintf("If %s names a calendar date for the user's action, does it state a year, and which?", ref), Criteria: years},
 		fanoutQuestionID("date_day", i):   {Type: TypeChoice, Instructions: fmt.Sprintf("If %s names a calendar date for the user's action, which day of the month?", ref), Criteria: days},
 		fanoutQuestionID("date_anchor", i): {
 			Type:         TypeChoice,
@@ -200,7 +212,7 @@ func fanoutRequest(caps []InboxCapture, f InboxFanout) Request {
 			}
 		}
 		for i := range bodies {
-			for id, q := range dateQuestions(i) {
+			for id, q := range dateQuestions(i, caps[i].Captured) {
 				if f.Lean && !strings.HasPrefix(id, "date_mode_") {
 					continue
 				}
@@ -302,6 +314,7 @@ func datePartsFrom(answers map[string]Answer, i int) DateParts {
 		Mode:    get("date_mode"),
 		Role:    get("date_role"),
 		Month:   get("date_month"),
+		Year:    get("date_year"),
 		Day:     get("date_day"),
 		Anchor:  get("date_anchor"),
 		Weekday: get("date_weekday"),

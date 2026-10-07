@@ -46,25 +46,27 @@ All in `internal/typesafe` (still a stdlib-only leaf; nothing wired into
 
 Model `jev-latest`, batches of 25, October 2026.
 
-### Synthetic set (42 hand-style captures, 12 open tasks, fictional clients)
+### Synthetic set (43 hand-style captures, 12 open tasks, fictional clients)
 
 | judgment | full | lean |
 |---|---|---|
 | action | 100% | 100% |
-| destination (task captures) | 96% (27/28) | 96% (27/28) |
-| date: no-date → none | 93% | 93% |
-| date: dated → exact date + role | 85% (11/13) | 85% (11/13) |
+| destination (task captures) | 97% (28/29) | 97% (28/29) |
+| date: no-date → none | 96% | 93% |
+| date: dated → exact date + role (incl. explicit year) | 86% (12/14) | 86% (12/14) |
 | date: must-review (Feb 30, day w/o month) | 2/2 | 2/2 |
 | dup: true duplicates found (≥0.5) | 7/7 | 7/7 |
-| dup: non-duplicates left alone (≥0.5) | 32/35 | 32/35 |
-| **input tokens per capture** | **2,297 (10.3×)** | **1,383 (6.2×)** |
-| wall time per 25-capture batch | ~0.5 s | ~0.45 s (2 requests) |
+| dup: non-duplicates left alone (≥0.5) | 33/36 | 33/36 |
+| **input tokens per capture** | **2,549 (11.5×)** | **1,515 (6.8×)** |
+| wall time per 25-capture batch | ~0.6 s | ~0.57 s (2 requests) |
 
-Action-only today: 222 input tokens/capture on this set.
+Action-only today: 222 input tokens/capture on this set. Absolute dates
+carry a year part (capture year −1 … +5, `none`, `other`); a stated year is
+honoured, `other` goes to review.
 
 Remaining date misses are **role** (due vs scheduled: "pay water bill
 tomorrow" — arguably either) and **review false alarms** on captures adjacent
-to one with a real date (see *cross-capture bleed*); all below 0.65
+to one with a real date (see *cross-capture bleed*); all below 0.7
 confidence, and a review shows no date rather than a wrong one.
 
 Destination: the one miss ("friday - ship TPS contract amendment" → none) was
@@ -78,8 +80,7 @@ Duplicates (top candidate probability):
 | threshold | full: caught / false flags | lean: caught / false flags |
 |---|---|---|
 | 0.5 | 7/7 / 3 | 7/7 / 3 |
-| 0.8 | 5/7 / 1 | 5/7 / 1 |
-| 0.85 | 4/7 / 0 | 5/7 / 1 |
+| 0.85 | 4/7 / 0 | 4/7 / 1 |
 | 0.9 | 4/7 / 0 | 4/7 / 0 |
 
 ### Real inbox (49 labelled captures, lean; data kept out of the repo)
@@ -90,19 +91,20 @@ captures at all.
 
 | judgment | result |
 |---|---|
-| action | 49–55% overall across runs; **96% at confidence ≥ 0.6 (~23/49 covered)**, 100% at ≥ 0.8 |
+| action | 49–55% overall across runs; 85–96% at confidence ≥ 0.5–0.6 (about half covered), 100% at ≥ 0.8–0.9 |
 | destination (task captures) | 83% overall; 100% at ≥ 0.5 (10/12 covered) |
 | dates (task proposals only) | 1 confident false date ("renewal in 3 days" → tomorrow, 0.95): the `in_n_days` gap |
-| input tokens per capture | 856 (3.6× this set's 240 action-only) |
+| input tokens per capture | 867 (3.6× this set's 240 action-only) |
 
 Every action miss is an archive-worthy email (PR bot comments, promos, alerts)
 proposed as task/note **at low confidence**. And the action answer differed
 between the action-only request and the fan-out request on 11/49 real
-captures — all near-ties, so extra questions in the request can tip them.
+captures (12/49 in the latest run) — all near-ties, so extra questions in
+the request can tip them.
 
 ## Findings
 
-1. **Lean is the shape to ship.** Same or better accuracy than full for ~58% of
+1. **Lean is the shape to ship.** About the same accuracy as full for ~60% of
    the tokens; gating date parts on `date_mode` also removed a cross-capture
    bleed (below), because the second request only holds dated captures.
 2. **Confidence floors do the work.** Dest ≥ 0.7, date ≥ 0.5, dup ≥ 0.85–0.9:
