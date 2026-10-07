@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -75,6 +76,21 @@ func TestSaySpeakerPassesTextAsOneArgument(t *testing.T) {
 	}
 	if !strings.Contains(echo.String(), text) {
 		t.Errorf("transcript = %q, want it to echo the reply", echo.String())
+	}
+}
+
+func TestSaySpeakerPassesVoiceFlag(t *testing.T) {
+	var gotArgs []string
+	s := NewSaySpeaker(nil, func(ctx context.Context, name string, args ...string) error {
+		gotArgs = args
+		return nil
+	})
+	s.Voice = "Rishi"
+	if err := s.Speak(context.Background(), "hello"); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+	if want := []string{"-v", "Rishi", "hello"}; !reflect.DeepEqual(gotArgs, want) {
+		t.Errorf("args = %q, want %q", gotArgs, want)
 	}
 }
 

@@ -1295,6 +1295,7 @@ stt_url = "http://localhost:8000/v1/audio/transcriptions"
 stt_model = "whisper-1"
 stt_api_key_env = "STT_KEY"
 tts = "echo"
+tts_voice = "Rishi"
 record_seconds = 6
 record_device = "1"
 wait_timeout_seconds = 42
@@ -1312,7 +1313,7 @@ key = "qi"
 	if cfg.Agents.Runtime != "herdr" || cfg.Agents.HerdrBin != "/opt/herdr" {
 		t.Errorf("Agents = %+v", cfg.Agents)
 	}
-	want := config.VoiceConfig{STT: "http", STTURL: "http://localhost:8000/v1/audio/transcriptions", STTModel: "whisper-1", STTAPIKeyEnv: "STT_KEY", TTS: "echo", RecordSeconds: 6, RecordDevice: "1", WaitTimeoutSeconds: 42, WorkspaceAliases: map[string]string{"key": "qi"}}
+	want := config.VoiceConfig{STT: "http", STTURL: "http://localhost:8000/v1/audio/transcriptions", STTModel: "whisper-1", STTAPIKeyEnv: "STT_KEY", TTS: "echo", TTSVoice: "Rishi", RecordSeconds: 6, RecordDevice: "1", WaitTimeoutSeconds: 42, WorkspaceAliases: map[string]string{"key": "qi"}}
 	if !reflect.DeepEqual(cfg.Voice, want) {
 		t.Errorf("Voice = %+v, want %+v", cfg.Voice, want)
 	}
