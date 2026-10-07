@@ -110,6 +110,26 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 	return refined
 }
 
+// triageInbox runs the interactive triage; a package var so tests can drive
+// the apply path without a terminal.
+var triageInbox = tui.TriageInbox
+
+// repeatPrefix marks an item standing for several identical captures.
+func repeatPrefix(it service.InboxItem) string {
+	if len(it.Repeats) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("×%d ", 1+len(it.Repeats))
+}
+
+// captureCount describes distinct items vs the captures they stand for.
+func captureCount(items, captures int) string {
+	if items == captures {
+		return fmt.Sprintf("%d capture(s)", captures)
+	}
+	return fmt.Sprintf("%d distinct of %d capture(s)", items, captures)
+}
+
 func newInboxCommand(cfg config.Config) *cobra.Command {
 	inbox := service.InboxService{
 		InboxDir:   cfg.InboxPath,
@@ -138,6 +158,12 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			"opens the full card (←/→ move, same decision keys, tab/esc back). w\n" +
 			"finishes and applies; undecided captures are skipped. q quits without\n" +
 			"applying anything.\n\n" +
+			"Identical captures are collapsed into one row marked ×N; the decision\n" +
+			"applies to all of them (one task or note, the rest archived — or all\n" +
+			"deleted). One-line email summaries (\"Email: <subject> — <sender>\n" +
+			"[tag]\") are proposed from their mail-filter tag: reply_needed and\n" +
+			"flag_for_followup → task; read_now, mark_read, unsubscribe, delete →\n" +
+			"archive (source \"email\").\n\n" +
 			"Proposals come from deterministic heuristics by default. Opt in to the\n" +
 			"TypeSafe classifier with --classifier typesafe (or [inbox] classifier =\n" +
 			"\"typesafe\") to refine the non-obvious ones: this SENDS CAPTURE TEXT to\n" +
@@ -176,22 +202,27 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 				fmt.Fprintln(out, "inbox empty — nothing to triage.")
 				return nil
 			}
+			// Collapse exact repeats first so a repeated capture is triaged
+			// (and, opted in, sent to the classifier) once.
+			items = service.CollapseRepeats(items)
 			items = refineInbox(cmd.Context(), cfg, inbox, items, selected, limit, cmd.ErrOrStderr())
 
 			if dryRun {
+				total := 0
 				for _, it := range items {
-					fmt.Fprintf(out, "%-7s %s  (%s)\n", it.Action, it.Summary, it.Reason)
+					fmt.Fprintf(out, "%-7s %s%s  (%s)\n", it.Action, repeatPrefix(it), it.Summary, it.Reason)
+					total += 1 + len(it.Repeats)
 				}
-				fmt.Fprintf(out, "\n%d capture(s); run without --dry-run to triage.\n", len(items))
+				fmt.Fprintf(out, "\n%s; run without --dry-run to triage.\n", captureCount(len(items), total))
 				return nil
 			}
 
 			cards := make([]tui.InboxCard, len(items))
 			for i, it := range items {
-				cards[i] = tui.InboxCard{Summary: it.Summary, Body: it.Body, Proposed: it.Action, Reason: it.Reason}
+				cards[i] = tui.InboxCard{Summary: it.Summary, Body: it.Body, Proposed: it.Action, Reason: it.Reason, Count: 1 + len(it.Repeats)}
 			}
 
-			actions, err := tui.TriageInbox(cards)
+			actions, err := triageInbox(cards)
 			if err != nil {
 				return err
 			}
@@ -206,15 +237,18 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 					action == service.InboxActionNote ||
 					action == service.InboxActionArchive ||
 					action == service.InboxActionDelete {
-					res, err := inbox.Apply(service.InboxApplyInput{Path: items[i].Path, Action: action})
+					res, err := inbox.ApplyGroup(items[i], action)
+					applied += len(res)
 					if err != nil {
+						// No task or note was created for this row (creation is
+						// ApplyGroup's last step); say what was already moved.
+						fmt.Fprintf(out, "\n%d capture(s) applied before the error; %s left for the next run.\n", applied, items[i].Summary)
 						return fmt.Errorf("apply %s: %w", items[i].Summary, err)
 					}
-					fmt.Fprintf(out, "%-7s %s\n", res.Action, items[i].Summary)
-					applied++
+					fmt.Fprintf(out, "%-7s %s%s\n", action, repeatPrefix(items[i]), items[i].Summary)
 					continue
 				}
-				skipped++
+				skipped += 1 + len(items[i].Repeats)
 			}
 			fmt.Fprintf(out, "\n%d applied, %d skipped.\n", applied, skipped)
 			return nil
