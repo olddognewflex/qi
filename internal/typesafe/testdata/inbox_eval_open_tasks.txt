@@ -1,0 +1,12 @@
+Send TPS September invoice #tps
+Re-read README from a stranger's perspective. Fix anything confusing.
+Send 5 more outreach DMs
+Sync work calendars into the local calendar app
+Post to the gardening forum: compost bin build log, photos and parts list
+Draft cold outreach template (3-4 sentences max)
+Make sure the installer works on a clean machine
+Write a v0.2 roadmap based on beta feedback
+Fix preview environment cost alerts #portal
+Call mom
+Buy birthday present for Alex
+Review GLX-1512 merge readiness PR #portal
