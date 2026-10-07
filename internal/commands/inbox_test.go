@@ -13,6 +13,7 @@ import (
 
 	"qi/internal/config"
 	"qi/internal/service"
+	"qi/internal/tui"
 )
 
 // stubInboxClassifier returns a fixed verdict per capture and counts the
@@ -241,5 +242,89 @@ func TestInboxClassifyBudget(t *testing.T) {
 		if got := inboxClassifyBudget(tc.batches); got != tc.want {
 			t.Errorf("inboxClassifyBudget(%d) = %s, want %s", tc.batches, got, tc.want)
 		}
+	}
+}
+
+func TestInboxDryRunCollapsesRepeatsBeforeClassifying(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	for i, body := range []string{
+		"Email: PR merged — Bot [read_now]",
+		"Email: PR merged — Bot [read_now]",
+		"Email: PR merged — Bot [read_now]",
+		"Email: Contract question — Pat Lee [reply_needed]",
+	} {
+		name := filepath.Join(cfg.InboxPath, fmt.Sprintf("1%d-email.md", i))
+		if err := os.WriteFile(name, []byte("2026-06-11 09:00:00\n\n"+body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stub := stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionNote, Confidence: 0.1})
+
+	out, _, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if !strings.Contains(out, "archive ×3 Email: PR merged — Bot [read_now]  (email tag [read_now]") {
+		t.Errorf("repeats not collapsed with a count:\n%s", out)
+	}
+	if !strings.Contains(out, "task    Email: Contract question — Pat Lee [reply_needed]  (email tag [reply_needed]") {
+		t.Errorf("email tag heuristic not applied:\n%s", out)
+	}
+	if !strings.Contains(out, "4 distinct of 6 capture(s)") {
+		t.Errorf("summary should count distinct vs total:\n%s", out)
+	}
+	// idea + 2 distinct emails; the marker capture is authoritative.
+	if stub.calls != 3 {
+		t.Errorf("classifier saw %d captures, want 3 (repeats sent once)", stub.calls)
+	}
+}
+
+func TestInboxApplyCollapsedRowAppliesEveryCapture(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	var paths []string
+	for i := 0; i < 3; i++ {
+		p := filepath.Join(cfg.InboxPath, fmt.Sprintf("1%d-email.md", i))
+		if err := os.WriteFile(p, []byte("2026-06-11 09:00:00\n\nEmail: Contract question — Pat Lee [reply_needed]\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, p)
+	}
+	orig := triageInbox
+	t.Cleanup(func() { triageInbox = orig })
+	var seen []int
+	triageInbox = func(cards []tui.InboxCard) ([]string, error) {
+		actions := make([]string, len(cards))
+		for i, c := range cards {
+			seen = append(seen, c.Count)
+			if strings.HasPrefix(c.Summary, "Email:") {
+				actions[i] = service.InboxActionTask
+				os.Remove(paths[2]) // one repeat vanishes before apply
+			}
+		}
+		return actions, nil
+	}
+
+	out, _, err := runInboxCmd(t, cfg)
+	if err != nil {
+		t.Fatalf("inbox: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "task    ×3 Email: Contract question") {
+		t.Errorf("collapsed row not applied:\n%s", out)
+	}
+	if !strings.Contains(out, "2 applied, 2 skipped.") {
+		t.Errorf("want 2 applied (one repeat vanished) and the 2 other captures skipped:\n%s", out)
+	}
+	for _, p := range paths[:2] {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still in inbox", p)
+		}
+	}
+	tasks, _ := os.ReadFile(cfg.TaskFilePath)
+	if n := strings.Count(string(tasks), "Contract question"); n != 1 {
+		t.Errorf("task file has %d copies, want 1:\n%s", n, tasks)
+	}
+	if fmt.Sprint(seen) != "[1 1 3]" && fmt.Sprint(seen) != "[3 1 1]" && fmt.Sprint(seen) != "[1 3 1]" {
+		t.Errorf("card counts = %v, want one ×3 card and two singles", seen)
 	}
 }

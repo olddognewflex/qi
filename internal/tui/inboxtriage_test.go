@@ -114,6 +114,8 @@ func TestSourceHint(t *testing.T) {
 		{"typesafe: note", "ts"},
 		{"short capture reads as a task; typesafe unsure (note 0.42)", "ts?"},
 		{"long capture reads as a note; not classified (classify_limit)", "lim"},
+		{"email tag [read_now]", "email"},
+		{"email tag [read_now]; typesafe unsure (task 0.31)", "ts?"},
 		{"empty capture", "rule"},
 		{"", "rule"},
 	}
@@ -358,5 +360,24 @@ func TestTruncateRuneSafe(t *testing.T) {
 		if got := truncate(tt.in, tt.width); got != tt.want {
 			t.Errorf("truncate(%q, %d) = %q, want %q", tt.in, tt.width, got, tt.want)
 		}
+	}
+}
+
+func TestRepeatCountShownInListAndCard(t *testing.T) {
+	m := newTriageModel([]InboxCard{
+		{Summary: "Email: PR merged — Bot [read_now]", Proposed: triageArchive, Reason: "email tag [read_now]", Count: 3},
+		{Summary: "buy milk", Proposed: triageTask, Count: 1},
+	})
+	m.width = 120
+	list := m.View()
+	if !strings.Contains(list, "×3 Email: PR merged") {
+		t.Errorf("list should prefix the repeat count:\n%s", list)
+	}
+	if strings.Contains(list, "×1") {
+		t.Errorf("single captures should carry no count:\n%s", list)
+	}
+	m.view = viewCard
+	if card := m.View(); !strings.Contains(card, "3 identical captures") {
+		t.Errorf("card should say the decision covers all repeats:\n%s", card)
 	}
 }

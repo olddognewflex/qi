@@ -33,6 +33,9 @@ type InboxItem struct {
 	Body    []string
 	Action  string
 	Reason  string
+	// Repeats are the paths of other captures with an identical body, set
+	// only by CollapseRepeats; List never fills it.
+	Repeats []string
 }
 
 // InboxApplyInput selects a capture and the action to take on it. Title
@@ -149,9 +152,47 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 	return out, nil
 }
 
+// ApplyGroup applies one decision to a collapsed item: the action itself to
+// it.Path (creating at most one task or note), then the same disposition to
+// every repeat — archived for task/note/archive, deleted for delete.
+//
+// If the first path fails, nothing was written and its error is returned.
+// Once it succeeds, every repeat is still attempted — stopping early would
+// leave repeats behind that re-propose the task already created on the next
+// run. A repeat that has already vanished is skipped (nothing left to do);
+// other repeat errors are joined. The outputs of everything applied are
+// returned alongside any error.
+func (s InboxService) ApplyGroup(it InboxItem, action string) ([]InboxApplyOutput, error) {
+	first, err := s.Apply(InboxApplyInput{Path: it.Path, Action: action})
+	if err != nil {
+		return nil, err
+	}
+	outs := []InboxApplyOutput{first}
+	rest := InboxActionArchive
+	if action == InboxActionDelete {
+		rest = InboxActionDelete
+	}
+	var errs []error
+	for _, p := range it.Repeats {
+		o, err := s.Apply(InboxApplyInput{Path: p, Action: rest})
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			errs = append(errs, fmt.Errorf("repeat %s: %w", filepath.Base(p), err))
+			continue
+		}
+		outs = append(outs, o)
+	}
+	return outs, errors.Join(errs...)
+}
+
 // proposeInboxAction applies deterministic heuristics to a capture's body:
 //   - no content                       → archive (nothing to action)
 //   - explicit task marker on a line   → task
+//   - email summary capture            → by its mail-filter tag
+//     (reply_needed/flag_for_followup → task; read_now/mark_read/
+//     unsubscribe/delete → archive; other tags fall through)
 //   - single short line                → task
 //   - anything longer / multi-line     → note
 func proposeInboxAction(body []string) (action, reason string) {
@@ -161,6 +202,11 @@ func proposeInboxAction(body []string) (action, reason string) {
 	for _, line := range body {
 		if hasTaskMarker(line) {
 			return InboxActionTask, "contains a task marker"
+		}
+	}
+	if tag, ok := emailCaptureTag(body); ok {
+		if action, known := emailTagActions[tag]; known {
+			return action, "email tag [" + tag + "]"
 		}
 	}
 	if len(body) == 1 && len(body[0]) <= inboxTaskLineMax {
