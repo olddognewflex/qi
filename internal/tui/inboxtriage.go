@@ -18,6 +18,9 @@ type InboxCard struct {
 	Body     []string
 	Proposed string
 	Reason   string
+	// Count is how many identical captures the card stands for; the one
+	// decision applies to all. 0 or 1 means a single capture.
+	Count int
 }
 
 // Triage action labels returned by TriageInbox, one per input card. An empty
@@ -270,7 +273,7 @@ func (m triageModel) listView() string {
 		if i == m.cursor {
 			marker = cursorStyle.Render("> ")
 		}
-		summary := padRight(truncate(c.Summary, summaryW), summaryW)
+		summary := padRight(truncate(countPrefix(c)+c.Summary, summaryW), summaryW)
 		if i == m.cursor {
 			summary = selectedStyle.Render(summary)
 		}
@@ -347,6 +350,9 @@ func (m triageModel) cardView() string {
 		}
 	}
 	b.WriteString("\n")
+	if c.Count > 1 {
+		fmt.Fprintf(&b, "%s\n", helpStyle.Render(fmt.Sprintf("repeats:  %d identical captures — the decision applies to all", c.Count)))
+	}
 	fmt.Fprintf(&b, "%s\n", helpStyle.Render("proposed: "+labelFor(c.Proposed)))
 	if c.Reason != "" {
 		fmt.Fprintf(&b, "%s\n", helpStyle.Render("why:      "+c.Reason))
@@ -381,9 +387,19 @@ func sourceHint(reason string) string {
 		return "ts?"
 	case strings.Contains(reason, "not classified (classify_limit)"):
 		return "lim"
+	case strings.HasPrefix(reason, "email tag"):
+		return "email"
 	default:
 		return "rule"
 	}
+}
+
+// countPrefix marks a card standing for several identical captures.
+func countPrefix(c InboxCard) string {
+	if c.Count > 1 {
+		return fmt.Sprintf("×%d ", c.Count)
+	}
+	return ""
 }
 
 // truncate cuts s to at most width display cells, ending in "…" when cut.

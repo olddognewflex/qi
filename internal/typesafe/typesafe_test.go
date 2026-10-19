@@ -296,3 +296,22 @@ func TestInboxClassifierEmptyBatchSendsNothing(t *testing.T) {
 		t.Errorf("empty batch: res=%v err=%v calls=%d", res, err, calls.Load())
 	}
 }
+
+func TestInboxRequestEmailContextOnlyWithEmailCaptures(t *testing.T) {
+	plain := inboxRequest([][]string{{"buy milk"}}).State.(map[string]any)
+	if plain["context"] != inboxContext {
+		t.Errorf("no-email batch context = %q, want the note-to-self context", plain["context"])
+	}
+	if _, ok := plain["captures"].([]map[string]string)[0]["source"]; ok {
+		t.Errorf("non-email capture should carry no source")
+	}
+
+	mixed := inboxRequest([][]string{{"buy milk"}, {"Email: Sale ends tonight — Shop [read_now]"}}).State.(map[string]any)
+	if mixed["context"] != inboxEmailContext {
+		t.Errorf("email batch context = %q", mixed["context"])
+	}
+	caps := mixed["captures"].([]map[string]string)
+	if _, ok := caps[0]["source"]; ok || caps[1]["source"] != "email" {
+		t.Errorf("captures = %v, want source=email only on the email capture", caps)
+	}
+}

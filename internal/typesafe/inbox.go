@@ -19,6 +19,17 @@ const (
 // are being looked at.
 const inboxContext = "A quick capture from a personal notes inbox, written by the user to themselves. It needs triage."
 
+// inboxEmailContext replaces inboxContext when a batch holds any email summary
+// capture: those are not notes to self, and judging them as such misreads
+// promotions and bot notifications as tasks.
+const inboxEmailContext = "Captures from a personal notes inbox that need triage. Most are written by the user to themselves. Captures with source \"email\" are one-line summaries of incoming emails written automatically by a mail filter: \"Email: <subject> — <sender> [<filter tag>]\". For those, task means the user must personally act or reply; newsletters, promotions, political or marketing mail, automated notifications, alerts that need no action, and bot comments are archive; a meeting recap or document worth keeping for reference is a note."
+
+// emailCapturePrefix marks the mail filter's one-line email summaries. This is
+// deliberately looser than the service's full "— sender [tag]" match: an email
+// with an unknown or mangled tag falls through the tag heuristic, and is
+// exactly the one that most needs the email context here.
+const emailCapturePrefix = "Email: "
+
 // inboxCriteria are the Choice options shared by every capture's question.
 // They describe intent rather than shape, so a terse fragment ("milk") can
 // still read as a task and a long line can still read as one.
@@ -79,13 +90,18 @@ func inboxRequest(bodies [][]string) Request {
 func inboxRequestParts(bodies [][]string) (Request, []map[string]string) {
 	captures := make([]map[string]string, len(bodies))
 	questions := make(map[string]Question, len(bodies))
+	context := inboxContext
 	for i, body := range bodies {
 		captures[i] = map[string]string{"text": strings.Join(body, "\n")}
 		questions[inboxQuestionID(i)] = inboxQuestion(i)
+		if len(body) == 1 && strings.HasPrefix(body[0], emailCapturePrefix) {
+			captures[i]["source"] = "email"
+			context = inboxEmailContext
+		}
 	}
 	return Request{
 		State: map[string]any{
-			"context":  inboxContext,
+			"context":  context,
 			"captures": captures,
 		},
 		Questions: questions,
