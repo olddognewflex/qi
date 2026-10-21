@@ -55,7 +55,7 @@ func NewRootCommand() *cobra.Command {
 	for _, c := range deprecatedRemoteAliases(cfg) {
 		root.AddCommand(c)
 	}
-	root.AddCommand(markSkipConfig(newDoctorCommand(cfg)))
+	root.AddCommand(markSkipConfig(newDoctorCommand(cfg, cfgErr)))
 	root.AddCommand(newInboxCommand(cfg))
 	root.AddCommand(newSearchCommand(cfg))
 	root.AddCommand(newEmbedCommand(cfg))

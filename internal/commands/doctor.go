@@ -67,7 +67,10 @@ func (r *report) detail(format string, args ...any) {
 	fmt.Fprintf(r.w, "       "+format+"\n", args...)
 }
 
-func newDoctorCommand(cfg config.Config) *cobra.Command {
+// newDoctorCommand takes the config.Load error alongside cfg because doctor is
+// exempt from the root's valid-config check (it must run on a broken setup),
+// so a load failure would otherwise surface only as an empty zero Config.
+func newDoctorCommand(cfg config.Config, cfgErr error) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Run health checks (config, vault, qid, index, ai model, worker)",
@@ -81,7 +84,10 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rep := &report{w: cmd.OutOrStdout()}
 
-			checkConfig(rep, cfg)
+			if !checkConfig(rep, cfg, cfgErr) {
+				fmt.Fprintln(rep.w)
+				return fmt.Errorf("%d check(s) failed", rep.failures)
+			}
 			checkVault(rep, cfg)
 			checkDataless(rep, cfg)
 			checkSocket(rep)
@@ -102,8 +108,17 @@ func newDoctorCommand(cfg config.Config) *cobra.Command {
 	return cmd
 }
 
-func checkConfig(rep *report, cfg config.Config) {
+// checkConfig reports the config file and the resolved vault/task paths. It
+// returns false when config.Load failed: Load returns a zero Config on every
+// error, so the remaining checks would only report noise derived from empty
+// paths (e.g. "stat : no such file") rather than the real problem.
+func checkConfig(rep *report, cfg config.Config, cfgErr error) bool {
 	cfgPath := config.ConfigPath()
+	if cfgErr != nil {
+		rep.check(statusFail, "config", cfgErr.Error())
+		rep.detail("remaining checks skipped until the config loads")
+		return false
+	}
 	if _, err := os.Stat(cfgPath); err == nil {
 		rep.check(statusOK, "config", cfgPath)
 	} else {
@@ -112,6 +127,7 @@ func checkConfig(rep *report, cfg config.Config) {
 	}
 	rep.detail("vault_path:    %s", cfg.VaultPath)
 	rep.detail("task_file:     %s", cfg.TaskFilePath)
+	return true
 }
 
 func checkVault(rep *report, cfg config.Config) {

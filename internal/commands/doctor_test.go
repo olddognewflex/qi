@@ -45,7 +45,12 @@ func healthyVault(t *testing.T) config.Config {
 
 func runDoctor(t *testing.T, cfg config.Config) (string, error) {
 	t.Helper()
-	cmd := newDoctorCommand(cfg)
+	return runDoctorWithErr(t, cfg, nil)
+}
+
+func runDoctorWithErr(t *testing.T, cfg config.Config, cfgErr error) (string, error) {
+	t.Helper()
+	cmd := newDoctorCommand(cfg, cfgErr)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
@@ -79,6 +84,34 @@ func TestDoctor_MissingVaultFails(t *testing.T) {
 	}
 	if !strings.Contains(out, "[fail] vault path") {
 		t.Fatalf("missing fail marker:\n%s", out)
+	}
+}
+
+// A config that fails to load (e.g. a TOML syntax error) must fail the config
+// check with the real error, not report "ok" alongside the empty zero Config.
+func TestDoctor_ConfigLoadErrorFails(t *testing.T) {
+	healthyVault(t) // isolate machine-local dirs
+	cfgDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "qi")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("vault_path = \"/v\"\n[inbox]\nmin_confidence = 0.5:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("QI_VAULT_PATH", "")
+	cfg, loadErr := config.Load()
+	if loadErr == nil {
+		t.Fatal("expected config.Load to fail on malformed TOML")
+	}
+	out, err := runDoctorWithErr(t, cfg, loadErr)
+	if err == nil {
+		t.Fatalf("expected doctor to fail on config load error:\n%s", out)
+	}
+	if !strings.Contains(out, "[fail] config") || !strings.Contains(out, "line 3") {
+		t.Fatalf("expected config failure carrying the parse error:\n%s", out)
+	}
+	if strings.Contains(out, "vault path") {
+		t.Fatalf("checks after a config load failure should be skipped:\n%s", out)
 	}
 }
 
