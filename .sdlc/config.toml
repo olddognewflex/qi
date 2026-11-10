@@ -18,6 +18,7 @@ in_progress = "In Progress"
 review      = "In Review"
 done        = "Done"
 blocked     = "Blocked"
+archived    = "Archived"
 
 [board.ownership]
 "todo->in_progress"   = "agent"
@@ -25,8 +26,8 @@ blocked     = "Blocked"
 "review->done"        = "agent"
 
 [issue_types]
-full_sdlc   = ["Story", "Bug"]
-deliverable = ["Task", "Chore", "Spike"]
+full_sdlc   = ["Story", "Bug", "Sub-task"]
+deliverable = ["Task", "Chore", "Spike", "Epic"]
 
 [queries]
 all          = 'ORDER BY key ASC'   # every ticket on the board (used by tktban)
