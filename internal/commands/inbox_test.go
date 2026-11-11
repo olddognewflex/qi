@@ -16,23 +16,30 @@ import (
 	"qi/internal/tui"
 )
 
-// stubInboxClassifier returns a fixed verdict per capture and counts the
-// captures it was sent (calls) and the batch requests (batches).
+// stubInboxClassifier returns a fixed verdict per capture (with dest /
+// destConf as its destination answer) and counts the captures it was sent
+// (calls) and the batch requests (batches), recording the destinations
+// offered per batch.
 type stubInboxClassifier struct {
-	mu      sync.Mutex
-	cls     service.InboxClassification
-	calls   int
-	batches int
+	mu       sync.Mutex
+	cls      service.InboxClassification
+	dest     string
+	destConf float64
+	calls    int
+	batches  int
+	offered  [][]service.InboxDestination
 }
 
-func (s *stubInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string) ([]service.InboxVerdict, error) {
+func (s *stubInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string, dests []service.InboxDestination) ([]service.InboxVerdict, error) {
 	s.mu.Lock()
 	s.calls += len(bodies)
 	s.batches++
+	s.offered = append(s.offered, dests)
 	s.mu.Unlock()
 	out := make([]service.InboxVerdict, len(bodies))
 	for i := range out {
 		out[i].InboxClassification = s.cls
+		out[i].Destination, out[i].DestinationConfidence = s.dest, s.destConf
 	}
 	return out, nil
 }
@@ -293,12 +300,12 @@ func TestInboxApplyCollapsedRowAppliesEveryCapture(t *testing.T) {
 	orig := triageInbox
 	t.Cleanup(func() { triageInbox = orig })
 	var seen []int
-	triageInbox = func(cards []tui.InboxCard) ([]string, error) {
-		actions := make([]string, len(cards))
+	triageInbox = func(cards []tui.InboxCard) ([]tui.InboxDecision, error) {
+		actions := make([]tui.InboxDecision, len(cards))
 		for i, c := range cards {
 			seen = append(seen, c.Count)
 			if strings.HasPrefix(c.Summary, "Email:") {
-				actions[i] = service.InboxActionTask
+				actions[i].Action = service.InboxActionTask
 				os.Remove(paths[2]) // one repeat vanishes before apply
 			}
 		}

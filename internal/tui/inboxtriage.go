@@ -21,6 +21,18 @@ type InboxCard struct {
 	// Count is how many identical captures the card stands for; the one
 	// decision applies to all. 0 or 1 means a single capture.
 	Count int
+	// Destination is the project/client tag proposed for the task (empty =
+	// none). It is used only if the card is decided as a task, and the user
+	// may clear it (x) first.
+	Destination string
+}
+
+// InboxDecision is the user's choice for one card. Action is "" for skip.
+// Destination is the card's proposed destination when it is kept and Action
+// is task; otherwise empty.
+type InboxDecision struct {
+	Action      string
+	Destination string
 }
 
 // Triage action labels returned by TriageInbox, one per input card. An empty
@@ -68,6 +80,8 @@ type triageModel struct {
 	// decided marks rows the user has acted on (including an explicit skip),
 	// distinguishing them from untouched proposals, which share the "" value.
 	decided []bool
+	// cleared marks rows whose proposed destination the user cleared (x).
+	cleared []bool
 	cursor  int
 	offset  int // first row shown in the list window
 	width   int
@@ -82,6 +96,7 @@ func newTriageModel(cards []InboxCard) triageModel {
 		cards:   cards,
 		actions: make([]string, len(cards)),
 		decided: make([]bool, len(cards)),
+		cleared: make([]bool, len(cards)),
 		width:   defaultTriageWidth,
 		height:  defaultTriageHeight,
 	}
@@ -149,6 +164,8 @@ func (m triageModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor++
 	case "A":
 		m.acceptAll()
+	case "x":
+		m.toggleDestination()
 	case "w":
 		m.done = true
 		return m, tea.Quit
@@ -186,6 +203,8 @@ func (m triageModel) updateCard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.decideCard(triageSkip)
 	case "enter":
 		m.decideCard(m.cards[m.cursor].Proposed)
+	case "x":
+		m.toggleDestination()
 	case "w":
 		m.done = true
 		return m, tea.Quit
@@ -206,6 +225,57 @@ func (m *triageModel) decideCard(action string) {
 	if m.cursor < len(m.cards)-1 {
 		m.cursor++
 	}
+}
+
+// toggleDestination clears the cursor row's proposed destination, or restores
+// it if already cleared. It is not a decision and does not move the cursor.
+func (m *triageModel) toggleDestination() {
+	if m.cards[m.cursor].Destination != "" {
+		m.cleared[m.cursor] = !m.cleared[m.cursor]
+	}
+}
+
+// effectiveAction is what row i would apply as: the decision, or the proposal
+// while undecided.
+func (m triageModel) effectiveAction(i int) string {
+	if m.decided[i] {
+		return m.actions[i]
+	}
+	return m.cards[i].Proposed
+}
+
+// destinationSuffix renders row i's destination for the list (" → #tag"),
+// shown only while the row would apply as a task with its destination kept.
+func (m triageModel) destinationSuffix(i int) string {
+	d := m.cards[i].Destination
+	if d == "" || m.cleared[i] || m.effectiveAction(i) != triageTask {
+		return ""
+	}
+	return " → #" + d
+}
+
+// hasDestinations reports whether any card proposes a destination, so the
+// x key is only advertised when it does something.
+func (m triageModel) hasDestinations() bool {
+	for _, c := range m.cards {
+		if c.Destination != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// decisions is what TriageInbox returns: one per card, the destination kept
+// only for a task whose destination was not cleared.
+func (m triageModel) decisions() []InboxDecision {
+	out := make([]InboxDecision, len(m.cards))
+	for i, a := range m.actions {
+		out[i].Action = a
+		if a == triageTask && !m.cleared[i] {
+			out[i].Destination = m.cards[i].Destination
+		}
+	}
+	return out
 }
 
 // acceptAll takes the proposal for every row the user has not decided,
@@ -273,7 +343,9 @@ func (m triageModel) listView() string {
 		if i == m.cursor {
 			marker = cursorStyle.Render("> ")
 		}
-		summary := padRight(truncate(countPrefix(c)+c.Summary, summaryW), summaryW)
+		dest := m.destinationSuffix(i)
+		text := truncate(countPrefix(c)+c.Summary, max(5, summaryW-lipgloss.Width(dest))) + dest
+		summary := padRight(truncate(text, summaryW), summaryW)
 		if i == m.cursor {
 			summary = selectedStyle.Render(summary)
 		}
@@ -285,7 +357,11 @@ func (m triageModel) listView() string {
 	b.WriteString(helpStyle.Render(fmt.Sprintf("  page %d/%d  ", m.cursor/page+1, pages)))
 	b.WriteString(helpStyle.Render(m.counts()))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("t task · n note · a archive · d delete · s skip · enter accept · A accept rest"))
+	keys := "t task · n note · a archive · d delete · s skip · enter accept · A accept rest"
+	if m.hasDestinations() {
+		keys += " · x clear dest"
+	}
+	b.WriteString(helpStyle.Render(keys))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("↑↓/jk move · pgup/pgdn page · g/G ends · space/tab card · w finish · q quit"))
 	b.WriteString("\n")
@@ -357,13 +433,27 @@ func (m triageModel) cardView() string {
 	if c.Reason != "" {
 		fmt.Fprintf(&b, "%s\n", helpStyle.Render("why:      "+c.Reason))
 	}
+	if c.Destination != "" {
+		dest := "dest:     #" + c.Destination
+		switch {
+		case m.cleared[m.cursor]:
+			dest += " (cleared — x restores)"
+		case m.effectiveAction(m.cursor) != triageTask:
+			dest += " (unused: not a task)"
+		}
+		fmt.Fprintf(&b, "%s\n", helpStyle.Render(dest))
+	}
 
 	if m.decided[m.cursor] {
 		fmt.Fprintf(&b, "%s\n", cursorStyle.Render("chosen:   "+labelFor(m.actions[m.cursor])))
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("t task · n note · a archive · d delete · s skip · enter accept proposed"))
+	keys := "t task · n note · a archive · d delete · s skip · enter accept proposed"
+	if c.Destination != "" {
+		keys += " · x clear dest"
+	}
+	b.WriteString(helpStyle.Render(keys))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("←/→ move · tab/esc list · w finish · q quit"))
 	b.WriteString("\n")
@@ -377,7 +467,10 @@ func sourceHint(reason string) string {
 	switch {
 	case strings.HasPrefix(reason, "typesafe:"):
 		if i := strings.Index(reason, "confidence "); i >= 0 {
-			num := strings.TrimRight(reason[i+len("confidence "):], ")")
+			num := reason[i+len("confidence "):]
+			if j := strings.Index(num, ")"); j >= 0 {
+				num = num[:j]
+			}
 			if f, err := strconv.ParseFloat(strings.TrimSpace(num), 64); err == nil {
 				return fmt.Sprintf("ts %.2f", f)
 			}
@@ -449,10 +542,10 @@ func labelFor(action string) string {
 }
 
 // TriageInbox shows the captures as a paged list (with a per-capture card
-// view) and returns one action per card, aligned by index (empty string =
+// view) and returns one decision per card, aligned by index (empty Action =
 // skip, which is also what an undecided capture returns). A nil result means
 // the user quit (q/ctrl+c) and nothing should be applied.
-func TriageInbox(cards []InboxCard) ([]string, error) {
+func TriageInbox(cards []InboxCard) ([]InboxDecision, error) {
 	if len(cards) == 0 {
 		return nil, nil
 	}
@@ -465,5 +558,5 @@ func TriageInbox(cards []InboxCard) ([]string, error) {
 	if fm.quit || !fm.done {
 		return nil, nil
 	}
-	return fm.actions, nil
+	return fm.decisions(), nil
 }

@@ -85,26 +85,28 @@ type showRemoteQueue struct {
 // showClient mirrors ClientConfig; it holds no secrets but resolves the
 // optional launch override to a plain (possibly null) value.
 type showClient struct {
-	Name      string        `json:"name"`
-	VaultPath string        `json:"vault_path"`
-	NotesPath string        `json:"notes_path"`
-	DevRoot   string        `json:"dev_root,omitempty"`
-	TaskFile  string        `json:"task_file,omitempty"`
-	Launch    *LaunchConfig `json:"launch,omitempty"`
+	Name        string        `json:"name"`
+	Description string        `json:"description,omitempty"`
+	VaultPath   string        `json:"vault_path"`
+	NotesPath   string        `json:"notes_path"`
+	DevRoot     string        `json:"dev_root,omitempty"`
+	TaskFile    string        `json:"task_file,omitempty"`
+	Launch      *LaunchConfig `json:"launch,omitempty"`
 }
 
 // showProject mirrors ProjectConfig and additionally surfaces the otherwise
 // unexported `synthetic` flag — the client-projection projects excluded from
 // name resolution, whose invisibility is a documented source of confusion.
 type showProject struct {
-	Project   string        `json:"project"`
-	Client    string        `json:"client,omitempty"`
-	VaultPath string        `json:"vault_path"`
-	NotesPath string        `json:"notes_path"`
-	DevPath   string        `json:"dev_path,omitempty"`
-	File      string        `json:"task_file"`
-	Launch    *LaunchConfig `json:"launch,omitempty"`
-	Synthetic bool          `json:"synthetic"`
+	Project     string        `json:"project"`
+	Description string        `json:"description,omitempty"`
+	Client      string        `json:"client,omitempty"`
+	VaultPath   string        `json:"vault_path"`
+	NotesPath   string        `json:"notes_path"`
+	DevPath     string        `json:"dev_path,omitempty"`
+	File        string        `json:"task_file"`
+	Launch      *LaunchConfig `json:"launch,omitempty"`
+	Synthetic   bool          `json:"synthetic"`
 }
 
 // RedactView builds the secrets-redacted introspection view of c. configPath is
@@ -136,26 +138,28 @@ func RedactView(c Config, configPath string) ShowConfig {
 	clients := make([]showClient, 0, len(c.Clients))
 	for _, cl := range c.Clients {
 		clients = append(clients, showClient{
-			Name:      cl.Name,
-			VaultPath: cl.VaultPath,
-			NotesPath: cl.NotesPath,
-			DevRoot:   cl.DevRoot,
-			TaskFile:  cl.TaskFile,
-			Launch:    cl.Launch,
+			Name:        cl.Name,
+			Description: cl.Description,
+			VaultPath:   cl.VaultPath,
+			NotesPath:   cl.NotesPath,
+			DevRoot:     cl.DevRoot,
+			TaskFile:    cl.TaskFile,
+			Launch:      cl.Launch,
 		})
 	}
 
 	projects := make([]showProject, 0, len(c.Projects))
 	for _, p := range c.Projects {
 		projects = append(projects, showProject{
-			Project:   p.Project,
-			Client:    p.Client,
-			VaultPath: p.VaultPath,
-			NotesPath: p.NotesPath,
-			DevPath:   p.DevPath,
-			File:      p.File,
-			Launch:    p.Launch,
-			Synthetic: p.synthetic,
+			Project:     p.Project,
+			Description: p.Description,
+			Client:      p.Client,
+			VaultPath:   p.VaultPath,
+			NotesPath:   p.NotesPath,
+			DevPath:     p.DevPath,
+			File:        p.File,
+			Launch:      p.Launch,
+			Synthetic:   p.synthetic,
 		})
 	}
 

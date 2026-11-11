@@ -21,7 +21,7 @@ type fakeInboxClassifier struct {
 	batches   [][]string
 }
 
-func (f *fakeInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string) ([]InboxVerdict, error) {
+func (f *fakeInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string, _ []InboxDestination) ([]InboxVerdict, error) {
 	keys := make([]string, len(bodies))
 	for i, body := range bodies {
 		keys[i] = strings.Join(body, "\n")
@@ -330,7 +330,7 @@ func TestInboxRefineBatchFailureFallsBack(t *testing.T) {
 // shortClassifier returns fewer verdicts than bodies.
 type shortClassifier struct{}
 
-func (shortClassifier) ClassifyInbox(_ context.Context, bodies [][]string) ([]InboxVerdict, error) {
+func (shortClassifier) ClassifyInbox(_ context.Context, bodies [][]string, _ []InboxDestination) ([]InboxVerdict, error) {
 	return make([]InboxVerdict, len(bodies)-1), nil
 }
 

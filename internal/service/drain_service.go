@@ -110,10 +110,7 @@ func (s DrainService) Drain(ctx context.Context, limit int) (DrainSummary, error
 
 			// A configured client name routes to its own tag (mirrors `qi task add
 			// --client`). Otherwise the free-form project tag is used.
-			tag := strings.TrimSpace(rt.Project)
-			if c := strings.TrimSpace(rt.Client); c != "" {
-				tag = c
-			}
+			tag := TaskRouteTag(rt.Project, rt.Client)
 
 			if _, err := s.Tasks.CreateTask(AddTaskInput{
 				Text:      rt.Text,

@@ -322,3 +322,21 @@ func TestProposeInboxRejectsBadDestinations(t *testing.T) {
 		}
 	}
 }
+
+func TestValidDestinationKey(t *testing.T) {
+	for key, want := range map[string]bool{
+		"acme":      true,
+		"globex-ui": true,
+		"tps_2":     true,
+		"none":      false,
+		"None":      false,
+		"Acme Corp": false,
+		"a.b":       false,
+		"a/b":       false,
+		"":          false,
+	} {
+		if got := ValidDestinationKey(key); got != want {
+			t.Errorf("ValidDestinationKey(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
