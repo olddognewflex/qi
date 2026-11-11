@@ -19,6 +19,22 @@ func FormatTaskLine(task domain.Task) (string, error) {
 		status = "x"
 	}
 
+	// The first tag is the project when parsed. Move an explicitly selected
+	// project ahead of other inline tags, preserving the remaining text.
+	if matches := tagRe.FindAllStringIndex(text, -1); task.Project != "" && len(matches) > 0 && text[matches[0][0]+1:matches[0][1]] != task.Project {
+		for i := len(matches) - 1; i > 0; i-- {
+			start, end := matches[i][0], matches[i][1]
+			if text[start+1:end] == task.Project {
+				if end < len(text) && text[end] == ' ' {
+					end++
+				}
+				text = text[:start] + text[end:]
+			}
+		}
+		first := matches[0][0]
+		text = strings.TrimSpace(text[:first] + "#" + task.Project + " " + text[first:])
+	}
+
 	parts := []string{fmt.Sprintf("- [%s] %s", status, text)}
 
 	// ParseTaskLine does not strip inline #tags from Text, so a parsed task
@@ -30,26 +46,23 @@ func FormatTaskLine(task domain.Task) (string, error) {
 		inline[m[1]] = struct{}{}
 	}
 
-	hasProjectTag := false
+	if task.Project != "" {
+		if _, present := inline[task.Project]; !present {
+			parts = append(parts, "#"+task.Project)
+			inline[task.Project] = struct{}{}
+		}
+	}
+
 	for _, tag := range task.Tags {
 		tag = strings.TrimSpace(tag)
 		if tag == "" {
 			continue
-		}
-		if tag == task.Project {
-			hasProjectTag = true
 		}
 		if _, dup := inline[tag]; dup {
 			continue
 		}
 		parts = append(parts, "#"+tag)
 		inline[tag] = struct{}{}
-	}
-
-	if task.Project != "" && !hasProjectTag {
-		if _, dup := inline[task.Project]; !dup {
-			parts = append(parts, "#"+task.Project)
-		}
 	}
 
 	// Recurrence is plain rule text (🔁 already stripped on parse); re-prepend the

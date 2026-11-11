@@ -381,3 +381,100 @@ func TestRepeatCountShownInListAndCard(t *testing.T) {
 		t.Errorf("card should say the decision covers all repeats:\n%s", card)
 	}
 }
+
+func destCards() []InboxCard {
+	return []InboxCard{
+		{Summary: "fix portal login", Proposed: triageTask, Reason: "typesafe: task (confidence 0.90); → #portal (0.82)", Destination: "portal"},
+		{Summary: "send invoice", Proposed: triageTask, Reason: "typesafe: task (confidence 0.80); → #acme (0.75)", Destination: "acme"},
+		{Summary: "buy milk", Proposed: triageTask, Reason: "rule"},
+	}
+}
+
+func TestSourceHintWithDestination(t *testing.T) {
+	if got := sourceHint("typesafe: task (confidence 0.90); → #portal (0.82)"); got != "ts 0.90" {
+		t.Errorf("sourceHint = %q, want ts 0.90", got)
+	}
+}
+
+func TestTriageDestinationDecisions(t *testing.T) {
+	tests := []struct {
+		name string
+		keys []string
+		want []InboxDecision
+	}{
+		{"accept keeps", []string{"enter", "enter", "enter"}, []InboxDecision{{"task", "portal"}, {"task", "acme"}, {"task", ""}}},
+		{"manual task keeps", []string{"t"}, []InboxDecision{{"task", "portal"}, {}, {}}},
+		{"x clears before accept", []string{"x", "enter"}, []InboxDecision{{"task", ""}, {}, {}}},
+		{"x twice restores", []string{"x", "x", "enter"}, []InboxDecision{{"task", "portal"}, {}, {}}},
+		{"x after accept clears", []string{"enter", "k", "x"}, []InboxDecision{{"task", ""}, {}, {}}},
+		{"note drops", []string{"n", "a", "d"}, []InboxDecision{{"note", ""}, {"archive", ""}, {"delete", ""}}},
+		{"skip drops", []string{"s"}, []InboxDecision{{}, {}, {}}},
+		{"x on no-destination row is a no-op", []string{"j", "j", "x", "enter"}, []InboxDecision{{}, {}, {"task", ""}}},
+		{"A keeps", []string{"j", "x", "A"}, []InboxDecision{{"task", "portal"}, {"task", ""}, {"task", ""}}},
+		{"card x clears", []string{"tab", "x", "enter"}, []InboxDecision{{"task", ""}, {}, {}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _ := press(t, newTriageModel(destCards()), tt.keys...)
+			if got := m.decisions(); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("decisions = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTriageDestinationShownInListAndCard(t *testing.T) {
+	m := newTriageModel(destCards())
+	list := m.View()
+	for _, want := range []string{"fix portal login → #portal", "send invoice → #acme", "x clear dest"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("list missing %q:\n%s", want, list)
+		}
+	}
+	if strings.Contains(list, "buy milk →") {
+		t.Errorf("row without destination shows one:\n%s", list)
+	}
+
+	// Cleared or decided as a non-task: the list drops it.
+	m, _ = press(t, m, "x", "j", "n")
+	list = m.View()
+	if strings.Contains(list, "#portal") || strings.Contains(list, "#acme") {
+		t.Errorf("cleared / note rows still show a destination:\n%s", list)
+	}
+
+	m = newTriageModel(destCards())
+	m.view = viewCard
+	if card := m.View(); !strings.Contains(card, "dest:     #portal") || !strings.Contains(card, "x clear dest") {
+		t.Errorf("card missing destination:\n%s", card)
+	}
+	m, _ = press(t, m, "x")
+	if card := m.View(); !strings.Contains(card, "dest:     #portal (cleared — x restores)") {
+		t.Errorf("card missing cleared state:\n%s", card)
+	}
+	m, _ = press(t, m, "x", "n", "left")
+	if card := m.View(); !strings.Contains(card, "dest:     #portal (unused: not a task)") {
+		t.Errorf("card missing unused state:\n%s", card)
+	}
+}
+
+// Without destinations the help lines are unchanged.
+func TestTriageNoDestinationHelpUnchanged(t *testing.T) {
+	m := newTriageModel(testCards(2))
+	if strings.Contains(m.View(), "x clear dest") {
+		t.Errorf("list advertises x without destinations")
+	}
+	m.view = viewCard
+	if strings.Contains(m.View(), "dest:") || strings.Contains(m.View(), "x clear dest") {
+		t.Errorf("card shows destination UI without one")
+	}
+}
+
+func TestTriageDestinationSurvivesNarrowList(t *testing.T) {
+	cards := []InboxCard{{Summary: strings.Repeat("long capture text ", 10), Proposed: triageTask, Destination: "portal"}}
+	m := newTriageModel(cards)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	view := next.(triageModel).View()
+	if !strings.Contains(view, "… → #portal") {
+		t.Errorf("destination cut off by a long summary:\n%s", view)
+	}
+}

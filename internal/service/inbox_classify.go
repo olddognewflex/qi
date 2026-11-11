@@ -25,9 +25,23 @@ type InboxClassification struct {
 
 // InboxVerdict is one capture's outcome within a batch: a classification, or
 // Err when the classifier had no usable answer for that capture alone.
+// Destination is the answer to "if this were a task, where does it go?" — a
+// key of the offered destinations, "none", or empty when none were offered —
+// with its confidence; Refine uses it only for captures that end up as tasks.
 type InboxVerdict struct {
 	InboxClassification
-	Err error
+	Destination           string
+	DestinationConfidence float64
+	Err                   error
+}
+
+// InboxDestination is a place a task can be routed: a configured project
+// (Key is its #tag) or client (Key is its name, Client set). Description is
+// what the classifier reads, so it should say what the project or client is.
+type InboxDestination struct {
+	Key         string
+	Description string
+	Client      bool
 }
 
 // InboxClassifier proposes triage actions for a batch of capture bodies. It is
@@ -35,12 +49,13 @@ type InboxVerdict struct {
 // never constructs one itself, so List and the process-inbox skills stay
 // deterministic and offline.
 //
-// A non-nil error fails the whole batch (transport, API). Otherwise the
-// verdicts must be index-aligned with bodies — Refine treats a length
-// mismatch as a batch failure — and a per-capture problem is that verdict's
-// Err.
+// dests are the task destinations to choose among; when empty the classifier
+// asks only the action question (and leaves Destination empty). A non-nil
+// error fails the whole batch (transport, API). Otherwise the verdicts must
+// be index-aligned with bodies — Refine treats a length mismatch as a batch
+// failure — and a per-capture problem is that verdict's Err.
 type InboxClassifier interface {
-	ClassifyInbox(ctx context.Context, bodies [][]string) ([]InboxVerdict, error)
+	ClassifyInbox(ctx context.Context, bodies [][]string, dests []InboxDestination) ([]InboxVerdict, error)
 }
 
 // InboxRefineOptions tunes Refine.
@@ -51,6 +66,12 @@ type InboxRefineOptions struct {
 	// Limit caps how many eligible captures are sent, in List order; <= 0
 	// means no limit. The rest keep their heuristic proposal.
 	Limit int
+	// Destinations are the projects/clients a task may be routed to; empty
+	// means no destination question is asked.
+	Destinations []InboxDestination
+	// MinDestinationConfidence is the confidence a destination needs to be
+	// proposed; below it the item gets no destination at all.
+	MinDestinationConfidence float64
 }
 
 // InboxRefinePlan says what Refine will send for a set of items, so a caller
@@ -67,6 +88,7 @@ type InboxRefineStats struct {
 	Refined int // classifier's action applied
 	Unsure  int // verdict below MinConfidence or unknown action: heuristic kept
 	Failed  int // classifier error (batch or per-capture): heuristic kept
+	Routed  int // of the classified tasks, given a destination
 }
 
 // limitNote is appended to the Reason of eligible captures over the limit.
@@ -109,6 +131,11 @@ func (s InboxService) PlanRefine(items []InboxItem, opts InboxRefineOptions) Inb
 //   - confidence >= MinConfidence and a known action (task/note/archive):
 //     the classifier's action wins, Reason "typesafe: <action> (confidence 0.NN)";
 //   - otherwise the heuristic action stands and Reason notes the unsure verdict.
+//   - then, if the settled action is task and the verdict's destination is
+//     one of opts.Destinations with confidence >= MinDestinationConfidence,
+//     the item's Project (or Client) is set to it and Reason gains
+//     "; → #<key> (0.NN)". Anything else — "none", an unknown key, a low
+//     confidence, a non-task action — proposes no destination at all.
 //
 // A classifier error never fails triage: the affected items (a whole batch,
 // or one capture) keep their heuristic proposal and one aggregated error is
@@ -120,6 +147,11 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 	var stats InboxRefineStats
 	if c == nil {
 		return out, stats, nil
+	}
+
+	dests := make(map[string]InboxDestination, len(opts.Destinations))
+	for _, d := range opts.Destinations {
+		dests[d.Key] = d
 	}
 
 	selected, skipped := selectForRefine(out, opts.Limit)
@@ -152,7 +184,7 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 			for k, i := range batch {
 				bodies[k] = out[i].Body
 			}
-			verdicts, err := c.ClassifyInbox(ctx, bodies)
+			verdicts, err := c.ClassifyInbox(ctx, bodies, opts.Destinations)
 			if err == nil && len(verdicts) != len(batch) {
 				err = fmt.Errorf("classifier returned %d verdict(s) for %d capture(s)", len(verdicts), len(batch))
 			}
@@ -166,11 +198,15 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 					continue
 				}
 				applied := applyInboxClassification(&out[i], verdicts[k].InboxClassification, opts.MinConfidence)
+				routed := applyInboxDestination(&out[i], verdicts[k], dests, opts.MinDestinationConfidence)
 				mu.Lock()
 				if applied {
 					stats.Refined++
 				} else {
 					stats.Unsure++
+				}
+				if routed {
+					stats.Routed++
 				}
 				mu.Unlock()
 			}
@@ -210,4 +246,24 @@ func applyInboxClassification(it *InboxItem, cls InboxClassification, minConfide
 	}
 	it.Reason = fmt.Sprintf("%s; typesafe unsure (%s %.2f)", it.Reason, cls.Action, cls.Confidence)
 	return false
+}
+
+// applyInboxDestination proposes v's destination for it when it is settled as
+// a task and the destination is a known, confident one, and reports whether it
+// did. Below the floor it proposes nothing rather than a likely-wrong guess.
+func applyInboxDestination(it *InboxItem, v InboxVerdict, dests map[string]InboxDestination, minConfidence float64) bool {
+	if it.Action != InboxActionTask {
+		return false
+	}
+	d, ok := dests[v.Destination]
+	if !ok || v.DestinationConfidence < minConfidence {
+		return false
+	}
+	if d.Client {
+		it.Client = d.Key
+	} else {
+		it.Project = d.Key
+	}
+	it.Reason += fmt.Sprintf("; → #%s (%.2f)", d.Key, v.DestinationConfidence)
+	return true
 }

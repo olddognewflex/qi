@@ -86,14 +86,30 @@ func TestRedactViewSurfacesSyntheticProjects(t *testing.T) {
 func TestRedactViewSurfacesTypeSafeAndInbox(t *testing.T) {
 	c := Config{
 		TypeSafe: TypeSafeConfig{APIKeyEnv: "TS_KEY", URL: "https://ts", Model: "jev-latest"},
-		Inbox:    InboxConfig{Classifier: InboxClassifierTypeSafe, MinConfidence: 0.7, ClassifyLimit: 40},
+		Inbox:    InboxConfig{Classifier: InboxClassifierTypeSafe, MinConfidence: 0.7, MinDestinationConfidence: 0.8, ClassifyLimit: 40},
 	}
 	b, err := json.Marshal(RedactView(c, ""))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	// api_key_env is a var NAME, not a secret: shown as-is.
-	for _, want := range []string{`"typesafe":{"api_key_env":"TS_KEY","url":"https://ts","model":"jev-latest"}`, `"inbox":{"classifier":"typesafe","min_confidence":0.7,"classify_limit":40}`} {
+	for _, want := range []string{`"typesafe":{"api_key_env":"TS_KEY","url":"https://ts","model":"jev-latest"}`, `"inbox":{"classifier":"typesafe","min_confidence":0.7,"min_destination_confidence":0.8,"classify_limit":40}`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("config show missing %s: %s", want, b)
+		}
+	}
+}
+
+func TestRedactViewSurfacesDescriptions(t *testing.T) {
+	c := Config{
+		Clients:  []ClientConfig{{Name: "acme", Description: "Acme Corp consulting"}},
+		Projects: []ProjectConfig{{Project: "portal", Client: "acme", Description: "Acme customer portal"}},
+	}
+	b, err := json.Marshal(RedactView(c, ""))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"name":"acme","description":"Acme Corp consulting"`, `"project":"portal","description":"Acme customer portal"`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("config show missing %s: %s", want, b)
 		}

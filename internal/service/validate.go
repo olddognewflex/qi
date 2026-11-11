@@ -65,6 +65,18 @@ func ValidateAddInput(input AddTaskInput, project, client string, isClient func(
 	return nil
 }
 
+// TaskRouteTag is the project tag a new task carries: the client name when
+// one is given (`qi task add --client`), else the free-form project tag
+// (`--project`). Sync then moves a tagged task to that client's or project's
+// task_file. Callers validate the pair first (ValidateAddInput or their own
+// flag checks); TaskRouteTag only picks.
+func TaskRouteTag(project, client string) string {
+	if c := strings.TrimSpace(client); c != "" {
+		return c
+	}
+	return strings.TrimSpace(project)
+}
+
 // hasControlChar reports whether s contains any ASCII control character
 // (including CR/LF and tab). Task text must stay on one markdown line.
 func hasControlChar(s string) bool {

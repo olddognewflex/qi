@@ -36,15 +36,24 @@ type InboxItem struct {
 	// Repeats are the paths of other captures with an identical body, set
 	// only by CollapseRepeats; List never fills it.
 	Repeats []string
+	// Project or Client is the destination proposed for a task (at most one
+	// set), filled only by Refine with a destination-aware classifier; List
+	// never fills them. ApplyGroup routes a task there.
+	Project string
+	Client  string
 }
 
 // InboxApplyInput selects a capture and the action to take on it. Title
-// overrides the derived task text / note title; Project tags a task.
+// overrides the derived task text / note title. For a task, Project tags it
+// (like `qi task add --project`) or Client routes it to a configured client
+// (like `--client`); they are mutually exclusive and ignored for other
+// actions.
 type InboxApplyInput struct {
 	Path    string
 	Action  string
 	Title   string
 	Project string
+	Client  string
 }
 
 // InboxApplyOutput reports what an Apply did. Created is the path of a new
@@ -65,6 +74,9 @@ type InboxService struct {
 	ArchiveDir string
 	Tasks      TaskService
 	Notes      NoteService
+	// IsClient reports whether a name is a configured client; Apply rejects
+	// an InboxApplyInput.Client it does not know (nil: every client).
+	IsClient func(string) bool
 }
 
 // List scans InboxDir (non-recursively) for *.md captures and returns one
@@ -131,8 +143,12 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 		if strings.TrimSpace(text) == "" {
 			return InboxApplyOutput{}, fmt.Errorf("inbox: capture has no text for a task")
 		}
+		tag, err := s.taskTag(in.Project, in.Client)
+		if err != nil {
+			return InboxApplyOutput{}, err
+		}
 		create = func() (string, error) {
-			created, err := s.Tasks.CreateTask(AddTaskInput{Text: text, Project: in.Project})
+			created, err := s.Tasks.CreateTask(AddTaskInput{Text: text, Project: tag})
 			if err != nil {
 				return "", fmt.Errorf("inbox: add task: %w", err)
 			}
@@ -172,6 +188,21 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 	return out, nil
 }
 
+// taskTag resolves a task's project tag from Apply's Project/Client the way
+// `qi task add --project/--client` does: mutually exclusive, a client must be
+// configured, and a client routes by its own name (TaskRouteTag).
+func (s InboxService) taskTag(project, client string) (string, error) {
+	if strings.TrimSpace(client) != "" {
+		if strings.TrimSpace(project) != "" {
+			return "", fmt.Errorf("inbox: project and client are mutually exclusive")
+		}
+		if s.IsClient == nil || !s.IsClient(strings.TrimSpace(client)) {
+			return "", fmt.Errorf("inbox: unknown client %q", client)
+		}
+	}
+	return TaskRouteTag(project, client), nil
+}
+
 // ApplyGroup applies one decision to a collapsed item. The repeats are
 // disposed of FIRST — archived for task/note/archive, deleted for delete —
 // and the action itself (the only step that creates anything) is applied to
@@ -179,7 +210,9 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 // repeat error stops the group before the task or note is created, so a
 // failure can leave captures behind but never a created item whose captures
 // will propose it again. Outputs for everything applied are returned
-// alongside any error, the representative's first when it was applied.
+// alongside any error, the representative's first when it was applied. A
+// task goes to it.Project or it.Client (the proposed destination as the
+// caller left it); other actions ignore them.
 func (s InboxService) ApplyGroup(it InboxItem, action string) ([]InboxApplyOutput, error) {
 	rest := InboxActionArchive
 	if action == InboxActionDelete {
@@ -196,7 +229,11 @@ func (s InboxService) ApplyGroup(it InboxItem, action string) ([]InboxApplyOutpu
 		}
 		disposed = append(disposed, o)
 	}
-	first, err := s.Apply(InboxApplyInput{Path: it.Path, Action: action})
+	in := InboxApplyInput{Path: it.Path, Action: action}
+	if action == InboxActionTask {
+		in.Project, in.Client = it.Project, it.Client
+	}
+	first, err := s.Apply(in)
 	if err != nil {
 		return disposed, err
 	}

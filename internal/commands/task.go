@@ -87,7 +87,6 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 			// --client tags the task with a configured client name (validated),
 			// routing it to that client's task_file via sync. Mutually exclusive
 			// with the free-form --project tag.
-			tag := project
 			if client != "" {
 				if project != "" {
 					return fmt.Errorf("--client and --project are mutually exclusive")
@@ -95,8 +94,8 @@ func newTaskCommand(cfg config.Config) *cobra.Command {
 				if _, ok := cfg.ClientByName(client); !ok {
 					return fmt.Errorf("unknown client %q", client)
 				}
-				tag = client
 			}
+			tag := service.TaskRouteTag(project, client)
 
 			input := service.AddTaskInput{
 				Text:       args[0],

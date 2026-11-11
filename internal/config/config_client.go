@@ -15,24 +15,30 @@ import (
 // load; ClientConfig is retained so `qi launch harness` can resolve a launch
 // from a client name alone (cwd = DevRoot).
 type ClientConfig struct {
-	Name      string
-	VaultPath string        // Obsidian notes vault for all the client's projects
-	NotesPath string        // resolved dir for `qi note new --client`; default <vault>/00-inbox
-	DevRoot   string        // root dev folder; relative project dev_path resolves under it
-	TaskFile  string        // optional client-level projection task file (absolute, resolved)
-	Launch    *LaunchConfig // client default harness; nil = inherit global [launch]
+	Name string
+	// Description says what the client is, for `qi inbox` destination
+	// proposals (the classifier reads it); optional.
+	Description string
+	VaultPath   string        // Obsidian notes vault for all the client's projects
+	NotesPath   string        // resolved dir for `qi note new --client`; default <vault>/00-inbox
+	DevRoot     string        // root dev folder; relative project dev_path resolves under it
+	TaskFile    string        // optional client-level projection task file (absolute, resolved)
+	Launch      *LaunchConfig // client default harness; nil = inherit global [launch]
 }
 
 // ProjectConfig is a single project, flattened from its [[client]] parent with
 // VaultPath/DevPath resolved to absolute paths and Launch/Client inherited.
 type ProjectConfig struct {
-	Project   string
-	Client    string // owning client name (for harness inheritance)
-	VaultPath string
-	NotesPath string // resolved dir for `qi note new --project`; default <vault>/00-inbox
-	DevPath   string // optional working dir for `qi launch harness`; empty = don't chdir
-	File      string
-	Launch    *LaunchConfig // project-level override; nil = inherit client/global
+	Project string
+	// Description says what the project is (and, when names overlap, what it
+	// is not), for `qi inbox` destination proposals; optional.
+	Description string
+	Client      string // owning client name (for harness inheritance)
+	VaultPath   string
+	NotesPath   string // resolved dir for `qi note new --project`; default <vault>/00-inbox
+	DevPath     string // optional working dir for `qi launch harness`; empty = don't chdir
+	File        string
+	Launch      *LaunchConfig // project-level override; nil = inherit client/global
 
 	// synthetic marks the client-level projection (from [[client]] task_file)
 	// that is flattened into Projects for sync routing. It is excluded from
@@ -40,18 +46,24 @@ type ProjectConfig struct {
 	synthetic bool
 }
 
+// IsSynthetic reports whether p is a client-level projection flattened from a
+// [[client]] task_file rather than a configured [[client.project]].
+func (p ProjectConfig) IsSynthetic() bool { return p.synthetic }
+
 type projectTOML struct {
 	Project   string      `toml:"project"`
-	VaultPath string      `toml:"vault_path"` // optional; overrides the client vault
-	Path      string      `toml:"path"`       // optional; project base subdir within the vault for relative task_file/notes_path
-	NotesPath string      `toml:"notes_path"` // optional; note dir, default 00-inbox (inherits client)
-	DevPath   string      `toml:"dev_path"`   // absolute, or relative to client dev_root
-	File      string      `toml:"task_file"`  // projection task file; default 10-tasks/<project>.md
+	Desc      string      `toml:"description"` // optional; read by the inbox destination classifier
+	VaultPath string      `toml:"vault_path"`  // optional; overrides the client vault
+	Path      string      `toml:"path"`        // optional; project base subdir within the vault for relative task_file/notes_path
+	NotesPath string      `toml:"notes_path"`  // optional; note dir, default 00-inbox (inherits client)
+	DevPath   string      `toml:"dev_path"`    // absolute, or relative to client dev_root
+	File      string      `toml:"task_file"`   // projection task file; default 10-tasks/<project>.md
 	Launch    *launchTOML `toml:"launch"`
 }
 
 type clientTOML struct {
 	Name      string        `toml:"name"`
+	Desc      string        `toml:"description"` // optional; read by the inbox destination classifier
 	VaultPath string        `toml:"vault_path"`
 	NotesPath string        `toml:"notes_path"` // optional; note dir, default 00-inbox
 	DevRoot   string        `toml:"dev_root"`

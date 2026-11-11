@@ -67,6 +67,14 @@ type InboxProposal struct {
 // segment (`destinations.<key>`) and a Choice option.
 var destinationKeyRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// ValidDestinationKey reports whether key can be offered as a destination:
+// letters, digits, '-' or '_', and not DestinationNone. Callers building a
+// destination list from config use it to skip keys ProposeInbox would reject
+// (it still checks duplicates itself).
+func ValidDestinationKey(key string) bool {
+	return destinationKeyRE.MatchString(key) && !strings.EqualFold(key, DestinationNone)
+}
+
 // validateDestinations rejects keys that would collide with DestinationNone,
 // collapse into each other, or make an ambiguous state path.
 func validateDestinations(dests []InboxDestination) error {
