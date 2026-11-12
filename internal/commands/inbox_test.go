@@ -73,7 +73,7 @@ func inboxTestConfig(t *testing.T) config.Config {
 		NotesPath:    filepath.Join(vault, "20-notes"),
 		TaskFilePath: filepath.Join(vault, "10-tasks", "inbox.md"),
 		TypeSafe:     config.TypeSafeConfig{APIKeyEnv: "QI_TEST_TYPESAFE_KEY"},
-		Inbox:        config.InboxConfig{Classifier: config.InboxClassifierHeuristic, MinConfidence: 0.5, ClassifyLimit: config.DefaultInboxClassifyLimit},
+		Inbox:        config.InboxConfig{Classifier: config.InboxClassifierHeuristic, MinConfidence: 0.5, ClassifyLimit: config.DefaultInboxClassifyLimit, DuplicateCheck: true},
 	}
 }
 
@@ -242,20 +242,25 @@ func TestInboxRejectsNegativeClassifyLimit(t *testing.T) {
 func TestInboxClassifyBudget(t *testing.T) {
 	cases := []struct {
 		batches int
+		dup     bool
 		want    time.Duration
 	}{
 		// Each round of 4 batches gets two requests' time: the action
 		// request, then the lean date details.
-		{0, 60 * time.Second},
-		{1, 60 * time.Second},
-		{4, 60 * time.Second},
-		{5, 120 * time.Second},
-		{12, 3 * time.Minute},
-		{100, 3 * time.Minute},
+		{0, false, 60 * time.Second},
+		{1, false, 60 * time.Second},
+		{4, false, 60 * time.Second},
+		{5, false, 120 * time.Second},
+		{12, false, 3 * time.Minute},
+		{100, false, 3 * time.Minute},
+		// The duplicate check adds a third request per batch.
+		{1, true, 90 * time.Second},
+		{4, true, 90 * time.Second},
+		{5, true, 3 * time.Minute},
 	}
 	for _, tc := range cases {
-		if got := inboxClassifyBudget(tc.batches); got != tc.want {
-			t.Errorf("inboxClassifyBudget(%d) = %s, want %s", tc.batches, got, tc.want)
+		if got := inboxClassifyBudget(tc.batches, tc.dup); got != tc.want {
+			t.Errorf("inboxClassifyBudget(%d, %v) = %s, want %s", tc.batches, tc.dup, got, tc.want)
 		}
 	}
 }
@@ -521,5 +526,192 @@ func TestTypeSafeAdapterInNDays(t *testing.T) {
 	want := service.InboxDate{Date: time.Date(2026, 11, 12, 0, 0, 0, 0, time.Local), Role: service.InboxDateDue, Confidence: 0.75}
 	if got[0].Date == nil || *got[0].Date != want {
 		t.Errorf("date = %+v, want %+v", got[0].Date, want)
+	}
+}
+
+// stubDupChecker answers every candidate with prob and records the checks.
+type stubDupChecker struct {
+	mu     sync.Mutex
+	prob   float64
+	checks []service.InboxDupCheck
+}
+
+func (s *stubDupChecker) CheckDuplicates(_ context.Context, checks []service.InboxDupCheck) ([][]float64, error) {
+	s.mu.Lock()
+	s.checks = append(s.checks, checks...)
+	s.mu.Unlock()
+	out := make([][]float64, len(checks))
+	for i, c := range checks {
+		out[i] = make([]float64, len(c.Candidates))
+		for k := range c.Candidates {
+			out[i][k] = s.prob
+		}
+	}
+	return out, nil
+}
+
+func stubDupCheckerFor(t *testing.T, prob float64) *stubDupChecker {
+	t.Helper()
+	stub := &stubDupChecker{prob: prob}
+	prev := buildInboxDuplicateChecker
+	buildInboxDuplicateChecker = func(config.Config, string) service.InboxDuplicateChecker { return stub }
+	t.Cleanup(func() { buildInboxDuplicateChecker = prev })
+	return stub
+}
+
+func writeOpenTasks(t *testing.T, cfg config.Config, lines ...string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(cfg.TaskFilePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.TaskFilePath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInboxDryRunDuplicateWarning(t *testing.T) {
+	cases := []struct {
+		name     string
+		prob     float64
+		wantWarn bool
+	}{
+		{"above floor", 0.92, true},
+		{"at floor", 0.85, true},
+		{"below floor", 0.84, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := inboxTestConfig(t)
+			cfg.Inbox.MinDuplicateProbability = config.DefaultInboxMinDuplicateProbability
+			writeOpenTasks(t, cfg, "- [ ] reuse the caching layer", "- [x] caching layer done", "- [ ] buy milk")
+			t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+			stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9})
+			dup := stubDupCheckerFor(t, tc.prob)
+
+			out, errOut, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+			if err != nil {
+				t.Fatalf("inbox: %v", err)
+			}
+			warn := `! possible duplicate of "reuse the caching layer"`
+			if got := strings.Contains(out, warn); got != tc.wantWarn {
+				t.Errorf("warning shown = %v, want %v:\n%s", got, tc.wantWarn, out)
+			}
+			// The proposal itself never changes.
+			if !strings.Contains(out, "task    caching layer could reuse the index") {
+				t.Errorf("proposal changed:\n%s", out)
+			}
+			// Only open tasks are candidates; the marker capture never leaves.
+			if len(dup.checks) != 1 || fmt.Sprint(dup.checks[0].Candidates) != "[reuse the caching layer]" {
+				t.Errorf("checks = %+v, want one check against the open task only", dup.checks)
+			}
+			flagged := 0
+			if tc.wantWarn {
+				flagged = 1
+			}
+			wantLine := fmt.Sprintf("inbox: typesafe: duplicate check: 1 task capture(s) checked, %d possible duplicate(s), 0 failed\n", flagged)
+			if !strings.Contains(errOut, wantLine) {
+				t.Errorf("stderr = %q, want %q", errOut, wantLine)
+			}
+		})
+	}
+}
+
+func TestInboxDuplicateCheckSwitchedOff(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	cfg.Inbox.DuplicateCheck = false
+	writeOpenTasks(t, cfg, "- [ ] reuse the caching layer")
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9})
+	dup := stubDupCheckerFor(t, 0.99)
+
+	out, errOut, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dup.checks) != 0 || strings.Contains(errOut, "open task") || strings.Contains(out, "possible duplicate") {
+		t.Errorf("duplicate_check = false still checked: checks %v, stderr %q", dup.checks, errOut)
+	}
+}
+
+func TestInboxDuplicateCheckDisclosedOnStderr(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	writeOpenTasks(t, cfg, "- [ ] reuse the caching layer", "- [ ] buy milk")
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9})
+	stubDupCheckerFor(t, 0.1)
+
+	_, errOut, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "checking task captures against 2 open task(s): shortlisted task text is sent too"; !strings.Contains(errOut, want) {
+		t.Errorf("stderr = %q, want disclosure %q", errOut, want)
+	}
+}
+
+func TestInboxNoDuplicateCheckWithoutOpenTasks(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	writeOpenTasks(t, cfg, "- [x] reuse the caching layer")
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9})
+	dup := stubDupCheckerFor(t, 0.99)
+
+	_, errOut, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dup.checks) != 0 || strings.Contains(errOut, "duplicate") {
+		t.Errorf("duplicate check ran with no open tasks: checks %v, stderr %q", dup.checks, errOut)
+	}
+}
+
+func TestInboxDuplicateReachesTriageAndArchiveNote(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	cfg.Inbox.MinDuplicateProbability = 0.85
+	writeOpenTasks(t, cfg, "- [ ] reuse the caching layer")
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9})
+	stubDupCheckerFor(t, 0.95)
+
+	orig := triageInbox
+	t.Cleanup(func() { triageInbox = orig })
+	triageInbox = func(cards []tui.InboxCard) ([]tui.InboxDecision, error) {
+		actions := make([]tui.InboxDecision, len(cards))
+		for i, c := range cards {
+			if c.DuplicateOf != "" {
+				if c.DuplicateOf != "reuse the caching layer" || c.DuplicateProbability != 0.95 || c.Proposed != service.InboxActionTask {
+					t.Errorf("card = %+v", c)
+				}
+				actions[i] = tui.InboxDecision{Action: service.InboxActionArchive} // what u returns
+			}
+		}
+		return actions, nil
+	}
+	out, _, err := runInboxCmd(t, cfg, "--classifier", "typesafe")
+	if err != nil {
+		t.Fatalf("inbox: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, `archive caching layer could reuse the index  (possible duplicate of "reuse the caching layer" (0.95))`) {
+		t.Errorf("archived duplicate not reported:\n%s", out)
+	}
+	tasks, _ := os.ReadFile(cfg.TaskFilePath)
+	if strings.Count(string(tasks), "- [ ]") != 1 {
+		t.Errorf("task file changed:\n%s", tasks)
+	}
+}
+
+func TestTypeSafeAdapterCheckDuplicates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"answers": {"dup_0_0": {"type": "noul", "noul": 0.88}}}`)
+	}))
+	defer srv.Close()
+	cfg := config.Config{TypeSafe: config.TypeSafeConfig{URL: srv.URL}}
+	got, err := buildInboxDuplicateChecker(cfg, "sk-test").CheckDuplicates(context.Background(),
+		[]service.InboxDupCheck{{Body: []string{"renew my passport"}, Candidates: []string{"renew passport", "passport photos"}}})
+	if err != nil {
+		t.Fatalf("CheckDuplicates: %v", err)
+	}
+	if fmt.Sprint(got) != "[[0.88 -1]]" {
+		t.Errorf("got %v, want [[0.88 -1]]", got)
 	}
 }

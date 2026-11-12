@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,6 +95,22 @@ type InboxRefineOptions struct {
 	// MinDestinationConfidence is the confidence a destination needs to be
 	// proposed; below it the item gets no destination at all.
 	MinDestinationConfidence float64
+	// Duplicates, when non-nil with OpenTasks, checks each classified
+	// capture proposed as a task against a lexical shortlist of OpenTasks
+	// (InboxDuplicateShortlist per capture): one extra call per batch, made
+	// only when some capture in it has candidates.
+	Duplicates InboxDuplicateChecker
+	// OpenTasks are the open task texts duplicates are looked for among.
+	OpenTasks []string
+	// MinDuplicateProbability is the probability the most likely candidate
+	// needs before the capture is flagged as its possible duplicate; 0 flags
+	// any answered candidate, so callers set it explicitly.
+	MinDuplicateProbability float64
+}
+
+// duplicateCheckEnabled reports whether Refine will run duplicate checks.
+func (o InboxRefineOptions) duplicateCheckEnabled() bool {
+	return o.Duplicates != nil && len(o.OpenTasks) > 0
 }
 
 // InboxRefinePlan says what Refine will send for a set of items, so a caller
@@ -102,6 +120,9 @@ type InboxRefinePlan struct {
 	Selected int // of those, sent to the classifier (after Limit)
 	Skipped  int // eligible but over Limit: heuristic kept
 	Batches  int // classifier calls, InboxClassifyBatchSize captures each
+	// DuplicateCheck is true when each batch may make a second, duplicate
+	// check call after classifying (so a batch can take two requests).
+	DuplicateCheck bool
 }
 
 // InboxRefineStats tallies what Refine did with the Selected captures.
@@ -113,6 +134,10 @@ type InboxRefineStats struct {
 
 	Dated      int // task proposals given a due/scheduled date
 	DateFailed int // date lookup failed: proposed undated
+
+	DupChecked int // task captures sent to the duplicate check
+	Duplicates int // of those, flagged as a possible duplicate
+	DupFailed  int // duplicate check error or no answer: no warning
 }
 
 // limitNote is appended to the Reason of eligible captures over the limit.
@@ -142,6 +167,8 @@ func (s InboxService) PlanRefine(items []InboxItem, opts InboxRefineOptions) Inb
 		Selected: len(selected),
 		Skipped:  len(skipped),
 		Batches:  (len(selected) + InboxClassifyBatchSize - 1) / InboxClassifyBatchSize,
+
+		DuplicateCheck: opts.duplicateCheckEnabled() && len(selected) > 0,
 	}
 }
 
@@ -165,11 +192,22 @@ func (s InboxService) PlanRefine(items []InboxItem, opts InboxRefineOptions) Inb
 //     other item is dated: not notes or archives, not dates below the floor,
 //     not captures the classifier never saw.
 //
+// With opts.Duplicates and opts.OpenTasks set, each batch then checks its
+// captures now proposed as tasks against their lexical shortlist of open
+// tasks, in one further call (none when no capture has a candidate), and sets
+// DuplicateOf/DuplicateProbability on those whose most likely candidate
+// reaches MinDuplicateProbability. That is only a warning: Action is never
+// changed, so nothing is archived on the check's say-so. A batch whose
+// classification failed is not duplicate-checked, and neither are captures
+// the classifier never saw (explicit task markers, over Limit).
+//
 // A classifier error never fails triage: the affected items (a whole batch,
 // or one capture) keep their heuristic proposal and one aggregated error is
 // returned alongside the items so the caller can warn; a failed date lookup
 // only leaves that task undated (and is reported the same way when nothing
-// worse failed). items itself is not modified.
+// worse failed); a failed duplicate check only leaves those captures without
+// a warning, and its error is joined to the returned one. items itself is not
+// modified.
 func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClassifier, opts InboxRefineOptions) ([]InboxItem, InboxRefineStats, error) {
 	out := make([]InboxItem, len(items))
 	copy(out, items)
@@ -188,12 +226,18 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 		out[i].Reason += limitNote
 	}
 
+	var shortlister taskShortlister
+	if opts.duplicateCheckEnabled() {
+		shortlister = newTaskShortlister(opts.OpenTasks)
+	}
+
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		firstErr error
-		dateErr  error
-		sem      = make(chan struct{}, InboxClassifyConcurrency)
+		wg          sync.WaitGroup
+		mu          sync.Mutex
+		firstErr    error
+		dateErr     error
+		firstDupErr error
+		sem         = make(chan struct{}, InboxClassifyConcurrency)
 	)
 	fail := func(n int, err error) {
 		mu.Lock()
@@ -251,17 +295,78 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 				}
 				mu.Unlock()
 			}
+			if opts.duplicateCheckEnabled() {
+				n, flagged, failed, err := checkBatchDuplicates(ctx, out, batch, shortlister, opts)
+				mu.Lock()
+				stats.DupChecked += n
+				stats.Duplicates += flagged
+				stats.DupFailed += failed
+				if failed > 0 && firstDupErr == nil {
+					firstDupErr = err
+				}
+				mu.Unlock()
+			}
 		}(batch)
 	}
 	wg.Wait()
 
-	if stats.Failed > 0 {
-		return out, stats, fmt.Errorf("classifier failed for %d capture(s), kept heuristic proposals: %w", stats.Failed, firstErr)
+	var errs []error
+	switch {
+	case stats.Failed > 0:
+		errs = append(errs, fmt.Errorf("classifier failed for %d capture(s), kept heuristic proposals: %w", stats.Failed, firstErr))
+	case stats.DateFailed > 0:
+		errs = append(errs, fmt.Errorf("date lookup failed for %d capture(s), proposed undated: %w", stats.DateFailed, dateErr))
 	}
-	if stats.DateFailed > 0 {
-		return out, stats, fmt.Errorf("date lookup failed for %d capture(s), proposed undated: %w", stats.DateFailed, dateErr)
+	if stats.DupFailed > 0 {
+		errs = append(errs, fmt.Errorf("duplicate check failed for %d capture(s), no warning shown: %w", stats.DupFailed, firstDupErr))
 	}
-	return out, stats, nil
+	return out, stats, errors.Join(errs...)
+}
+
+// checkBatchDuplicates runs the duplicate check over the batch's captures
+// proposed as tasks that have shortlist candidates, in one call (none if no
+// capture has one), and flags out[i] above the floor. It returns how many
+// captures were checked, flagged and failed, with the first failure's error.
+// Each goroutine writes only its own batch's items.
+func checkBatchDuplicates(ctx context.Context, out []InboxItem, batch []int, sl taskShortlister, opts InboxRefineOptions) (checked, flagged, failed int, err error) {
+	var (
+		checks []InboxDupCheck
+		idx    []int
+	)
+	for _, i := range batch {
+		if out[i].Action != InboxActionTask {
+			continue
+		}
+		cands := sl.shortlist(strings.Join(out[i].Body, "\n"), InboxDuplicateShortlist)
+		if len(cands) == 0 {
+			continue
+		}
+		checks = append(checks, InboxDupCheck{Body: out[i].Body, Candidates: cands})
+		idx = append(idx, i)
+	}
+	if len(checks) == 0 {
+		return 0, 0, 0, nil
+	}
+	results, err := opts.Duplicates.CheckDuplicates(ctx, checks)
+	if err == nil && len(results) != len(checks) {
+		err = fmt.Errorf("duplicate check returned %d result(s) for %d capture(s)", len(results), len(checks))
+	}
+	if err != nil {
+		return len(checks), 0, len(checks), err
+	}
+	for k, i := range idx {
+		if !answeredAny(results[k]) {
+			failed++
+			if err == nil {
+				err = fmt.Errorf("duplicate check has no answer for %q", out[i].Summary)
+			}
+			continue
+		}
+		if applyDuplicate(&out[i], checks[k].Candidates, results[k], opts.MinDuplicateProbability) {
+			flagged++
+		}
+	}
+	return len(checks), flagged, failed, err
 }
 
 // applyInboxDate sets it.Date from a classifier date and reports whether it

@@ -613,3 +613,104 @@ func TestClearDateAndDestinationIndependent(t *testing.T) {
 		t.Errorf("c (restore) then x = %+v, want task, dest cleared, date kept", got)
 	}
 }
+
+func dupCards() []InboxCard {
+	return []InboxCard{
+		{Summary: "renew my passport", Proposed: triageTask, Reason: "typesafe: task (confidence 0.90)", DuplicateOf: "renew passport", DuplicateProbability: 0.93},
+		{Summary: "buy milk", Proposed: triageTask, Reason: "rule"},
+	}
+}
+
+func TestDuplicateWarningShownInListAndCard(t *testing.T) {
+	m := newTriageModel(dupCards())
+	m.width = 120
+	list := m.View()
+	if !strings.Contains(list, "dup! renew my passport") {
+		t.Errorf("list should mark the flagged capture:\n%s", list)
+	}
+	if strings.Contains(list, "dup! buy milk") {
+		t.Errorf("unflagged capture marked:\n%s", list)
+	}
+	if !strings.Contains(list, `possible duplicate of "renew passport" (0.93) · u archive as duplicate`) {
+		t.Errorf("list should name the cursor row's duplicate:\n%s", list)
+	}
+	// The proposal itself is unchanged: still an undecided task.
+	if !strings.Contains(list, "task?") {
+		t.Errorf("warning must not change the proposal:\n%s", list)
+	}
+	m.view = viewCard
+	card := m.View()
+	if !strings.Contains(card, "possible duplicate of open task: renew passport (0.93)") {
+		t.Errorf("card should name the task it may repeat:\n%s", card)
+	}
+	m.cursor = 1
+	if card := m.View(); strings.Contains(card, "possible duplicate") {
+		t.Errorf("unflagged card shows a warning:\n%s", card)
+	}
+}
+
+func TestDuplicateLineOnlyWhenFlagged(t *testing.T) {
+	plain := newTriageModel(testCards(3))
+	if strings.Contains(plain.View(), "dup!") || plain.pageSize() != defaultTriageHeight-listChrome {
+		t.Errorf("no flagged card: want no dup line and the usual page size")
+	}
+	m := newTriageModel(dupCards())
+	if m.pageSize() != defaultTriageHeight-listChrome-1 {
+		t.Errorf("pageSize = %d, want one row fewer for the dup line", m.pageSize())
+	}
+	m.cursor = 1
+	if !strings.Contains(m.View(), "dup! = may repeat an open task") {
+		t.Errorf("unflagged cursor row should explain the marker:\n%s", m.View())
+	}
+	// Narrow terminals: no line wider than the window.
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
+	m = next.(triageModel)
+	m.cursor = 0
+	for _, line := range strings.Split(m.dupLine(), "\n") {
+		if w := lipgloss.Width(line); w > 40 {
+			t.Errorf("dup line %d cells wide on a 40-cell terminal: %q", w, line)
+		}
+	}
+}
+
+func TestArchiveAsDuplicateKeyU(t *testing.T) {
+	// List view: u archives a flagged row and moves on; on an unflagged row
+	// it does nothing (no decision, cursor stays).
+	m, _ := press(t, newTriageModel(dupCards()), "u")
+	if m.actions[0] != triageArchive || !m.decided[0] || m.cursor != 1 {
+		t.Fatalf("u on flagged row: actions %q decided %v cursor %d", m.actions, m.decided, m.cursor)
+	}
+	m, _ = press(t, m, "u")
+	if m.decided[1] || m.actions[1] != triageSkip || m.cursor != 1 {
+		t.Errorf("u on unflagged row: actions %q decided %v cursor %d", m.actions, m.decided, m.cursor)
+	}
+
+	// Card view: same rule.
+	m, _ = press(t, newTriageModel(dupCards()), "tab", "right", "u")
+	if m.decided[1] {
+		t.Errorf("u in card view decided an unflagged capture")
+	}
+	m, _ = press(t, m, "left", "u")
+	if m.actions[0] != triageArchive || !m.decided[0] {
+		t.Errorf("u in card view: actions %q decided %v", m.actions, m.decided)
+	}
+}
+
+func TestAcceptAllNeverArchivesDuplicates(t *testing.T) {
+	m, _ := press(t, newTriageModel(dupCards()), "A")
+	if want := []string{triageTask, triageTask}; !reflect.DeepEqual(m.actions, want) {
+		t.Errorf("A = %q, want proposals %q: a duplicate warning is never auto-applied", m.actions, want)
+	}
+}
+
+func TestDuplicateKeyLeavesDestinationKeyAlone(t *testing.T) {
+	cards := []InboxCard{{Summary: "renew my passport", Proposed: triageTask, Destination: "home", DuplicateOf: "renew passport", DuplicateProbability: 0.9}}
+	m, _ := press(t, newTriageModel(cards), "x")
+	if m.decided[0] || !m.cleared[0] {
+		t.Fatalf("x should clear the destination, not decide: decided %v cleared %v", m.decided, m.cleared)
+	}
+	m, _ = press(t, m, "u")
+	if m.actions[0] != triageArchive || !m.decided[0] {
+		t.Errorf("u should archive as duplicate: actions %q", m.actions)
+	}
+}

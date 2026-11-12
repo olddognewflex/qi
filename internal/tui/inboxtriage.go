@@ -31,6 +31,11 @@ type InboxCard struct {
 	// if the capture becomes a task; the user can clear it (c).
 	Date     time.Time
 	DateRole string
+	// DuplicateOf, when set, is an open task the capture may repeat, with
+	// the classifier's DuplicateProbability. It is only a warning: Proposed
+	// is unchanged, and u archives the capture as a duplicate.
+	DuplicateOf          string
+	DuplicateProbability float64
 }
 
 // InboxDecision is the user's choice for one card. Action is "" for skip.
@@ -79,6 +84,7 @@ const (
 var (
 	decidedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 	deleteStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
 )
 
 type triageModel struct {
@@ -96,6 +102,9 @@ type triageModel struct {
 	// hasDates is whether any card proposes a date; the date column and its
 	// key hint are shown only then.
 	hasDates bool
+	// hasDup is set when any card is flagged as a possible duplicate; the
+	// list then draws one more line naming the cursor row's duplicate.
+	hasDup bool
 	// today is the triage day, for flagging proposed dates already past (an
 	// old capture's "tomorrow").
 	today  time.Time
@@ -122,6 +131,9 @@ func newTriageModel(cards []InboxCard) triageModel {
 	for _, c := range cards {
 		if !c.Date.IsZero() {
 			m.hasDates = true
+		}
+		if c.DuplicateOf != "" {
+			m.hasDup = true
 		}
 	}
 	return m
@@ -193,6 +205,10 @@ func (m triageModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleDestination()
 	case "c":
 		m.toggleDate()
+	case "u":
+		if m.archiveDuplicate() {
+			m.cursor++
+		}
 	case "w":
 		m.done = true
 		return m, tea.Quit
@@ -234,6 +250,10 @@ func (m triageModel) updateCard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleDestination()
 	case "c":
 		m.toggleDate()
+	case "u":
+		if m.cards[m.cursor].DuplicateOf != "" {
+			m.decideCard(triageArchive)
+		}
 	case "w":
 		m.done = true
 		return m, tea.Quit
@@ -245,6 +265,17 @@ func (m triageModel) updateCard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *triageModel) set(action string) {
 	m.actions[m.cursor] = action
 	m.decided[m.cursor] = true
+}
+
+// archiveDuplicate archives the cursor row when it is flagged as a possible
+// duplicate, reporting whether it did; on an unflagged row u does nothing, so
+// it can never archive a capture that was not warned about.
+func (m *triageModel) archiveDuplicate() bool {
+	if m.cards[m.cursor].DuplicateOf == "" {
+		return false
+	}
+	m.set(triageArchive)
+	return true
 }
 
 // decideCard records a decision in card view and advances. On the last card
@@ -366,7 +397,11 @@ func (m *triageModel) acceptAll() {
 
 // pageSize is how many rows fit in the list window.
 func (m triageModel) pageSize() int {
-	return max(1, m.height-listChrome)
+	chrome := listChrome
+	if m.hasDup {
+		chrome++
+	}
+	return max(1, m.height-chrome)
 }
 
 // scroll moves the window so the cursor row is visible.
@@ -426,11 +461,18 @@ func (m triageModel) listView() string {
 		if i == m.cursor {
 			marker = cursorStyle.Render("> ")
 		}
+		sw := summaryW
+		if c.DuplicateOf != "" {
+			sw -= len(dupMarker)
+		}
 		dest := m.destinationSuffix(i)
-		text := truncate(countPrefix(c)+c.Summary, max(5, summaryW-lipgloss.Width(dest))) + dest
-		summary := padRight(truncate(text, summaryW), summaryW)
+		text := truncate(countPrefix(c)+c.Summary, max(5, sw-lipgloss.Width(dest))) + dest
+		summary := padRight(truncate(text, sw), sw)
 		if i == m.cursor {
 			summary = selectedStyle.Render(summary)
+		}
+		if c.DuplicateOf != "" {
+			summary = warnStyle.Render(dupMarker) + summary
 		}
 		date := ""
 		if m.hasDates {
@@ -444,6 +486,10 @@ func (m triageModel) listView() string {
 	b.WriteString(helpStyle.Render(fmt.Sprintf("  page %d/%d  ", m.cursor/page+1, pages)))
 	b.WriteString(helpStyle.Render(m.counts()))
 	b.WriteString("\n")
+	if m.hasDup {
+		b.WriteString(m.dupLine())
+		b.WriteString("\n")
+	}
 	keys := "t task · n note · a archive · d delete · s skip · enter accept · A accept rest"
 	if m.hasDestinations() {
 		keys += " · x clear dest"
@@ -456,6 +502,19 @@ func (m triageModel) listView() string {
 	b.WriteString(helpStyle.Render("↑↓/jk move · pgup/pgdn page · g/G ends · space/tab card · w finish · q quit"))
 	b.WriteString("\n")
 	return b.String()
+}
+
+// dupMarker prefixes the summary of a card flagged as a possible duplicate.
+const dupMarker = "dup! "
+
+// dupLine is the list's duplicate line: the cursor row's possible duplicate
+// and the u key when it is flagged, else what the dup! marker means.
+func (m triageModel) dupLine() string {
+	c := m.cards[m.cursor]
+	if c.DuplicateOf == "" {
+		return helpStyle.Render(truncate("dup! = may repeat an open task · u archives it as a duplicate", m.width))
+	}
+	return warnStyle.Render(truncate(fmt.Sprintf("possible duplicate of %q (%.2f) · u archive as duplicate", c.DuplicateOf, c.DuplicateProbability), m.width))
 }
 
 // actionCell renders the action column: an explicit decision in bold, an
@@ -519,6 +578,9 @@ func (m triageModel) cardView() string {
 	if c.Count > 1 {
 		fmt.Fprintf(&b, "%s\n", helpStyle.Render(fmt.Sprintf("repeats:  %d identical captures — the decision applies to all", c.Count)))
 	}
+	if c.DuplicateOf != "" {
+		fmt.Fprintf(&b, "%s\n", warnStyle.Render(fmt.Sprintf("possible duplicate of open task: %s (%.2f) — u archives as duplicate", c.DuplicateOf, c.DuplicateProbability)))
+	}
 	fmt.Fprintf(&b, "%s\n", helpStyle.Render("proposed: "+labelFor(c.Proposed)))
 	if c.Reason != "" {
 		fmt.Fprintf(&b, "%s\n", helpStyle.Render("why:      "+c.Reason))
@@ -548,6 +610,9 @@ func (m triageModel) cardView() string {
 	}
 	if !c.Date.IsZero() {
 		keys += " · c clear/restore date"
+	}
+	if c.DuplicateOf != "" {
+		keys += " · u archive dup"
 	}
 	b.WriteString(helpStyle.Render(keys))
 	b.WriteString("\n")
