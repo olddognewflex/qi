@@ -31,8 +31,8 @@ deliverable = ["Task", "Chore", "Spike", "Epic"]
 
 [queries]
 all          = 'ORDER BY key ASC'   # every ticket on the board (used by tktban)
-tier1        = 'status = "To Do" AND priority = "Highest" AND assignee = currentUser() ORDER BY priority DESC'
-tier2        = 'status = "To Do" AND assignee = currentUser() ORDER BY priority DESC'
+tier1        = 'status = "To Do" AND priority = "Highest" AND assignee = currentUser() AND type != "Epic" ORDER BY priority DESC'
+tier2        = 'status = "To Do" AND assignee = currentUser() AND type != "Epic" ORDER BY priority DESC'
 blocked      = 'status = "Blocked"'
 deploy_ready = 'status = "Done"'
 
