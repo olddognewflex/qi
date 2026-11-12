@@ -7,28 +7,40 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeInboxClassifier answers per capture from maps keyed by the joined body
 // and records every body and batch it was asked about. A batch containing a
-// key in batchErrs fails whole; a key in errs fails only that verdict.
+// key in batchErrs fails whole; a key in errs fails only that verdict. dates
+// and dateErrs fill each verdict's Date/DateErr; captured records the capture
+// time each key was sent with.
 type fakeInboxClassifier struct {
 	mu        sync.Mutex
 	answers   map[string]InboxClassification
 	errs      map[string]error
 	batchErrs map[string]error
+	dates     map[string]*InboxDate
+	dateErrs  map[string]error
 	seen      []string
 	batches   [][]string
+	captured  map[string]time.Time
 }
 
-func (f *fakeInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string, _ []InboxDestination) ([]InboxVerdict, error) {
-	keys := make([]string, len(bodies))
-	for i, body := range bodies {
-		keys[i] = strings.Join(body, "\n")
+func (f *fakeInboxClassifier) ClassifyInbox(_ context.Context, caps []InboxCapture, _ []InboxDestination) ([]InboxVerdict, error) {
+	keys := make([]string, len(caps))
+	for i, c := range caps {
+		keys[i] = strings.Join(c.Body, "\n")
 	}
 	f.mu.Lock()
 	f.seen = append(f.seen, keys...)
 	f.batches = append(f.batches, keys)
+	if f.captured == nil {
+		f.captured = map[string]time.Time{}
+	}
+	for i, k := range keys {
+		f.captured[k] = caps[i].Captured
+	}
 	f.mu.Unlock()
 	for _, k := range keys {
 		if err := f.batchErrs[k]; err != nil {
@@ -37,7 +49,7 @@ func (f *fakeInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string
 	}
 	out := make([]InboxVerdict, len(keys))
 	for i, k := range keys {
-		out[i] = InboxVerdict{InboxClassification: f.answers[k], Err: f.errs[k]}
+		out[i] = InboxVerdict{InboxClassification: f.answers[k], Date: f.dates[k], DateErr: f.dateErrs[k], Err: f.errs[k]}
 	}
 	return out, nil
 }
@@ -330,8 +342,8 @@ func TestInboxRefineBatchFailureFallsBack(t *testing.T) {
 // shortClassifier returns fewer verdicts than bodies.
 type shortClassifier struct{}
 
-func (shortClassifier) ClassifyInbox(_ context.Context, bodies [][]string, _ []InboxDestination) ([]InboxVerdict, error) {
-	return make([]InboxVerdict, len(bodies)-1), nil
+func (shortClassifier) ClassifyInbox(_ context.Context, caps []InboxCapture, _ []InboxDestination) ([]InboxVerdict, error) {
+	return make([]InboxVerdict, len(caps)-1), nil
 }
 
 func TestInboxRefineVerdictCountMismatchFailsBatch(t *testing.T) {

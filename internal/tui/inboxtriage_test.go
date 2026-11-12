@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -402,16 +403,16 @@ func TestTriageDestinationDecisions(t *testing.T) {
 		keys []string
 		want []InboxDecision
 	}{
-		{"accept keeps", []string{"enter", "enter", "enter"}, []InboxDecision{{"task", "portal"}, {"task", "acme"}, {"task", ""}}},
-		{"manual task keeps", []string{"t"}, []InboxDecision{{"task", "portal"}, {}, {}}},
-		{"x clears before accept", []string{"x", "enter"}, []InboxDecision{{"task", ""}, {}, {}}},
-		{"x twice restores", []string{"x", "x", "enter"}, []InboxDecision{{"task", "portal"}, {}, {}}},
-		{"x after accept clears", []string{"enter", "k", "x"}, []InboxDecision{{"task", ""}, {}, {}}},
-		{"note drops", []string{"n", "a", "d"}, []InboxDecision{{"note", ""}, {"archive", ""}, {"delete", ""}}},
+		{"accept keeps", []string{"enter", "enter", "enter"}, []InboxDecision{{Action: "task", Destination: "portal"}, {Action: "task", Destination: "acme"}, {Action: "task", Destination: ""}}},
+		{"manual task keeps", []string{"t"}, []InboxDecision{{Action: "task", Destination: "portal"}, {}, {}}},
+		{"x clears before accept", []string{"x", "enter"}, []InboxDecision{{Action: "task", Destination: ""}, {}, {}}},
+		{"x twice restores", []string{"x", "x", "enter"}, []InboxDecision{{Action: "task", Destination: "portal"}, {}, {}}},
+		{"x after accept clears", []string{"enter", "k", "x"}, []InboxDecision{{Action: "task", Destination: ""}, {}, {}}},
+		{"note drops", []string{"n", "a", "d"}, []InboxDecision{{Action: "note", Destination: ""}, {Action: "archive", Destination: ""}, {Action: "delete", Destination: ""}}},
 		{"skip drops", []string{"s"}, []InboxDecision{{}, {}, {}}},
-		{"x on no-destination row is a no-op", []string{"j", "j", "x", "enter"}, []InboxDecision{{}, {}, {"task", ""}}},
-		{"A keeps", []string{"j", "x", "A"}, []InboxDecision{{"task", "portal"}, {"task", ""}, {"task", ""}}},
-		{"card x clears", []string{"tab", "x", "enter"}, []InboxDecision{{"task", ""}, {}, {}}},
+		{"x on no-destination row is a no-op", []string{"j", "j", "x", "enter"}, []InboxDecision{{}, {}, {Action: "task", Destination: ""}}},
+		{"A keeps", []string{"j", "x", "A"}, []InboxDecision{{Action: "task", Destination: "portal"}, {Action: "task", Destination: ""}, {Action: "task", Destination: ""}}},
+		{"card x clears", []string{"tab", "x", "enter"}, []InboxDecision{{Action: "task", Destination: ""}, {}, {}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -476,5 +477,139 @@ func TestTriageDestinationSurvivesNarrowList(t *testing.T) {
 	view := next.(triageModel).View()
 	if !strings.Contains(view, "… → #portal") {
 		t.Errorf("destination cut off by a long summary:\n%s", view)
+	}
+}
+
+func datedCards() []InboxCard {
+	return []InboxCard{
+		{Summary: "pay bill tomorrow", Proposed: triageTask, Date: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), DateRole: "due"},
+		{Summary: "dentist friday", Proposed: triageTask, Date: time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC), DateRole: "scheduled"},
+		{Summary: "nice quote", Proposed: triageNote},
+	}
+}
+
+// newDatedModel is a model over datedCards triaged on Monday 2026-11-09, so
+// none of the proposed dates is past.
+func newDatedModel() triageModel {
+	m := newTriageModel(datedCards())
+	m.today = time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	return m
+}
+
+func TestDateShownInListAndCard(t *testing.T) {
+	m := newDatedModel()
+	m.width = 120
+	list := m.View()
+	for _, want := range []string{"due 11-10", "sched 11-13", "c clear date"} {
+		if !strings.Contains(list, want) {
+			t.Errorf("list missing %q:\n%s", want, list)
+		}
+	}
+	m.view = viewCard
+	if card := m.View(); !strings.Contains(card, "date:     due Tue 2026-11-10") || !strings.Contains(card, "c clear/restore date") {
+		t.Errorf("card should show role + date and the clear key:\n%s", card)
+	}
+	m.cursor = 2
+	if card := m.View(); strings.Contains(card, "date:") || strings.Contains(card, "clear/restore") {
+		t.Errorf("undated card should show no date line:\n%s", card)
+	}
+}
+
+func TestNoDateColumnWithoutDates(t *testing.T) {
+	m := newTriageModel([]InboxCard{{Summary: "buy milk", Proposed: triageTask}})
+	if list := m.View(); strings.Contains(list, "date") || strings.Contains(list, "clear date") {
+		t.Errorf("no card has a date: list should not grow a date column:\n%s", list)
+	}
+}
+
+func TestClearDateToggles(t *testing.T) {
+	// c clears without deciding or moving; c again restores.
+	m, _ := press(t, newDatedModel(), "c")
+	if !m.dateCleared[0] || m.decided[0] || m.cursor != 0 {
+		t.Fatalf("after c: cleared=%v decided=%v cursor=%d", m.dateCleared, m.decided, m.cursor)
+	}
+	if list := m.View(); strings.Contains(list, "due 11-10") {
+		t.Errorf("cleared date still shown:\n%s", list)
+	}
+	m.view = viewCard
+	if card := m.View(); !strings.Contains(card, "cleared (was due Tue 2026-11-10)") {
+		t.Errorf("card should say the date was cleared:\n%s", card)
+	}
+	m, _ = press(t, m, "c")
+	if m.dateCleared[0] {
+		t.Fatalf("second c should restore the date")
+	}
+	// c on an undated card is a no-op.
+	m.view = viewList
+	m, _ = press(t, m, "j", "j", "c")
+	if m.dateCleared[2] {
+		t.Errorf("undated card cannot be cleared")
+	}
+}
+
+func TestDateHiddenWhenNotTask(t *testing.T) {
+	m, _ := press(t, newDatedModel(), "n") // row 0 → note
+	if list := m.View(); strings.Contains(list, "due 11-10") {
+		t.Errorf("a note row must not show a task date:\n%s", list)
+	}
+	m.cursor, m.view = 0, viewCard
+	if card := m.View(); !strings.Contains(card, "(only if made a task)") {
+		t.Errorf("card should say the date applies only to a task:\n%s", card)
+	}
+}
+
+func TestDecisionsCarryClearedDates(t *testing.T) {
+	// Row 0: clear, then task. Row 1: task, date kept. Row 2: accepted note.
+	m, _ := press(t, newDatedModel(), "c", "t", "t", "A")
+	want := []InboxDecision{
+		{Action: triageTask, ClearDate: true},
+		{Action: triageTask},
+		{Action: triageNote},
+	}
+	if got := m.decisions(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("decisions = %+v, want %+v", got, want)
+	}
+}
+
+func TestClearDateOnlyOnTaskRows(t *testing.T) {
+	// Row 0 decided note: c must not flip a hidden flag that would surface
+	// as an undated task after t.
+	m, _ := press(t, newDatedModel(), "n", "k", "c", "t")
+	if m.dateCleared[0] {
+		t.Errorf("c on a note row cleared the date")
+	}
+	if m.decisions()[0] != (InboxDecision{Action: triageTask}) {
+		t.Errorf("decision = %+v, want dated task", m.decisions()[0])
+	}
+}
+
+func TestPastDateFlagged(t *testing.T) {
+	m := newDatedModel()
+	m.today = time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC) // row 0 (11-10) past, row 1 (11-13) not
+	if !m.past(0) || m.past(1) {
+		t.Fatalf("past = %v %v, want true false", m.past(0), m.past(1))
+	}
+	m.view = viewCard
+	if card := m.View(); !strings.Contains(card, "due Tue 2026-11-10, already past") {
+		t.Errorf("card should flag a past date:\n%s", card)
+	}
+	m.cursor = 1
+	if card := m.View(); strings.Contains(card, "already past") {
+		t.Errorf("future date flagged as past:\n%s", card)
+	}
+}
+
+func TestClearDateAndDestinationIndependent(t *testing.T) {
+	m := newTriageModel([]InboxCard{{
+		Summary: "portal invoice tomorrow", Proposed: triageTask, Destination: "portal",
+		Date: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), DateRole: "due",
+	}})
+	m, _ = press(t, m, "c", "enter")
+	if got := m.decisions()[0]; got != (InboxDecision{Action: triageTask, Destination: "portal", ClearDate: true}) {
+		t.Errorf("c then accept = %+v, want task kept at #portal, date cleared", got)
+	}
+	m, _ = press(t, m, "c", "x")
+	if got := m.decisions()[0]; got != (InboxDecision{Action: triageTask}) {
+		t.Errorf("c (restore) then x = %+v, want task, dest cleared, date kept", got)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Inbox triage actions. Task/Note/Archive are the deterministic proposals
@@ -41,19 +42,59 @@ type InboxItem struct {
 	// never fills them. ApplyGroup routes a task there.
 	Project string
 	Client  string
+	// Captured is when the capture was written, from its filename (falling
+	// back to its header line); zero if neither parses. Relative dates in the
+	// capture ("tomorrow") are read against it, not against triage time.
+	Captured time.Time
+	// Date is a proposed due/scheduled date for a task, set only by Refine
+	// (never by List) and only when Action is task. ApplyGroup applies it when
+	// the chosen action is task; clear it to create the task undated.
+	Date *InboxDate
+}
+
+// Proposed date roles: which task field an InboxDate fills.
+const (
+	InboxDateDue       = "due"
+	InboxDateScheduled = "scheduled"
+)
+
+// InboxDate is a proposed date for a task created from a capture: the day,
+// whether it is a deadline (due, 📅) or a planned day (scheduled, ⏳), and the
+// classifier's confidence in it.
+type InboxDate struct {
+	Date       time.Time
+	Role       string
+	Confidence float64
+}
+
+// applyTo sets in.Due or in.Scheduled by d's role. A nil d or an unknown role
+// sets neither, so a malformed date is dropped rather than misfiled.
+func (d *InboxDate) applyTo(in *InboxApplyInput) {
+	if d == nil {
+		return
+	}
+	day := d.Date
+	switch d.Role {
+	case InboxDateDue:
+		in.Due = &day
+	case InboxDateScheduled:
+		in.Scheduled = &day
+	}
 }
 
 // InboxApplyInput selects a capture and the action to take on it. Title
 // overrides the derived task text / note title. For a task, Project tags it
 // (like `qi task add --project`) or Client routes it to a configured client
-// (like `--client`); they are mutually exclusive and ignored for other
-// actions.
+// (like `--client`); they are mutually exclusive. Due and Scheduled date a
+// task. All four are ignored for other actions.
 type InboxApplyInput struct {
-	Path    string
-	Action  string
-	Title   string
-	Project string
-	Client  string
+	Path      string
+	Action    string
+	Title     string
+	Project   string
+	Client    string
+	Due       *time.Time
+	Scheduled *time.Time
 }
 
 // InboxApplyOutput reports what an Apply did. Created is the path of a new
@@ -99,14 +140,15 @@ func (s InboxService) List() ([]InboxItem, error) {
 			continue
 		}
 		path := filepath.Join(s.InboxDir, e.Name())
-		body := captureBody(path)
+		header, body := readCapture(path)
 		action, reason := proposeInboxAction(body)
 		items = append(items, InboxItem{
-			Path:    path,
-			Summary: summarizeBody(body),
-			Body:    body,
-			Action:  action,
-			Reason:  reason,
+			Path:     path,
+			Summary:  summarizeBody(body),
+			Body:     body,
+			Action:   action,
+			Reason:   reason,
+			Captured: captureTime(e.Name(), header),
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
@@ -148,7 +190,7 @@ func (s InboxService) Apply(in InboxApplyInput) (InboxApplyOutput, error) {
 			return InboxApplyOutput{}, err
 		}
 		create = func() (string, error) {
-			created, err := s.Tasks.CreateTask(AddTaskInput{Text: text, Project: tag})
+			created, err := s.Tasks.CreateTask(AddTaskInput{Text: text, Project: tag, Due: in.Due, Scheduled: in.Scheduled})
 			if err != nil {
 				return "", fmt.Errorf("inbox: add task: %w", err)
 			}
@@ -203,7 +245,8 @@ func (s InboxService) taskTag(project, client string) (string, error) {
 	return TaskRouteTag(project, client), nil
 }
 
-// ApplyGroup applies one decision to a collapsed item. The repeats are
+// ApplyGroup applies one decision to a collapsed item. For task, it.Date (if
+// any) dates the one task created. The repeats are
 // disposed of FIRST — archived for task/note/archive, deleted for delete —
 // and the action itself (the only step that creates anything) is applied to
 // it.Path last. A repeat that has already vanished is skipped; any other
@@ -232,6 +275,7 @@ func (s InboxService) ApplyGroup(it InboxItem, action string) ([]InboxApplyOutpu
 	in := InboxApplyInput{Path: it.Path, Action: action}
 	if action == InboxActionTask {
 		in.Project, in.Client = it.Project, it.Client
+		it.Date.applyTo(&in)
 	}
 	first, err := s.Apply(in)
 	if err != nil {
@@ -297,18 +341,49 @@ func summarizeBody(body []string) string {
 // leading "YYYY-MM-DD HH:MM:SS" header that vault.WriteCapture emits.
 // Best-effort: an unreadable file yields no body.
 func captureBody(path string) []string {
+	_, body := readCapture(path)
+	return body
+}
+
+// Capture timestamp layouts: vault.WriteCapture names the file
+// "2006-01-02-150405[-suffix].md" and writes "2006-01-02 15:04:05" as its
+// first line.
+const (
+	captureNameLayout   = "2006-01-02-150405"
+	captureHeaderLayout = "2006-01-02 15:04:05"
+)
+
+// captureTime is when a capture was written, in local time: from its file
+// name, else from its header line, else zero (unknown — nothing to anchor a
+// relative date to).
+func captureTime(name, header string) time.Time {
+	if len(name) >= len(captureNameLayout) {
+		if t, err := time.ParseInLocation(captureNameLayout, name[:len(captureNameLayout)], time.Local); err == nil {
+			return t
+		}
+	}
+	if t, err := time.ParseInLocation(captureHeaderLayout, header, time.Local); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+// readCapture returns a capture's first line (the header vault.WriteCapture
+// writes, trimmed) and its non-empty content lines after it. Best-effort: an
+// unreadable file yields neither.
+func readCapture(path string) (header string, lines []string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return "", nil
 	}
 	defer f.Close()
-	var lines []string
 	scanner := bufio.NewScanner(f)
 	sawHeader := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !sawHeader {
 			sawHeader = true
+			header = line
 			continue
 		}
 		if line == "" {
@@ -316,7 +391,7 @@ func captureBody(path string) []string {
 		}
 		lines = append(lines, line)
 	}
-	return lines
+	return header, lines
 }
 
 // validateInboxPath ensures path resolves to a regular file sitting directly

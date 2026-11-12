@@ -92,7 +92,8 @@ func TestInboxDestinations(t *testing.T) {
 }
 
 // The adapter adds the lean destination fan-out only when destinations are
-// offered; without them the request is the plain action-only one.
+// offered; without them the request holds just the action and date_mode
+// questions.
 func TestTypeSafeInboxAdapterDestinationRequest(t *testing.T) {
 	var got struct {
 		State struct {
@@ -114,12 +115,12 @@ func TestTypeSafeInboxAdapterDestinationRequest(t *testing.T) {
 	c := typesafeInboxClassifier{typesafe.InboxClassifier{Client: typesafe.NewClient(srv.URL, "sk-test", "", srv.Client())}}
 
 	dests := []service.InboxDestination{{Key: "portal", Description: "Acme customer portal"}, {Key: "acme", Description: "Acme", Client: true}}
-	v, err := c.ClassifyInbox(context.Background(), [][]string{{"fix portal login"}}, dests)
+	v, err := c.ClassifyInbox(context.Background(), []service.InboxCapture{{Body: []string{"fix portal login"}}}, dests)
 	if err != nil {
 		t.Fatalf("ClassifyInbox: %v", err)
 	}
-	if len(got.Questions) != 2 || got.Questions["dest_0"] == nil {
-		t.Errorf("questions = %v, want action_0 + dest_0", keysOf(got.Questions))
+	if len(got.Questions) != 3 || got.Questions["dest_0"] == nil || got.Questions["date_mode_0"] == nil {
+		t.Errorf("questions = %v, want action_0 + dest_0 + date_mode_0", keysOf(got.Questions))
 	}
 	if want := map[string]string{"portal": "Acme customer portal", "acme": "Acme"}; !reflect.DeepEqual(got.State.Destinations, want) {
 		t.Errorf("state.destinations = %v, want %v (lean)", got.State.Destinations, want)
@@ -128,12 +129,12 @@ func TestTypeSafeInboxAdapterDestinationRequest(t *testing.T) {
 		t.Errorf("verdict = %+v", v[0])
 	}
 
-	v, err = c.ClassifyInbox(context.Background(), [][]string{{"fix portal login"}}, nil)
+	v, err = c.ClassifyInbox(context.Background(), []service.InboxCapture{{Body: []string{"fix portal login"}}}, nil)
 	if err != nil {
 		t.Fatalf("ClassifyInbox: %v", err)
 	}
-	if len(got.Questions) != 1 || got.State.Destinations != nil {
-		t.Errorf("no destinations: questions %v, state.destinations %v; want action only", keysOf(got.Questions), got.State.Destinations)
+	if len(got.Questions) != 2 || got.Questions["date_mode_0"] == nil || got.State.Destinations != nil {
+		t.Errorf("no destinations: questions %v, state.destinations %v; want action + date_mode only", keysOf(got.Questions), got.State.Destinations)
 	}
 	if v[0].Destination != "" {
 		t.Errorf("verdict carries a destination it was not asked for: %+v", v[0])

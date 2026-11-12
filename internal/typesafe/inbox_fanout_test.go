@@ -41,6 +41,11 @@ func TestResolveDate(t *testing.T) {
 		{"today", DateParts{Mode: p("relative", 0.9), Anchor: p("today", 0.9), Role: due}, DateOK, day(2026, 10, 6), 0.9},
 		{"tomorrow", DateParts{Mode: p("relative", 0.9), Anchor: p("tomorrow", 0.5), Role: due}, DateOK, day(2026, 10, 7), 0.5},
 		{"day after", DateParts{Mode: p("relative", 0.9), Anchor: p("day_after", 0.9), Role: due}, DateOK, day(2026, 10, 8), 0.9},
+		{"in 3 days", DateParts{Mode: p("relative", 0.9), Anchor: p("in_n_days", 0.8), Count: p("3", 0.7), Role: due}, DateOK, day(2026, 10, 9), 0.7},
+		{"in 31 days crosses month", DateParts{Mode: p("relative", 0.9), Anchor: p("in_n_days", 0.9), Count: p("31", 0.9), Role: due}, DateOK, day(2026, 11, 6), 0.9},
+		{"in n days other is review", DateParts{Mode: p("relative", 0.9), Anchor: p("in_n_days", 0.9), Count: p("other", 0.8), Role: due}, DateReview, time.Time{}, 0.8},
+		{"in n days zero is review", DateParts{Mode: p("relative", 0.9), Anchor: p("in_n_days", 0.9), Count: p("0", 0.9), Role: due}, DateReview, time.Time{}, 0.9},
+		{"in n days missing count is review", DateParts{Mode: p("relative", 0.9), Anchor: p("in_n_days", 0.9), Role: due}, DateReview, time.Time{}, 0},
 		{"bare friday", DateParts{Mode: p("relative", 0.9), Anchor: p("weekday", 0.9), Weekday: p("friday", 0.9), Week: p("bare", 0.9), Role: due}, DateOK, day(2026, 10, 9), 0.9},
 		{"bare same weekday is today", DateParts{Mode: p("relative", 0.9), Anchor: p("weekday", 0.9), Weekday: p("tuesday", 0.9), Week: p("bare", 0.9), Role: due}, DateOK, day(2026, 10, 6), 0.9},
 		{"bare monday wraps", DateParts{Mode: p("relative", 0.9), Anchor: p("weekday", 0.9), Weekday: p("monday", 0.9), Week: p("bare", 0.9), Role: due}, DateOK, day(2026, 10, 12), 0.9},
@@ -118,9 +123,9 @@ func TestProposeInboxRequestAndParse(t *testing.T) {
 		t.Fatalf("ProposeInbox: %v", err)
 	}
 
-	// 2 captures × (action + dest + 8 date parts).
-	if len(got.Questions) != 20 {
-		t.Errorf("questions = %d, want 20", len(got.Questions))
+	// 2 captures × (action + dest + 9 date parts).
+	if len(got.Questions) != 22 {
+		t.Errorf("questions = %d, want 22", len(got.Questions))
 	}
 	years, _ := got.Questions["date_year_0"].Criteria.(map[string]any)
 	if years["2025"] == nil || years["2031"] == nil || years["2032"] != nil || years["other"] == nil {
@@ -259,8 +264,8 @@ func TestProposeInboxLeanAsksDateDetailsOnlyForDatedCaptures(t *testing.T) {
 		t.Errorf("lean criteria should point at state: %v", crit["Globex"])
 	}
 	q2 := reqs[1]["questions"].(map[string]any)
-	if len(q2) != 7 { // role, month, day, year, anchor, weekday, week for one capture
-		t.Errorf("second request questions = %d, want 7: %v", len(q2), q2)
+	if len(q2) != 8 { // role, month, day, year, anchor, count, weekday, week for one capture
+		t.Errorf("second request questions = %d, want 8: %v", len(q2), q2)
 	}
 	caps2 := reqs[1]["state"].(map[string]any)["captures"].([]any)
 	if len(caps2) != 1 || caps2[0].(map[string]any)["text"] != "pay bill tomorrow" {

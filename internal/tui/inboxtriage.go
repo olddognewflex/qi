@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -25,14 +26,21 @@ type InboxCard struct {
 	// none). It is used only if the card is decided as a task, and the user
 	// may clear it (x) first.
 	Destination string
+	// Date is a proposed date for the task (zero: none) and DateRole what it
+	// is: "due" (a deadline) or "scheduled" (a planned day). It applies only
+	// if the capture becomes a task; the user can clear it (c).
+	Date     time.Time
+	DateRole string
 }
 
 // InboxDecision is the user's choice for one card. Action is "" for skip.
 // Destination is the card's proposed destination when it is kept and Action
-// is task; otherwise empty.
+// is task; otherwise empty. ClearDate says the user cleared the card's
+// proposed date.
 type InboxDecision struct {
 	Action      string
 	Destination string
+	ClearDate   bool
 }
 
 // Triage action labels returned by TriageInbox, one per input card. An empty
@@ -65,6 +73,7 @@ const (
 
 	actionColWidth = 8
 	sourceColWidth = 7
+	dateColWidth   = 11 // "sched 11-10"
 )
 
 var (
@@ -82,24 +91,40 @@ type triageModel struct {
 	decided []bool
 	// cleared marks rows whose proposed destination the user cleared (x).
 	cleared []bool
-	cursor  int
-	offset  int // first row shown in the list window
-	width   int
-	height  int
-	view    triageView
-	done    bool
-	quit    bool
+	// dateCleared marks rows whose proposed date the user cleared (c).
+	dateCleared []bool
+	// hasDates is whether any card proposes a date; the date column and its
+	// key hint are shown only then.
+	hasDates bool
+	// today is the triage day, for flagging proposed dates already past (an
+	// old capture's "tomorrow").
+	today  time.Time
+	cursor int
+	offset int // first row shown in the list window
+	width  int
+	height int
+	view   triageView
+	done   bool
+	quit   bool
 }
 
 func newTriageModel(cards []InboxCard) triageModel {
-	return triageModel{
-		cards:   cards,
-		actions: make([]string, len(cards)),
-		decided: make([]bool, len(cards)),
-		cleared: make([]bool, len(cards)),
-		width:   defaultTriageWidth,
-		height:  defaultTriageHeight,
+	m := triageModel{
+		cards:       cards,
+		actions:     make([]string, len(cards)),
+		decided:     make([]bool, len(cards)),
+		cleared:     make([]bool, len(cards)),
+		dateCleared: make([]bool, len(cards)),
+		today:       dayOf(time.Now()),
+		width:       defaultTriageWidth,
+		height:      defaultTriageHeight,
 	}
+	for _, c := range cards {
+		if !c.Date.IsZero() {
+			m.hasDates = true
+		}
+	}
+	return m
 }
 
 func (m triageModel) Init() tea.Cmd { return nil }
@@ -166,6 +191,8 @@ func (m triageModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.acceptAll()
 	case "x":
 		m.toggleDestination()
+	case "c":
+		m.toggleDate()
 	case "w":
 		m.done = true
 		return m, tea.Quit
@@ -205,6 +232,8 @@ func (m triageModel) updateCard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.decideCard(m.cards[m.cursor].Proposed)
 	case "x":
 		m.toggleDestination()
+	case "c":
+		m.toggleDate()
 	case "w":
 		m.done = true
 		return m, tea.Quit
@@ -274,8 +303,54 @@ func (m triageModel) decisions() []InboxDecision {
 		if a == triageTask && !m.cleared[i] {
 			out[i].Destination = m.cards[i].Destination
 		}
+		out[i].ClearDate = m.dateCleared[i]
 	}
 	return out
+}
+
+// toggleDate clears the cursor card's proposed date, or restores it. It is
+// not a decision: the action and the cursor stay where they are. It only acts
+// while the row is a task, the only time the date is shown and applies.
+func (m *triageModel) toggleDate() {
+	if !m.cards[m.cursor].Date.IsZero() && m.effectiveAction(m.cursor) == triageTask {
+		m.dateCleared[m.cursor] = !m.dateCleared[m.cursor]
+	}
+}
+
+// dateCell renders the list's date column: the role and month-day when the
+// row's action is task, "-" when the user cleared it, blank otherwise (a
+// date only ever applies to a task).
+func (m triageModel) dateCell(i int) string {
+	c := m.cards[i]
+	if c.Date.IsZero() || m.effectiveAction(i) != triageTask {
+		return padRight("", dateColWidth)
+	}
+	if m.dateCleared[i] {
+		return helpStyle.Render(padRight("-", dateColWidth))
+	}
+	style := decidedStyle
+	if m.past(i) {
+		style = deleteStyle
+	}
+	return style.Render(padRight(shortRole(c.DateRole)+" "+c.Date.Format("01-02"), dateColWidth))
+}
+
+// past reports whether card i's proposed date is before the triage day.
+func (m triageModel) past(i int) bool {
+	return dayOf(m.cards[i].Date).Before(m.today)
+}
+
+// dayOf is t's calendar day at midnight, in t's location.
+func dayOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// shortRole abbreviates a date role for the list column.
+func shortRole(role string) string {
+	if role == "scheduled" {
+		return "sched"
+	}
+	return role
 }
 
 // acceptAll takes the proposal for every row the user has not decided,
@@ -331,8 +406,16 @@ func (m triageModel) listView() string {
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Inbox triage — %d captures", len(m.cards))))
 	b.WriteString("\n\n")
 
-	summaryW := max(10, m.width-2-actionColWidth-1-1-sourceColWidth)
-	header := "  " + padRight("action", actionColWidth) + " " + padRight("capture", summaryW) + " " + "source"
+	dateW := 0
+	if m.hasDates {
+		dateW = dateColWidth + 1
+	}
+	summaryW := max(10, m.width-2-actionColWidth-1-1-sourceColWidth-dateW)
+	header := "  " + padRight("action", actionColWidth) + " "
+	if m.hasDates {
+		header += padRight("date", dateColWidth) + " "
+	}
+	header += padRight("capture", summaryW) + " " + "source"
 	b.WriteString(helpStyle.Render(header))
 	b.WriteString("\n")
 
@@ -349,7 +432,11 @@ func (m triageModel) listView() string {
 		if i == m.cursor {
 			summary = selectedStyle.Render(summary)
 		}
-		fmt.Fprintf(&b, "%s%s %s %s\n", marker, m.actionCell(i), summary, dueStyle.Render(sourceHint(c.Reason)))
+		date := ""
+		if m.hasDates {
+			date = m.dateCell(i) + " "
+		}
+		fmt.Fprintf(&b, "%s%s %s%s %s\n", marker, m.actionCell(i), date, summary, dueStyle.Render(sourceHint(c.Reason)))
 	}
 
 	b.WriteString("\n")
@@ -360,6 +447,9 @@ func (m triageModel) listView() string {
 	keys := "t task · n note · a archive · d delete · s skip · enter accept · A accept rest"
 	if m.hasDestinations() {
 		keys += " · x clear dest"
+	}
+	if m.hasDates {
+		keys += " · c clear date"
 	}
 	b.WriteString(helpStyle.Render(keys))
 	b.WriteString("\n")
@@ -443,6 +533,9 @@ func (m triageModel) cardView() string {
 		}
 		fmt.Fprintf(&b, "%s\n", helpStyle.Render(dest))
 	}
+	if !c.Date.IsZero() {
+		fmt.Fprintf(&b, "%s\n", helpStyle.Render("date:     "+m.cardDate(m.cursor)))
+	}
 
 	if m.decided[m.cursor] {
 		fmt.Fprintf(&b, "%s\n", cursorStyle.Render("chosen:   "+labelFor(m.actions[m.cursor])))
@@ -453,11 +546,31 @@ func (m triageModel) cardView() string {
 	if c.Destination != "" {
 		keys += " · x clear dest"
 	}
+	if !c.Date.IsZero() {
+		keys += " · c clear/restore date"
+	}
 	b.WriteString(helpStyle.Render(keys))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("←/→ move · tab/esc list · w finish · q quit"))
 	b.WriteString("\n")
 	return b.String()
+}
+
+// cardDate describes card i's proposed date for the card view.
+func (m triageModel) cardDate(i int) string {
+	c := m.cards[i]
+	desc := c.DateRole + " " + c.Date.Format("Mon 2006-01-02")
+	if m.past(i) {
+		desc += ", already past"
+	}
+	switch {
+	case m.dateCleared[i]:
+		return "cleared (was " + desc + ") — the task will be undated"
+	case m.effectiveAction(i) != triageTask:
+		return desc + " (only if made a task)"
+	default:
+		return desc
+	}
 }
 
 // sourceHint condenses a proposal Reason into a short column value: the
