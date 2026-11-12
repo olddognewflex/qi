@@ -1345,7 +1345,7 @@ func TestLoadFrom_TypeSafeAndInboxDefaults(t *testing.T) {
 	if want := (config.TypeSafeConfig{APIKeyEnv: "TYPESAFE_API_KEY"}); cfg.TypeSafe != want {
 		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
 	}
-	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5, MinDestinationConfidence: 0.7, ClassifyLimit: 100}); cfg.Inbox != want {
+	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5, MinDestinationConfidence: 0.7, MinDateConfidence: 0.5, ClassifyLimit: 100}); cfg.Inbox != want {
 		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
 	}
 }
@@ -1364,6 +1364,7 @@ model = "jev-1.13.0"
 classifier = "typesafe"
 min_confidence = 0
 min_destination_confidence = 0
+min_date_confidence = 0.8
 classify_limit = 0
 `)
 	cfg, err := config.LoadFrom(path)
@@ -1374,7 +1375,7 @@ classify_limit = 0
 		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
 	}
 	// An explicit 0 is honoured, not replaced by the default.
-	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0, MinDestinationConfidence: 0, ClassifyLimit: 0}); cfg.Inbox != want {
+	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0, MinDestinationConfidence: 0, MinDateConfidence: 0.8, ClassifyLimit: 0}); cfg.Inbox != want {
 		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
 	}
 }
@@ -1384,6 +1385,8 @@ func TestLoadFrom_InboxInvalid(t *testing.T) {
 		{"unknown classifier", `classifier = "llm"`, `unknown classifier "llm"`},
 		{"confidence above 1", `min_confidence = 1.5`, "out of range"},
 		{"negative confidence", `min_confidence = -0.1`, "out of range"},
+		{"date confidence above 1", `min_date_confidence = 2`, "min_date_confidence 2 out of range"},
+		{"negative date confidence", `min_date_confidence = -0.5`, "min_date_confidence -0.5 out of range"},
 		{"negative classify_limit", `classify_limit = -1`, "classify_limit -1 must be >= 0"},
 		{"destination confidence above 1", `min_destination_confidence = 1.2`, "min_destination_confidence 1.2 out of range"},
 		{"negative destination confidence", `min_destination_confidence = -0.5`, "min_destination_confidence -0.5 out of range"},

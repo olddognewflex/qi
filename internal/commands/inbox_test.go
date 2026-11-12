@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,32 +17,35 @@ import (
 	"qi/internal/config"
 	"qi/internal/service"
 	"qi/internal/tui"
+	"qi/internal/typesafe"
 )
 
 // stubInboxClassifier returns a fixed verdict per capture (with dest /
-// destConf as its destination answer) and counts the captures it was sent
-// (calls) and the batch requests (batches), recording the destinations
-// offered per batch.
+// destConf as its destination answer, and date as its date) and counts the
+// captures it was sent (calls) and the batch requests (batches), recording
+// the destinations offered per batch.
 type stubInboxClassifier struct {
 	mu       sync.Mutex
 	cls      service.InboxClassification
 	dest     string
 	destConf float64
+	date     *service.InboxDate
 	calls    int
 	batches  int
 	offered  [][]service.InboxDestination
 }
 
-func (s *stubInboxClassifier) ClassifyInbox(_ context.Context, bodies [][]string, dests []service.InboxDestination) ([]service.InboxVerdict, error) {
+func (s *stubInboxClassifier) ClassifyInbox(_ context.Context, caps []service.InboxCapture, dests []service.InboxDestination) ([]service.InboxVerdict, error) {
 	s.mu.Lock()
-	s.calls += len(bodies)
+	s.calls += len(caps)
 	s.batches++
 	s.offered = append(s.offered, dests)
 	s.mu.Unlock()
-	out := make([]service.InboxVerdict, len(bodies))
+	out := make([]service.InboxVerdict, len(caps))
 	for i := range out {
 		out[i].InboxClassification = s.cls
 		out[i].Destination, out[i].DestinationConfidence = s.dest, s.destConf
+		out[i].Date = s.date
 	}
 	return out, nil
 }
@@ -111,7 +117,7 @@ func TestInboxDryRunTypeSafeRefines(t *testing.T) {
 	}
 	// Progress and summary go to stderr only; stdout above is the clean
 	// dry-run listing.
-	wantErr := "inbox: typesafe: classifying 1 capture(s) in 1 request(s)…\n" +
+	wantErr := "inbox: typesafe: classifying 1 capture(s) in 1 batch(es)…\n" +
 		"inbox: typesafe: refined 1, unsure 0, failed 0\n"
 	if errOut != wantErr {
 		t.Errorf("stderr = %q, want %q", errOut, wantErr)
@@ -196,7 +202,7 @@ func TestInboxDryRunClassifyLimit(t *testing.T) {
 		t.Errorf("sent %d capture(s) in %d batch(es), want 26 in 2", stub.calls, stub.batches)
 	}
 	for _, want := range []string{
-		"inbox: typesafe: classifying 26 capture(s) in 2 request(s)…",
+		"inbox: typesafe: classifying 26 capture(s) in 2 batch(es)…",
 		"inbox: typesafe: 4 more capture(s) over classify_limit 26 keep heuristic proposals",
 		"inbox: typesafe: refined 0, unsure 26, failed 0",
 	} {
@@ -238,11 +244,13 @@ func TestInboxClassifyBudget(t *testing.T) {
 		batches int
 		want    time.Duration
 	}{
-		{0, 30 * time.Second},
-		{1, 30 * time.Second},
-		{4, 30 * time.Second},
-		{5, 60 * time.Second},
-		{12, 90 * time.Second},
+		// Each round of 4 batches gets two requests' time: the action
+		// request, then the lean date details.
+		{0, 60 * time.Second},
+		{1, 60 * time.Second},
+		{4, 60 * time.Second},
+		{5, 120 * time.Second},
+		{12, 3 * time.Minute},
 		{100, 3 * time.Minute},
 	}
 	for _, tc := range cases {
@@ -333,5 +341,185 @@ func TestInboxApplyCollapsedRowAppliesEveryCapture(t *testing.T) {
 	}
 	if fmt.Sprint(seen) != "[1 1 3]" && fmt.Sprint(seen) != "[3 1 1]" && fmt.Sprint(seen) != "[1 3 1]" {
 		t.Errorf("card counts = %v, want one ×3 card and two singles", seen)
+	}
+}
+
+// writeDatedCapture adds a capture written Monday 2026-11-09 to cfg's inbox.
+func writeDatedCapture(t *testing.T, cfg config.Config, text string) string {
+	t.Helper()
+	p := filepath.Join(cfg.InboxPath, "2026-11-09-081500.md")
+	if err := os.WriteFile(p, []byte("2026-11-09 08:15:00\n\n"+text+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestTypeSafeAdapterResolvesDateFromCaptureTime(t *testing.T) {
+	// The model only answers date parts; the adapter does the calendar math
+	// against the capture's own time. "tomorrow" written Monday is Tuesday,
+	// whatever day triage runs.
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		io.WriteString(w, `{"model":"jev","answers":{
+			"action_0":{"type":"choice","choice":"task","confidence":0.9},
+			"date_mode_0":{"type":"choice","choice":"relative","confidence":0.9},
+			"date_anchor_0":{"type":"choice","choice":"tomorrow","confidence":0.8},
+			"date_role_0":{"type":"choice","choice":"due","confidence":0.7},
+			"action_1":{"type":"choice","choice":"task","confidence":0.9},
+			"date_mode_1":{"type":"choice","choice":"none","confidence":0.9}
+		}}`)
+	}))
+	defer srv.Close()
+	c := typesafeInboxClassifier{typesafe.InboxClassifier{Client: typesafe.NewClient(srv.URL, "sk-test", "", srv.Client())}}
+
+	monday := time.Date(2026, 11, 9, 8, 15, 0, 0, time.Local)
+	got, err := c.ClassifyInbox(context.Background(), []service.InboxCapture{
+		{Body: []string{"pay bill tomorrow"}, Captured: monday},
+		{Body: []string{"buy milk"}, Captured: monday},
+	}, nil)
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("requests = %d, want 2 (lean: date details only for the dated task)", requests)
+	}
+	want := service.InboxDate{Date: time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), Role: service.InboxDateDue, Confidence: 0.7}
+	if got[0].Date == nil || *got[0].Date != want {
+		t.Errorf("date = %+v, want %+v", got[0].Date, want)
+	}
+	if got[1].Date != nil {
+		t.Errorf("undated capture got date %+v", *got[1].Date)
+	}
+}
+
+func TestTypeSafeAdapterNoDateWhenUnresolved(t *testing.T) {
+	// Unknown capture time → ResolveDate says review → no date, not a guess.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"model":"jev","answers":{
+			"action_0":{"type":"choice","choice":"task","confidence":0.9},
+			"date_mode_0":{"type":"choice","choice":"relative","confidence":0.9},
+			"date_anchor_0":{"type":"choice","choice":"tomorrow","confidence":0.9},
+			"date_role_0":{"type":"choice","choice":"due","confidence":0.9}
+		}}`)
+	}))
+	defer srv.Close()
+	c := typesafeInboxClassifier{typesafe.InboxClassifier{Client: typesafe.NewClient(srv.URL, "sk-test", "", srv.Client())}}
+	got, err := c.ClassifyInbox(context.Background(), []service.InboxCapture{{Body: []string{"pay bill tomorrow"}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Date != nil {
+		t.Errorf("date = %+v, want none for an unknown capture time", *got[0].Date)
+	}
+}
+
+func TestInboxDryRunShowsProposedDate(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	writeDatedCapture(t, cfg, "pay bill tomorrow")
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9}).date =
+		&service.InboxDate{Date: time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), Role: service.InboxDateDue, Confidence: 0.8}
+
+	out, errOut, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if !strings.Contains(out, "task    pay bill tomorrow  [due Tue 2026-11-10]  (typesafe: task (confidence 0.90))") {
+		t.Errorf("dry-run should show the proposed date:\n%s", out)
+	}
+	// The marker capture is never sent, so it gets no date.
+	if !strings.Contains(out, "task    todo: renew passport  (contains a task marker)") {
+		t.Errorf("unsent capture must stay undated:\n%s", out)
+	}
+	if !strings.Contains(errOut, "dated 2") { // the idea + the bill, both proposed as tasks by the stub
+		t.Errorf("summary should count dated tasks: %q", errOut)
+	}
+}
+
+func TestInboxDryRunDateBelowFloorNotShown(t *testing.T) {
+	cfg := inboxTestConfig(t)
+	cfg.Inbox.MinDateConfidence = 0.9
+	writeDatedCapture(t, cfg, "pay bill tomorrow")
+	t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+	stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9}).date =
+		&service.InboxDate{Date: time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), Role: service.InboxDateDue, Confidence: 0.8}
+
+	out, errOut, err := runInboxCmd(t, cfg, "--dry-run", "--classifier", "typesafe")
+	if err != nil {
+		t.Fatalf("inbox: %v", err)
+	}
+	if strings.Contains(out, "[due") || strings.Contains(errOut, "dated") {
+		t.Errorf("date below min_date_confidence must not be proposed:\n%s\n%s", out, errOut)
+	}
+}
+
+func TestInboxApplyDatedTask(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		clear bool
+		want  string
+	}{
+		{"kept", false, "- [ ] pay bill tomorrow 📅 2026-11-10"},
+		{"cleared", true, "- [ ] pay bill tomorrow ^"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := inboxTestConfig(t)
+			writeDatedCapture(t, cfg, "pay bill tomorrow")
+			t.Setenv("QI_TEST_TYPESAFE_KEY", "sk-test")
+			cfg.Inbox.Classifier = config.InboxClassifierTypeSafe
+			stubInboxClassifierFor(t, service.InboxClassification{Action: service.InboxActionTask, Confidence: 0.9}).date =
+				&service.InboxDate{Date: time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local), Role: service.InboxDateDue, Confidence: 0.8}
+			orig := triageInbox
+			t.Cleanup(func() { triageInbox = orig })
+			triageInbox = func(cards []tui.InboxCard) ([]tui.InboxDecision, error) {
+				out := make([]tui.InboxDecision, len(cards))
+				for i, c := range cards {
+					if c.Summary == "pay bill tomorrow" {
+						if c.DateRole != "due" || !c.Date.Equal(time.Date(2026, 11, 10, 0, 0, 0, 0, time.Local)) {
+							t.Errorf("card date = %s %v", c.DateRole, c.Date)
+						}
+						out[i] = tui.InboxDecision{Action: service.InboxActionTask, ClearDate: tc.clear}
+					}
+				}
+				return out, nil
+			}
+			out, _, err := runInboxCmd(t, cfg)
+			if err != nil {
+				t.Fatalf("inbox: %v\n%s", err, out)
+			}
+			tasks, _ := os.ReadFile(cfg.TaskFilePath)
+			if !strings.Contains(string(tasks), tc.want) {
+				t.Errorf("task file = %q, want %q", tasks, tc.want)
+			}
+			if tc.clear == strings.Contains(out, "[due Tue 2026-11-10]") {
+				t.Errorf("applied line date shown = %v, want %v:\n%s", !tc.clear, !tc.clear, out)
+			}
+		})
+	}
+}
+
+func TestTypeSafeAdapterInNDays(t *testing.T) {
+	// "in 3 days" written Monday → Thursday: the count arrives in the lean
+	// date-detail request and the adapter adds it to the capture day.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"model":"jev","answers":{
+			"action_0":{"type":"choice","choice":"task","confidence":0.9},
+			"date_mode_0":{"type":"choice","choice":"relative","confidence":0.9},
+			"date_anchor_0":{"type":"choice","choice":"in_n_days","confidence":0.8},
+			"date_count_0":{"type":"choice","choice":"3","confidence":0.75},
+			"date_role_0":{"type":"choice","choice":"due","confidence":0.9}
+		}}`)
+	}))
+	defer srv.Close()
+	c := typesafeInboxClassifier{typesafe.InboxClassifier{Client: typesafe.NewClient(srv.URL, "sk-test", "", srv.Client())}}
+	monday := time.Date(2026, 11, 9, 8, 15, 0, 0, time.Local)
+	got, err := c.ClassifyInbox(context.Background(), []service.InboxCapture{{Body: []string{"car registration renewal in 3 days"}, Captured: monday}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := service.InboxDate{Date: time.Date(2026, 11, 12, 0, 0, 0, 0, time.Local), Role: service.InboxDateDue, Confidence: 0.75}
+	if got[0].Date == nil || *got[0].Date != want {
+		t.Errorf("date = %+v, want %+v", got[0].Date, want)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // InboxClassifyBatchSize is how many captures Refine hands the classifier per
@@ -23,6 +24,14 @@ type InboxClassification struct {
 	Probabilities map[string]float64
 }
 
+// InboxCapture is one capture as a classifier sees it: its non-empty body
+// lines and when it was written (zero if unknown), which relative dates in it
+// are read against.
+type InboxCapture struct {
+	Body     []string
+	Captured time.Time
+}
+
 // InboxVerdict is one capture's outcome within a batch: a classification, or
 // Err when the classifier had no usable answer for that capture alone.
 // Destination is the answer to "if this were a task, where does it go?" — a
@@ -32,7 +41,16 @@ type InboxVerdict struct {
 	InboxClassification
 	Destination           string
 	DestinationConfidence float64
-	Err                   error
+	// Date is the date the classifier read for the capture as a task, already
+	// resolved to a calendar day; nil when it found none or the date was
+	// incomplete, impossible, or before the capture day (never a guess). It
+	// may still be before today, when the capture is old. Refine applies it
+	// only to task proposals at or above MinDateConfidence.
+	Date *InboxDate
+	// DateErr is set when looking up the date failed for this capture while
+	// its action verdict stands; the capture is then proposed undated.
+	DateErr error
+	Err     error
 }
 
 // InboxDestination is a place a task can be routed: a configured project
@@ -44,18 +62,18 @@ type InboxDestination struct {
 	Client      bool
 }
 
-// InboxClassifier proposes triage actions for a batch of capture bodies. It is
+// InboxClassifier proposes triage actions for a batch of captures. It is
 // the seam for the opt-in TypeSafe classifier (wired in commands); the service
 // never constructs one itself, so List and the process-inbox skills stay
 // deterministic and offline.
 //
 // dests are the task destinations to choose among; when empty the classifier
-// asks only the action question (and leaves Destination empty). A non-nil
+// asks no destination question (and leaves Destination empty). A non-nil
 // error fails the whole batch (transport, API). Otherwise the verdicts must
-// be index-aligned with bodies — Refine treats a length mismatch as a batch
+// be index-aligned with caps — Refine treats a length mismatch as a batch
 // failure — and a per-capture problem is that verdict's Err.
 type InboxClassifier interface {
-	ClassifyInbox(ctx context.Context, bodies [][]string, dests []InboxDestination) ([]InboxVerdict, error)
+	ClassifyInbox(ctx context.Context, caps []InboxCapture, dests []InboxDestination) ([]InboxVerdict, error)
 }
 
 // InboxRefineOptions tunes Refine.
@@ -63,6 +81,9 @@ type InboxRefineOptions struct {
 	// MinConfidence is the confidence a known action needs to override the
 	// heuristic.
 	MinConfidence float64
+	// MinDateConfidence is the confidence a classifier-read date needs to be
+	// proposed on a task.
+	MinDateConfidence float64
 	// Limit caps how many eligible captures are sent, in List order; <= 0
 	// means no limit. The rest keep their heuristic proposal.
 	Limit int
@@ -89,6 +110,9 @@ type InboxRefineStats struct {
 	Unsure  int // verdict below MinConfidence or unknown action: heuristic kept
 	Failed  int // classifier error (batch or per-capture): heuristic kept
 	Routed  int // of the classified tasks, given a destination
+
+	Dated      int // task proposals given a due/scheduled date
+	DateFailed int // date lookup failed: proposed undated
 }
 
 // limitNote is appended to the Reason of eligible captures over the limit.
@@ -136,11 +160,16 @@ func (s InboxService) PlanRefine(items []InboxItem, opts InboxRefineOptions) Inb
 //     the item's Project (or Client) is set to it and Reason gains
 //     "; → #<key> (0.NN)". Anything else — "none", an unknown key, a low
 //     confidence, a non-task action — proposes no destination at all.
+//   - likewise, if the settled action is task and the verdict carries a date
+//     with confidence >= MinDateConfidence, it becomes the item's Date. No
+//     other item is dated: not notes or archives, not dates below the floor,
+//     not captures the classifier never saw.
 //
 // A classifier error never fails triage: the affected items (a whole batch,
 // or one capture) keep their heuristic proposal and one aggregated error is
-// returned alongside the items so the caller can warn. items itself is not
-// modified.
+// returned alongside the items so the caller can warn; a failed date lookup
+// only leaves that task undated (and is reported the same way when nothing
+// worse failed). items itself is not modified.
 func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClassifier, opts InboxRefineOptions) ([]InboxItem, InboxRefineStats, error) {
 	out := make([]InboxItem, len(items))
 	copy(out, items)
@@ -163,6 +192,7 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		firstErr error
+		dateErr  error
 		sem      = make(chan struct{}, InboxClassifyConcurrency)
 	)
 	fail := func(n int, err error) {
@@ -180,11 +210,11 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 		go func(batch []int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			bodies := make([][]string, len(batch))
+			caps := make([]InboxCapture, len(batch))
 			for k, i := range batch {
-				bodies[k] = out[i].Body
+				caps[k] = InboxCapture{Body: out[i].Body, Captured: out[i].Captured}
 			}
-			verdicts, err := c.ClassifyInbox(ctx, bodies, opts.Destinations)
+			verdicts, err := c.ClassifyInbox(ctx, caps, opts.Destinations)
 			if err == nil && len(verdicts) != len(batch) {
 				err = fmt.Errorf("classifier returned %d verdict(s) for %d capture(s)", len(verdicts), len(batch))
 			}
@@ -197,8 +227,10 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 					fail(1, verdicts[k].Err)
 					continue
 				}
-				applied := applyInboxClassification(&out[i], verdicts[k].InboxClassification, opts.MinConfidence)
-				routed := applyInboxDestination(&out[i], verdicts[k], dests, opts.MinDestinationConfidence)
+				v := verdicts[k]
+				applied := applyInboxClassification(&out[i], v.InboxClassification, opts.MinConfidence)
+				routed := applyInboxDestination(&out[i], v, dests, opts.MinDestinationConfidence)
+				dated := applyInboxDate(&out[i], v.Date, opts.MinDateConfidence)
 				mu.Lock()
 				if applied {
 					stats.Refined++
@@ -207,6 +239,15 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 				}
 				if routed {
 					stats.Routed++
+				}
+				if dated {
+					stats.Dated++
+				}
+				if v.DateErr != nil && out[i].Action == InboxActionTask { // a non-task never needed the date
+					stats.DateFailed++
+					if dateErr == nil {
+						dateErr = v.DateErr
+					}
 				}
 				mu.Unlock()
 			}
@@ -217,7 +258,25 @@ func (s InboxService) Refine(ctx context.Context, items []InboxItem, c InboxClas
 	if stats.Failed > 0 {
 		return out, stats, fmt.Errorf("classifier failed for %d capture(s), kept heuristic proposals: %w", stats.Failed, firstErr)
 	}
+	if stats.DateFailed > 0 {
+		return out, stats, fmt.Errorf("date lookup failed for %d capture(s), proposed undated: %w", stats.DateFailed, dateErr)
+	}
 	return out, stats, nil
+}
+
+// applyInboxDate sets it.Date from a classifier date and reports whether it
+// did: only for a task proposal, a known role, and confidence >=
+// minConfidence. Otherwise it.Date is cleared, so an item never carries a date
+// its final action cannot use.
+func applyInboxDate(it *InboxItem, d *InboxDate, minConfidence float64) bool {
+	it.Date = nil
+	if d == nil || it.Action != InboxActionTask || d.Confidence < minConfidence ||
+		(d.Role != InboxDateDue && d.Role != InboxDateScheduled) || d.Date.IsZero() {
+		return false
+	}
+	date := *d
+	it.Date = &date
+	return true
 }
 
 // heuristicIsAuthoritative reports whether proposeInboxAction's verdict for

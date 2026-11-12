@@ -17,7 +17,13 @@ type Part struct {
 // capture. They are structure, not a date: ResolveDate does the calendar math.
 type DateParts struct {
 	Mode, Role, Month, Day, Year, Anchor, Weekday, Week Part
+	// Count is the N of an "in N days" anchor ("1".."31", or "other").
+	Count Part
 }
+
+// maxInDays is the largest N an "in N days" anchor offers; a longer offset
+// ("in 6 weeks") is answered "other" and goes to review.
+const maxInDays = 31
 
 // Date resolution outcomes.
 const (
@@ -41,7 +47,8 @@ type ResolvedDate struct {
 //   - absolute: month and day must be given and valid; a stated year is used
 //     as is, otherwise the year is inferred as captured's, rolling to the next
 //     year when the date would be more than 31 days before captured;
-//   - relative: today/tomorrow/day_after offset from captured; a weekday is the
+//   - relative: today/tomorrow/day_after offset from captured; "in N days"
+//     (in_n_days) is captured plus Count days, 1..maxInDays; a weekday is the
 //     next one on or after captured ("bare"), the one in captured's Monday-start
 //     week ("current"), or the one in the following week ("next").
 //
@@ -104,6 +111,13 @@ func ResolveDate(p DateParts, captured time.Time) ResolvedDate {
 			date = day0.AddDate(0, 0, 1)
 		case "day_after":
 			date = day0.AddDate(0, 0, 2)
+		case "in_n_days":
+			use(p.Count)
+			n, err := strconv.Atoi(p.Count.Value)
+			if err != nil || n < 1 || n > maxInDays { // "other", missing, or out of range
+				return review()
+			}
+			date = day0.AddDate(0, 0, n)
 		case "weekday":
 			use(p.Weekday, p.Week)
 			wd, ok := weekdayByName(p.Weekday.Value)

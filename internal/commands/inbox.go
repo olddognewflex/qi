@@ -19,31 +19,34 @@ import (
 )
 
 // Classification timeouts. Each TypeSafe request carries a batch of
-// service.InboxClassifyBatchSize captures, so its HTTP timeout is per batch;
-// the overall budget scales with how many rounds of
+// service.InboxClassifyBatchSize captures, so its HTTP timeout is per
+// request; a batch makes up to inboxRequestsPerBatch requests in sequence
+// (the action request, then lean date details for its dated tasks). The
+// overall budget scales with how many rounds of
 // service.InboxClassifyConcurrency concurrent batches the run needs, capped so
 // a huge inbox cannot stall triage. On expiry the unfinished captures keep
-// their heuristic proposals.
+// their heuristic proposals (or, past the action request, go undated).
 const (
-	inboxBatchTimeout    = 30 * time.Second
-	inboxClassifyMaxWait = 3 * time.Minute
+	inboxRequestTimeout   = 30 * time.Second
+	inboxRequestsPerBatch = 2
+	inboxClassifyMaxWait  = 3 * time.Minute
 )
 
 // inboxClassifyBudget is the overall classification timeout for batches
-// requests: ceil(batches/concurrency) rounds of inboxBatchTimeout, capped at
-// inboxClassifyMaxWait.
+// batches: ceil(batches/concurrency) rounds of inboxRequestsPerBatch ×
+// inboxRequestTimeout, capped at inboxClassifyMaxWait.
 func inboxClassifyBudget(batches int) time.Duration {
 	rounds := (batches + service.InboxClassifyConcurrency - 1) / service.InboxClassifyConcurrency
 	if rounds < 1 {
 		rounds = 1
 	}
-	return min(time.Duration(rounds)*inboxBatchTimeout, inboxClassifyMaxWait)
+	return min(time.Duration(rounds*inboxRequestsPerBatch)*inboxRequestTimeout, inboxClassifyMaxWait)
 }
 
 // buildInboxClassifier turns [typesafe] config plus the resolved API key into
 // the service-layer classifier. A package var so tests can inject a fake.
 var buildInboxClassifier = func(cfg config.Config, apiKey string) service.InboxClassifier {
-	client := typesafe.NewClient(cfg.TypeSafe.URL, apiKey, cfg.TypeSafe.Model, &http.Client{Timeout: inboxBatchTimeout})
+	client := typesafe.NewClient(cfg.TypeSafe.URL, apiKey, cfg.TypeSafe.Model, &http.Client{Timeout: inboxRequestTimeout})
 	return typesafeInboxClassifier{typesafe.InboxClassifier{Client: client}}
 }
 
@@ -53,34 +56,24 @@ type typesafeInboxClassifier struct {
 	inner typesafe.InboxClassifier
 }
 
-// ClassifyInbox asks only the action question when dests is empty (the
-// request is exactly the pre-destination one); otherwise it adds QI-6's lean
-// destination fan-out (descriptions in shared state, one routing Choice per
-// capture). Dates stay off.
-func (c typesafeInboxClassifier) ClassifyInbox(ctx context.Context, bodies [][]string, dests []service.InboxDestination) ([]service.InboxVerdict, error) {
-	if len(dests) == 0 {
-		results, err := c.inner.ClassifyInbox(ctx, bodies)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]service.InboxVerdict, len(results))
-		for i, r := range results {
-			out[i] = service.InboxVerdict{
-				InboxClassification: service.InboxClassification{Action: r.Action, Confidence: r.Confidence, Probabilities: r.Probabilities},
-				Err:                 r.Err,
-			}
-		}
-		return out, nil
+// ClassifyInbox asks each capture's action plus QI-6's lean fan-out: the
+// date parts (date_mode in the first request; the details in a second, only
+// for captures the model proposes as tasks whose date_mode found a date) and,
+// when dests is non-empty, the destination question (descriptions in shared
+// state, one routing Choice per capture). Calendar math happens here in Go
+// (typesafe.ResolveDate, anchored to the capture's own time); only an "ok"
+// resolution becomes a verdict Date, so a review or none date is never
+// proposed.
+func (c typesafeInboxClassifier) ClassifyInbox(ctx context.Context, caps []service.InboxCapture, dests []service.InboxDestination) ([]service.InboxVerdict, error) {
+	in := make([]typesafe.InboxCapture, len(caps))
+	for i, cp := range caps {
+		in[i] = typesafe.InboxCapture{Body: cp.Body, Captured: cp.Captured}
 	}
-	caps := make([]typesafe.InboxCapture, len(bodies))
-	for i, b := range bodies {
-		caps[i] = typesafe.InboxCapture{Body: b}
+	fan := typesafe.InboxFanout{Dates: true, Lean: true}
+	for _, d := range dests {
+		fan.Destinations = append(fan.Destinations, typesafe.InboxDestination{Key: d.Key, Description: d.Description})
 	}
-	fan := typesafe.InboxFanout{Destinations: make([]typesafe.InboxDestination, len(dests)), Lean: true}
-	for i, d := range dests {
-		fan.Destinations[i] = typesafe.InboxDestination{Key: d.Key, Description: d.Description}
-	}
-	proposals, _, err := c.inner.ProposeInbox(ctx, caps, fan)
+	proposals, _, err := c.inner.ProposeInbox(ctx, in, fan)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +83,14 @@ func (c typesafeInboxClassifier) ClassifyInbox(ctx context.Context, bodies [][]s
 			InboxClassification:   service.InboxClassification{Action: p.Action, Confidence: p.Confidence, Probabilities: p.Probabilities},
 			Destination:           p.Destination,
 			DestinationConfidence: p.DestinationConfidence,
+			DateErr:               p.DateErr,
 			Err:                   p.Err,
+		}
+		if p.Err != nil || p.DateErr != nil {
+			continue
+		}
+		if rd := typesafe.ResolveDate(p.Date, caps[i].Captured); rd.Status == typesafe.DateOK {
+			out[i].Date = &service.InboxDate{Date: rd.Date, Role: rd.Role, Confidence: rd.Confidence}
 		}
 	}
 	return out, nil
@@ -154,6 +154,15 @@ func destinationSuffix(it service.InboxItem) string {
 	return ""
 }
 
+// dateSuffix renders an item's proposed date for one-line output, e.g.
+// "  [due Tue 2026-11-10]"; empty when it has none.
+func dateSuffix(d *service.InboxDate) string {
+	if d == nil {
+		return ""
+	}
+	return fmt.Sprintf("  [%s %s]", d.Role, d.Date.Format("Mon 2006-01-02"))
+}
+
 // refineInbox applies the opt-in TypeSafe classifier to items when selected,
 // sending at most limit eligible captures (0 = no limit). It never fails
 // triage: a missing key or a classifier error warns on errOut and the
@@ -172,7 +181,7 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 		fmt.Fprintf(errOut, "inbox: %s unset; using heuristic proposals\n", keyEnv)
 		return items
 	}
-	opts := service.InboxRefineOptions{MinConfidence: cfg.Inbox.MinConfidence, Limit: limit}
+	opts := service.InboxRefineOptions{MinConfidence: cfg.Inbox.MinConfidence, MinDateConfidence: cfg.Inbox.MinDateConfidence, Limit: limit}
 	plan := inbox.PlanRefine(items, opts)
 	if plan.Eligible == 0 {
 		return items
@@ -180,7 +189,7 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 	opts.Destinations = inboxDestinations(cfg, errOut)
 	opts.MinDestinationConfidence = cfg.Inbox.MinDestinationConfidence
 	if plan.Selected > 0 {
-		fmt.Fprintf(errOut, "inbox: typesafe: classifying %d capture(s) in %d request(s)…\n", plan.Selected, plan.Batches)
+		fmt.Fprintf(errOut, "inbox: typesafe: classifying %d capture(s) in %d batch(es)…\n", plan.Selected, plan.Batches)
 	}
 	if plan.Skipped > 0 {
 		fmt.Fprintf(errOut, "inbox: typesafe: %d more capture(s) over classify_limit %d keep heuristic proposals\n", plan.Skipped, limit)
@@ -195,11 +204,17 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 		fmt.Fprintf(errOut, "inbox: typesafe: %v\n", err)
 	}
 	if plan.Selected > 0 {
-		routed := ""
+		summary := fmt.Sprintf("refined %d, unsure %d, failed %d", stats.Refined, stats.Unsure, stats.Failed)
 		if len(opts.Destinations) > 0 {
-			routed = fmt.Sprintf(", routed %d", stats.Routed)
+			summary += fmt.Sprintf(", routed %d", stats.Routed)
 		}
-		fmt.Fprintf(errOut, "inbox: typesafe: refined %d, unsure %d, failed %d%s\n", stats.Refined, stats.Unsure, stats.Failed, routed)
+		if stats.Dated > 0 {
+			summary += fmt.Sprintf(", dated %d", stats.Dated)
+		}
+		if stats.DateFailed > 0 {
+			summary += fmt.Sprintf(", date lookup failed %d", stats.DateFailed)
+		}
+		fmt.Fprintf(errOut, "inbox: typesafe: %s\n", summary)
 	}
 	return refined
 }
@@ -266,7 +281,7 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			"api.typesafe.ai, using the key in $TYPESAFE_API_KEY ([typesafe]\n" +
 			"api_key_env). Empty captures and explicit task markers never leave the\n" +
 			"machine. Below [inbox] min_confidence (default 0.5), or on any API error,\n" +
-			"the heuristic proposal stands. Captures go 25 per request, and at most\n" +
+			"the heuristic proposal stands. Captures go 25 per batch, and at most\n" +
 			"[inbox] classify_limit (default 100; --classify-limit, 0 = no limit) are\n" +
 			"sent per run; the rest keep heuristic proposals. Nothing is written\n" +
 			"without your choice.\n\n" +
@@ -278,7 +293,14 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			"[inbox] min_destination_confidence (default 0.7); otherwise nothing is\n" +
 			"proposed. Accepting routes the task like qi task add --project/--client\n" +
 			"(tagged into 10-tasks/<tag>.md; sync moves it to the configured\n" +
-			"task_file, if any); a note, archive or delete drops it.",
+			"task_file, if any); a note, archive or delete drops it.\n\n" +
+			"The classifier also proposes a due or scheduled date for a task read\n" +
+			"from its text (\"pay bill tomorrow\"). Relative dates are read against\n" +
+			"when the capture was written (its file name), not today. Below [inbox]\n" +
+			"min_date_confidence (default 0.5), or when the date is incomplete or\n" +
+			"impossible, no date is proposed. The list shows it in a date column\n" +
+			"(due/sched MM-DD; red if already past), the card in full, --dry-run as\n" +
+			"[due Tue 2026-11-10]; c clears (or restores) it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
@@ -315,7 +337,7 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			if dryRun {
 				total := 0
 				for _, it := range items {
-					fmt.Fprintf(out, "%-7s %s%s%s  (%s)\n", it.Action, repeatPrefix(it), it.Summary, destinationSuffix(it), it.Reason)
+					fmt.Fprintf(out, "%-7s %s%s%s%s  (%s)\n", it.Action, repeatPrefix(it), it.Summary, destinationSuffix(it), dateSuffix(it.Date), it.Reason)
 					total += 1 + len(it.Repeats)
 				}
 				fmt.Fprintf(out, "\n%s; run without --dry-run to triage.\n", captureCount(len(items), total))
@@ -325,6 +347,9 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			cards := make([]tui.InboxCard, len(items))
 			for i, it := range items {
 				cards[i] = tui.InboxCard{Summary: it.Summary, Body: it.Body, Proposed: it.Action, Reason: it.Reason, Count: 1 + len(it.Repeats), Destination: destinationTag(it)}
+				if it.Date != nil {
+					cards[i].Date, cards[i].DateRole = it.Date.Date, it.Date.Role
+				}
 			}
 
 			decisions, err := triageInbox(cards)
@@ -349,6 +374,9 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 					if d.Destination == "" {
 						it.Project, it.Client = "", ""
 					}
+					if d.ClearDate {
+						it.Date = nil
+					}
 					res, err := inbox.ApplyGroup(it, action)
 					applied += len(res)
 					if err != nil {
@@ -362,7 +390,11 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 						routed++
 						dest = " → #" + d.Destination
 					}
-					fmt.Fprintf(out, "%-7s %s%s%s\n", action, repeatPrefix(it), it.Summary, dest)
+					date := ""
+					if action == service.InboxActionTask {
+						date = dateSuffix(it.Date)
+					}
+					fmt.Fprintf(out, "%-7s %s%s%s%s\n", action, repeatPrefix(it), it.Summary, dest, date)
 					continue
 				}
 				skipped += 1 + len(items[i].Repeats)

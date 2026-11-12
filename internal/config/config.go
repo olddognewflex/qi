@@ -156,6 +156,10 @@ const DefaultInboxMinConfidence = 0.5
 // it no destination is proposed at all (QI-6 spike: no guess beats a wrong one).
 const DefaultInboxMinDestinationConfidence = 0.7
 
+// DefaultInboxMinDateConfidence is the TypeSafe date confidence below which
+// `qi inbox` proposes no due/scheduled date for a task.
+const DefaultInboxMinDateConfidence = 0.5
+
 // DefaultInboxClassifyLimit caps how many non-rule-decided captures one
 // `qi inbox` run sends to TypeSafe; the rest keep their heuristic proposals.
 const DefaultInboxClassifyLimit = 100
@@ -168,11 +172,14 @@ const DefaultInboxClassifyLimit = 100
 // many captures are sent per run (default DefaultInboxClassifyLimit; 0 = no
 // limit). MinDestinationConfidence in [0,1] is the TypeSafe confidence a
 // proposed task destination needs to be shown (default
-// DefaultInboxMinDestinationConfidence).
+// DefaultInboxMinDestinationConfidence). MinDateConfidence in [0,1] is the
+// confidence a TypeSafe-read due/scheduled date needs to be proposed on a
+// task (default DefaultInboxMinDateConfidence).
 type InboxConfig struct {
 	Classifier               string  `json:"classifier"`
 	MinConfidence            float64 `json:"min_confidence"`
 	MinDestinationConfidence float64 `json:"min_destination_confidence"`
+	MinDateConfidence        float64 `json:"min_date_confidence"`
 	ClassifyLimit            int     `json:"classify_limit"`
 }
 
@@ -303,6 +310,7 @@ type inboxTOML struct {
 	Classifier               string   `toml:"classifier"`
 	MinConfidence            *float64 `toml:"min_confidence"`
 	MinDestinationConfidence *float64 `toml:"min_destination_confidence"`
+	MinDateConfidence        *float64 `toml:"min_date_confidence"`
 	ClassifyLimit            *int     `toml:"classify_limit"`
 }
 
@@ -673,14 +681,15 @@ func LoadFrom(path string) (Config, error) {
 }
 
 // inboxFromTOML applies [inbox] defaults and rejects an unknown classifier or
-// an out-of-range min_confidence, min_destination_confidence or
-// classify_limit — a typo here would otherwise silently fall back to the
-// heuristic.
+// an out-of-range min_confidence, min_destination_confidence,
+// min_date_confidence or classify_limit — a typo here would otherwise
+// silently fall back to the heuristic.
 func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
 	out := InboxConfig{
 		Classifier:               raw.Classifier,
 		MinConfidence:            DefaultInboxMinConfidence,
 		MinDestinationConfidence: DefaultInboxMinDestinationConfidence,
+		MinDateConfidence:        DefaultInboxMinDateConfidence,
 		ClassifyLimit:            DefaultInboxClassifyLimit,
 	}
 	if out.Classifier == "" {
@@ -700,6 +709,12 @@ func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
 			return InboxConfig{}, fmt.Errorf("inbox: min_destination_confidence %v out of range [0,1]", *raw.MinDestinationConfidence)
 		}
 		out.MinDestinationConfidence = *raw.MinDestinationConfidence
+	}
+	if raw.MinDateConfidence != nil {
+		if *raw.MinDateConfidence < 0 || *raw.MinDateConfidence > 1 {
+			return InboxConfig{}, fmt.Errorf("inbox: min_date_confidence %v out of range [0,1]", *raw.MinDateConfidence)
+		}
+		out.MinDateConfidence = *raw.MinDateConfidence
 	}
 	if raw.ClassifyLimit != nil {
 		if *raw.ClassifyLimit < 0 {

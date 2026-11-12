@@ -139,6 +139,10 @@ func dateQuestions(i int, captured time.Time) map[string]Question {
 			years[fmt.Sprint(y)] = fmt.Sprintf("The year %d.", y)
 		}
 	}
+	counts := map[string]string{"other": fmt.Sprintf("More than %d days, a month or more, a range ('a week or two'), or not a whole number of days.", maxInDays)}
+	for n := 1; n <= maxInDays; n++ {
+		counts[fmt.Sprint(n)] = fmt.Sprintf("%d day(s) from when it was written.", n)
+	}
 	weekdays := map[string]string{"none": "No weekday is named."}
 	for w := time.Sunday; w <= time.Saturday; w++ {
 		weekdays[strings.ToLower(w.String())] = w.String()
@@ -152,8 +156,8 @@ func dateQuestions(i int, captured time.Time) map[string]Question {
 			},
 			Criteria: map[string]string{
 				"absolute": "Names a calendar date with a month (e.g. 'March 3', 'by Aug 1, 2026', '3/14').",
-				"relative": "Uses a relative day: today, tonight, tomorrow, the day after tomorrow, or a weekday name ('Friday', 'next Tuesday').",
-				"none":     "No date for the user's action, or only a vague time ('soon', 'later', 'sometime', 'in 3 days').",
+				"relative": "Uses a relative day: today, tonight, tomorrow, the day after tomorrow, a weekday name ('Friday', 'next Tuesday'), or a number of days or weeks from now ('in 3 days', 'within a week', 'in two weeks').",
+				"none":     "No date for the user's action, or only a vague time or range ('soon', 'later', 'sometime', 'in a few days', 'next week', 'in a week or two', 'in a month', 'by the end of the month', 'this weekend').",
 			},
 		},
 		fanoutQuestionID("date_role", i): {
@@ -176,8 +180,17 @@ func dateQuestions(i int, captured time.Time) map[string]Question {
 				"tomorrow":  "Tomorrow.",
 				"day_after": "The day after tomorrow.",
 				"weekday":   "A named weekday ('Friday', 'next Tuesday', 'this Thursday').",
+				"in_n_days": "A stated number of days or weeks from now ('in 3 days', 'within a week', 'in two weeks'); not a month or a range.",
 				"none":      "No relative day.",
 			},
+		},
+		fanoutQuestionID("date_count", i): {
+			Type: TypeChoice,
+			Instructions: map[string]string{
+				"question": fmt.Sprintf("If %s says the user's action is a number of days or weeks from now, how many days is that?", ref),
+				"focus":    "Count in days: a week is 7, two weeks 14. Only a stated number counts; 'in a few days' is not one.",
+			},
+			Criteria: counts,
 		},
 		fanoutQuestionID("date_weekday", i): {Type: TypeChoice, Instructions: fmt.Sprintf("If %s names a weekday for the user's action, which one?", ref), Criteria: weekdays},
 		fanoutQuestionID("date_week", i): {
@@ -256,7 +269,7 @@ func (c InboxClassifier) ProposeInbox(ctx context.Context, caps []InboxCapture, 
 			continue
 		}
 		out[i].InboxClassification = InboxClassification{Action: ans.Choice, Confidence: ans.Confidence, Probabilities: ans.Probabilities}
-		if d, ok := resp.Answers[fanoutQuestionID("dest", i)]; ok {
+		if d, ok := resp.Answers[fanoutQuestionID("dest", i)]; ok && len(f.Destinations) > 0 { // never trust an answer to an unasked question
 			out[i].Destination, out[i].DestinationConfidence = d.Choice, d.Confidence
 		}
 		if f.Dates {
@@ -327,5 +340,6 @@ func datePartsFrom(answers map[string]Answer, i int) DateParts {
 		Anchor:  get("date_anchor"),
 		Weekday: get("date_weekday"),
 		Week:    get("date_week"),
+		Count:   get("date_count"),
 	}
 }

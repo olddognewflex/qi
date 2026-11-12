@@ -41,3 +41,10 @@
 {"id": "syn-40", "captured": "2026-10-06T08:15:00", "text": "lol", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
 {"id": "syn-41", "captured": "2026-10-06T08:15:00", "text": "probe 3", "action": "archive", "dest": "none", "date": "", "role": "", "dup_of": ""}
 {"id": "syn-42", "captured": "2026-10-06T08:15:00", "text": "renew the business license by march 3, 2029", "action": "task", "dest": "none", "date": "2029-03-03", "role": "due", "dup_of": ""}
+{"id": "syn-43", "captured": "2026-10-06T08:15:00", "text": "car registration renewal in 3 days", "action": "task", "dest": "none", "date": "2026-10-09", "role": "due", "dup_of": ""}
+{"id": "syn-44", "captured": "2026-10-06T08:15:00", "text": "follow up with the landlord about the radiator in two weeks", "action": "task", "dest": "none", "date": "2026-10-20", "role": "scheduled", "dup_of": ""}
+{"id": "syn-45", "captured": "2026-10-06T08:15:00", "text": "submit the conference expense report within a week", "action": "task", "dest": "none", "date": "2026-10-13", "role": "due", "dup_of": ""}
+{"id": "syn-46", "captured": "2026-10-06T08:15:00", "text": "check on the sourdough starter in a few days", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-47", "captured": "2026-10-06T08:15:00", "text": "book flights for the reunion sometime next week", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-48", "captured": "2026-10-06T08:15:00", "text": "re-check the gutter repair quote in a week or two", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}
+{"id": "syn-49", "captured": "2026-10-06T08:15:00", "text": "cancel the streaming trial in a month", "action": "task", "dest": "none", "date": "", "role": "", "dup_of": ""}

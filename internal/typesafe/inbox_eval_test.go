@@ -339,8 +339,8 @@ func TestInboxFanoutEval(t *testing.T) {
 			if rd.Status == DateOK {
 				got = rd.Date.Format("2006-01-02") + " " + rd.Role
 			}
-			misses = append(misses, fmt.Sprintf("date %s: got %s (%.2f; mode=%s anchor=%s wd=%s week=%s month=%s day=%s role=%s) want %q %s — %q",
-				it.ID, got, rd.Confidence, p.Date.Mode.Value, p.Date.Anchor.Value, p.Date.Weekday.Value, p.Date.Week.Value, p.Date.Month.Value, p.Date.Day.Value, p.Date.Role.Value, it.Date, it.Role, trunc(it.Text)))
+			misses = append(misses, fmt.Sprintf("date %s: got %s (%.2f; mode=%s anchor=%s n=%s wd=%s week=%s month=%s day=%s role=%s) want %q %s — %q",
+				it.ID, got, rd.Confidence, p.Date.Mode.Value, p.Date.Anchor.Value, p.Date.Count.Value, p.Date.Weekday.Value, p.Date.Week.Value, p.Date.Month.Value, p.Date.Day.Value, p.Date.Role.Value, it.Date, it.Role, trunc(it.Text)))
 		}
 
 		top, topP := "", -1.0

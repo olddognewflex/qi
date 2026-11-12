@@ -48,7 +48,8 @@ func repeatKey(body []string) string {
 // one item, keeping the first (in input order) as the representative and
 // recording the others in Repeats. Order is otherwise preserved. Each item in
 // the result stands for 1+len(Repeats) captures; ApplyGroup applies one
-// decision to all of them.
+// decision to all of them. The representative's Captured becomes the group's
+// latest capture time.
 func CollapseRepeats(items []InboxItem) []InboxItem {
 	out := make([]InboxItem, 0, len(items))
 	first := make(map[string]int, len(items))
@@ -56,6 +57,11 @@ func CollapseRepeats(items []InboxItem) []InboxItem {
 		k := repeatKey(it.Body)
 		if i, ok := first[k]; ok {
 			out[i].Repeats = append(out[i].Repeats, it.Path)
+			// Anchor relative dates to the latest restatement: "pay bill
+			// tomorrow" written Monday and again Thursday means Friday.
+			if it.Captured.After(out[i].Captured) {
+				out[i].Captured = it.Captured
+			}
 			continue
 		}
 		first[k] = len(out)

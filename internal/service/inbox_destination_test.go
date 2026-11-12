@@ -20,16 +20,16 @@ type destFake struct {
 	offered  [][]InboxDestination
 }
 
-func (f *destFake) ClassifyInbox(_ context.Context, bodies [][]string, dests []InboxDestination) ([]InboxVerdict, error) {
+func (f *destFake) ClassifyInbox(_ context.Context, caps []InboxCapture, dests []InboxDestination) ([]InboxVerdict, error) {
 	f.mu.Lock()
 	f.offered = append(f.offered, dests)
 	f.mu.Unlock()
 	if f.batchErr != nil {
 		return nil, f.batchErr
 	}
-	out := make([]InboxVerdict, len(bodies))
-	for i, b := range bodies {
-		out[i] = f.verdicts[strings.Join(b, "\n")]
+	out := make([]InboxVerdict, len(caps))
+	for i, c := range caps {
+		out[i] = f.verdicts[strings.Join(c.Body, "\n")]
 	}
 	return out, nil
 }
