@@ -1345,7 +1345,7 @@ func TestLoadFrom_TypeSafeAndInboxDefaults(t *testing.T) {
 	if want := (config.TypeSafeConfig{APIKeyEnv: "TYPESAFE_API_KEY"}); cfg.TypeSafe != want {
 		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
 	}
-	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5, MinDestinationConfidence: 0.7, MinDateConfidence: 0.5, ClassifyLimit: 100}); cfg.Inbox != want {
+	if want := (config.InboxConfig{Classifier: "heuristic", MinConfidence: 0.5, MinDestinationConfidence: 0.7, MinDateConfidence: 0.5, ClassifyLimit: 100, MinDuplicateProbability: 0.85, DuplicateCheck: true}); cfg.Inbox != want {
 		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
 	}
 }
@@ -1366,6 +1366,8 @@ min_confidence = 0
 min_destination_confidence = 0
 min_date_confidence = 0.8
 classify_limit = 0
+min_duplicate_probability = 0
+duplicate_check = false
 `)
 	cfg, err := config.LoadFrom(path)
 	if err != nil {
@@ -1375,7 +1377,7 @@ classify_limit = 0
 		t.Errorf("TypeSafe = %+v, want %+v", cfg.TypeSafe, want)
 	}
 	// An explicit 0 is honoured, not replaced by the default.
-	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0, MinDestinationConfidence: 0, MinDateConfidence: 0.8, ClassifyLimit: 0}); cfg.Inbox != want {
+	if want := (config.InboxConfig{Classifier: "typesafe", MinConfidence: 0, MinDestinationConfidence: 0, MinDateConfidence: 0.8, ClassifyLimit: 0, MinDuplicateProbability: 0, DuplicateCheck: false}); cfg.Inbox != want {
 		t.Errorf("Inbox = %+v, want %+v", cfg.Inbox, want)
 	}
 }
@@ -1387,6 +1389,8 @@ func TestLoadFrom_InboxInvalid(t *testing.T) {
 		{"negative confidence", `min_confidence = -0.1`, "out of range"},
 		{"date confidence above 1", `min_date_confidence = 2`, "min_date_confidence 2 out of range"},
 		{"negative date confidence", `min_date_confidence = -0.5`, "min_date_confidence -0.5 out of range"},
+		{"duplicate probability above 1", `min_duplicate_probability = 1.2`, "min_duplicate_probability 1.2 out of range"},
+		{"negative duplicate probability", `min_duplicate_probability = -0.5`, "min_duplicate_probability -0.5 out of range"},
 		{"negative classify_limit", `classify_limit = -1`, "classify_limit -1 must be >= 0"},
 		{"destination confidence above 1", `min_destination_confidence = 1.2`, "min_destination_confidence 1.2 out of range"},
 		{"negative destination confidence", `min_destination_confidence = -0.5`, "min_destination_confidence -0.5 out of range"},

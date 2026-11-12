@@ -50,6 +50,11 @@ type InboxItem struct {
 	// (never by List) and only when Action is task. ApplyGroup applies it when
 	// the chosen action is task; clear it to create the task undated.
 	Date *InboxDate
+	// DuplicateOf is the text of an open task this capture may repeat, set
+	// only by Refine's opt-in duplicate check when DuplicateProbability
+	// reaches the configured floor. It is a warning: Action is not changed.
+	DuplicateOf          string
+	DuplicateProbability float64
 }
 
 // Proposed date roles: which task field an InboxDate fills.

@@ -164,23 +164,37 @@ const DefaultInboxMinDateConfidence = 0.5
 // `qi inbox` run sends to TypeSafe; the rest keep their heuristic proposals.
 const DefaultInboxClassifyLimit = 100
 
+// DefaultInboxMinDuplicateProbability is the TypeSafe probability a capture
+// must reach against an open task before `qi inbox` warns it may repeat that
+// task. The QI-6 spike found no false flags at 0.85 on its synthetic set.
+const DefaultInboxMinDuplicateProbability = 0.85
+
 // InboxConfig configures `qi inbox` triage proposals. Classifier is
 // "heuristic" (default: deterministic, offline) or "typesafe" (opt-in:
 // refines non-obvious proposals via the TypeSafe API, sending capture text to
-// it). MinConfidence in [0,1] is the TypeSafe confidence required to override
+// it — and, with DuplicateCheck, up to 5 shortlisted open-task texts per task
+// capture). MinConfidence in [0,1] is the TypeSafe confidence required to override
 // the heuristic (default DefaultInboxMinConfidence). ClassifyLimit caps how
 // many captures are sent per run (default DefaultInboxClassifyLimit; 0 = no
 // limit). MinDestinationConfidence in [0,1] is the TypeSafe confidence a
 // proposed task destination needs to be shown (default
 // DefaultInboxMinDestinationConfidence). MinDateConfidence in [0,1] is the
 // confidence a TypeSafe-read due/scheduled date needs to be proposed on a
-// task (default DefaultInboxMinDateConfidence).
+// task (default DefaultInboxMinDateConfidence). MinDuplicateProbability in
+// [0,1] is the probability at which a TypeSafe-classified task capture is
+// flagged as a possible duplicate of an open task (default
+// DefaultInboxMinDuplicateProbability; 0 flags any answered candidate).
+// DuplicateCheck (default true) turns the duplicate check — and so sending
+// open-task text — on or off under the typesafe classifier; it does nothing
+// under the heuristic.
 type InboxConfig struct {
 	Classifier               string  `json:"classifier"`
 	MinConfidence            float64 `json:"min_confidence"`
 	MinDestinationConfidence float64 `json:"min_destination_confidence"`
 	MinDateConfidence        float64 `json:"min_date_confidence"`
 	ClassifyLimit            int     `json:"classify_limit"`
+	MinDuplicateProbability  float64 `json:"min_duplicate_probability"`
+	DuplicateCheck           bool    `json:"duplicate_check"`
 }
 
 // ValidInboxClassifier reports whether name is a known inbox classifier.
@@ -312,6 +326,8 @@ type inboxTOML struct {
 	MinDestinationConfidence *float64 `toml:"min_destination_confidence"`
 	MinDateConfidence        *float64 `toml:"min_date_confidence"`
 	ClassifyLimit            *int     `toml:"classify_limit"`
+	MinDuplicateProbability  *float64 `toml:"min_duplicate_probability"`
+	DuplicateCheck           *bool    `toml:"duplicate_check"`
 }
 
 type tomlFile struct {
@@ -682,8 +698,8 @@ func LoadFrom(path string) (Config, error) {
 
 // inboxFromTOML applies [inbox] defaults and rejects an unknown classifier or
 // an out-of-range min_confidence, min_destination_confidence,
-// min_date_confidence or classify_limit — a typo here would otherwise
-// silently fall back to the heuristic.
+// min_date_confidence, classify_limit or min_duplicate_probability — a typo
+// here would otherwise silently fall back to the heuristic.
 func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
 	out := InboxConfig{
 		Classifier:               raw.Classifier,
@@ -691,6 +707,11 @@ func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
 		MinDestinationConfidence: DefaultInboxMinDestinationConfidence,
 		MinDateConfidence:        DefaultInboxMinDateConfidence,
 		ClassifyLimit:            DefaultInboxClassifyLimit,
+		MinDuplicateProbability:  DefaultInboxMinDuplicateProbability,
+		DuplicateCheck:           true,
+	}
+	if raw.DuplicateCheck != nil {
+		out.DuplicateCheck = *raw.DuplicateCheck
 	}
 	if out.Classifier == "" {
 		out.Classifier = InboxClassifierHeuristic
@@ -721,6 +742,12 @@ func inboxFromTOML(raw inboxTOML) (InboxConfig, error) {
 			return InboxConfig{}, fmt.Errorf("inbox: classify_limit %d must be >= 0 (0 = no limit)", *raw.ClassifyLimit)
 		}
 		out.ClassifyLimit = *raw.ClassifyLimit
+	}
+	if raw.MinDuplicateProbability != nil {
+		if *raw.MinDuplicateProbability < 0 || *raw.MinDuplicateProbability > 1 {
+			return InboxConfig{}, fmt.Errorf("inbox: min_duplicate_probability %v out of range [0,1]", *raw.MinDuplicateProbability)
+		}
+		out.MinDuplicateProbability = *raw.MinDuplicateProbability
 	}
 	return out, nil
 }

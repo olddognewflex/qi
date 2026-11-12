@@ -86,14 +86,14 @@ func TestRedactViewSurfacesSyntheticProjects(t *testing.T) {
 func TestRedactViewSurfacesTypeSafeAndInbox(t *testing.T) {
 	c := Config{
 		TypeSafe: TypeSafeConfig{APIKeyEnv: "TS_KEY", URL: "https://ts", Model: "jev-latest"},
-		Inbox:    InboxConfig{Classifier: InboxClassifierTypeSafe, MinConfidence: 0.7, MinDestinationConfidence: 0.8, MinDateConfidence: 0.6, ClassifyLimit: 40},
+		Inbox:    InboxConfig{Classifier: InboxClassifierTypeSafe, MinConfidence: 0.7, MinDestinationConfidence: 0.8, MinDateConfidence: 0.6, ClassifyLimit: 40, MinDuplicateProbability: 0.9, DuplicateCheck: true},
 	}
 	b, err := json.Marshal(RedactView(c, ""))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	// api_key_env is a var NAME, not a secret: shown as-is.
-	for _, want := range []string{`"typesafe":{"api_key_env":"TS_KEY","url":"https://ts","model":"jev-latest"}`, `"inbox":{"classifier":"typesafe","min_confidence":0.7,"min_destination_confidence":0.8,"min_date_confidence":0.6,"classify_limit":40}`} {
+	for _, want := range []string{`"typesafe":{"api_key_env":"TS_KEY","url":"https://ts","model":"jev-latest"}`, `"inbox":{"classifier":"typesafe","min_confidence":0.7,"min_destination_confidence":0.8,"min_date_confidence":0.6,"classify_limit":40,"min_duplicate_probability":0.9,"duplicate_check":true}`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("config show missing %s: %s", want, b)
 		}

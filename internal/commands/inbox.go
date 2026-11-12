@@ -21,7 +21,8 @@ import (
 // Classification timeouts. Each TypeSafe request carries a batch of
 // service.InboxClassifyBatchSize captures, so its HTTP timeout is per
 // request; a batch makes up to inboxRequestsPerBatch requests in sequence
-// (the action request, then lean date details for its dated tasks). The
+// (the action request, then lean date details for its dated tasks), plus
+// one more when the duplicate check is on. The
 // overall budget scales with how many rounds of
 // service.InboxClassifyConcurrency concurrent batches the run needs, capped so
 // a huge inbox cannot stall triage. On expiry the unfinished captures keep
@@ -33,27 +34,61 @@ const (
 )
 
 // inboxClassifyBudget is the overall classification timeout for batches
-// batches: ceil(batches/concurrency) rounds of inboxRequestsPerBatch ×
-// inboxRequestTimeout, capped at inboxClassifyMaxWait.
-func inboxClassifyBudget(batches int) time.Duration {
+// batches: ceil(batches/concurrency) rounds of inboxRequestsPerBatch (+1 with
+// the duplicate check) × inboxRequestTimeout, capped at inboxClassifyMaxWait.
+func inboxClassifyBudget(batches int, dupCheck bool) time.Duration {
 	rounds := (batches + service.InboxClassifyConcurrency - 1) / service.InboxClassifyConcurrency
 	if rounds < 1 {
 		rounds = 1
 	}
-	return min(time.Duration(rounds*inboxRequestsPerBatch)*inboxRequestTimeout, inboxClassifyMaxWait)
+	perBatch := inboxRequestsPerBatch
+	if dupCheck {
+		perBatch++
+	}
+	return min(time.Duration(rounds*perBatch)*inboxRequestTimeout, inboxClassifyMaxWait)
+}
+
+// newTypeSafeInbox builds the TypeSafe inbox adapter from [typesafe] config
+// and the resolved API key.
+func newTypeSafeInbox(cfg config.Config, apiKey string) typesafeInboxClassifier {
+	client := typesafe.NewClient(cfg.TypeSafe.URL, apiKey, cfg.TypeSafe.Model, &http.Client{Timeout: inboxRequestTimeout})
+	return typesafeInboxClassifier{typesafe.InboxClassifier{Client: client}}
 }
 
 // buildInboxClassifier turns [typesafe] config plus the resolved API key into
 // the service-layer classifier. A package var so tests can inject a fake.
 var buildInboxClassifier = func(cfg config.Config, apiKey string) service.InboxClassifier {
-	client := typesafe.NewClient(cfg.TypeSafe.URL, apiKey, cfg.TypeSafe.Model, &http.Client{Timeout: inboxRequestTimeout})
-	return typesafeInboxClassifier{typesafe.InboxClassifier{Client: client}}
+	return newTypeSafeInbox(cfg, apiKey)
+}
+
+// buildInboxDuplicateChecker is buildInboxClassifier's twin for the duplicate
+// check against open tasks. A package var so tests can inject a fake.
+var buildInboxDuplicateChecker = func(cfg config.Config, apiKey string) service.InboxDuplicateChecker {
+	return newTypeSafeInbox(cfg, apiKey)
 }
 
 // typesafeInboxClassifier adapts typesafe's plain-value verdicts to the
-// service interface, keeping typesafe free of a service import.
+// service interfaces, keeping typesafe free of a service import.
 type typesafeInboxClassifier struct {
 	inner typesafe.InboxClassifier
+}
+
+// CheckDuplicates asks QI-6's duplicate question: one Noul per (capture,
+// shortlisted open task) pair, in one request; a missing answer is -1.
+func (c typesafeInboxClassifier) CheckDuplicates(ctx context.Context, checks []service.InboxDupCheck) ([][]float64, error) {
+	in := make([]typesafe.DupCheck, len(checks))
+	for i, ch := range checks {
+		in[i] = typesafe.DupCheck{Body: ch.Body, Candidates: ch.Candidates}
+	}
+	results, _, err := c.inner.CheckDuplicates(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	out := make([][]float64, len(results))
+	for i, r := range results {
+		out[i] = r.Probabilities
+	}
+	return out, nil
 }
 
 // ClassifyInbox asks each capture's action plus QI-6's lean fan-out: the
@@ -163,6 +198,11 @@ func dateSuffix(d *service.InboxDate) string {
 	return fmt.Sprintf("  [%s %s]", d.Role, d.Date.Format("Mon 2006-01-02"))
 }
 
+// duplicateNote describes a possible-duplicate warning for output.
+func duplicateNote(it service.InboxItem) string {
+	return fmt.Sprintf("possible duplicate of %q (%.2f)", it.DuplicateOf, it.DuplicateProbability)
+}
+
 // refineInbox applies the opt-in TypeSafe classifier to items when selected,
 // sending at most limit eligible captures (0 = no limit). It never fails
 // triage: a missing key or a classifier error warns on errOut and the
@@ -188,8 +228,27 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 	}
 	opts.Destinations = inboxDestinations(cfg, errOut)
 	opts.MinDestinationConfidence = cfg.Inbox.MinDestinationConfidence
+	if plan.Selected > 0 && cfg.Inbox.DuplicateCheck {
+		// The duplicate check rides along with classification: open tasks
+		// are only read when something will be classified.
+		open, err := inbox.Tasks.ListOpenTasks()
+		if err != nil {
+			fmt.Fprintf(errOut, "inbox: typesafe: duplicate check skipped: %v\n", err)
+		} else if len(open) > 0 {
+			opts.OpenTasks = make([]string, len(open))
+			for i, t := range open {
+				opts.OpenTasks[i] = t.Text
+			}
+			opts.Duplicates = buildInboxDuplicateChecker(cfg, apiKey)
+			opts.MinDuplicateProbability = cfg.Inbox.MinDuplicateProbability
+			plan = inbox.PlanRefine(items, opts)
+		}
+	}
 	if plan.Selected > 0 {
 		fmt.Fprintf(errOut, "inbox: typesafe: classifying %d capture(s) in %d batch(es)…\n", plan.Selected, plan.Batches)
+	}
+	if plan.DuplicateCheck {
+		fmt.Fprintf(errOut, "inbox: typesafe: checking task captures against %d open task(s): shortlisted task text is sent too (up to %d more request(s); [inbox] duplicate_check = false turns this off)\n", len(opts.OpenTasks), plan.Batches)
 	}
 	if plan.Skipped > 0 {
 		fmt.Fprintf(errOut, "inbox: typesafe: %d more capture(s) over classify_limit %d keep heuristic proposals\n", plan.Skipped, limit)
@@ -197,11 +256,18 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, inboxClassifyBudget(plan.Batches))
+	ctx, cancel := context.WithTimeout(ctx, inboxClassifyBudget(plan.Batches, plan.DuplicateCheck))
 	defer cancel()
 	refined, stats, err := inbox.Refine(ctx, items, buildInboxClassifier(cfg, apiKey), opts)
 	if err != nil {
-		fmt.Fprintf(errOut, "inbox: typesafe: %v\n", err)
+		// Refine joins classifier/date and duplicate-check errors; one line each.
+		errs := []error{err}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			errs = joined.Unwrap()
+		}
+		for _, e := range errs {
+			fmt.Fprintf(errOut, "inbox: typesafe: %v\n", e)
+		}
 	}
 	if plan.Selected > 0 {
 		summary := fmt.Sprintf("refined %d, unsure %d, failed %d", stats.Refined, stats.Unsure, stats.Failed)
@@ -215,6 +281,9 @@ func refineInbox(ctx context.Context, cfg config.Config, inbox service.InboxServ
 			summary += fmt.Sprintf(", date lookup failed %d", stats.DateFailed)
 		}
 		fmt.Fprintf(errOut, "inbox: typesafe: %s\n", summary)
+	}
+	if stats.DupChecked > 0 {
+		fmt.Fprintf(errOut, "inbox: typesafe: duplicate check: %d task capture(s) checked, %d possible duplicate(s), %d failed\n", stats.DupChecked, stats.Duplicates, stats.DupFailed)
 	}
 	return refined
 }
@@ -265,7 +334,8 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			"List keys: j/k or arrows move, pgup/pgdn (ctrl+u/ctrl+d) page, g/G top/\n" +
 			"bottom; t task, n note, a archive, d delete, s skip, enter accept the\n" +
 			"proposal (each moves down); A accepts every undecided proposal; x clears\n" +
-			"(or restores) a row's proposed destination. space/tab opens the full\n" +
+			"(or restores) a row's proposed destination; u archives a row flagged as\n" +
+			"a possible duplicate. space/tab opens the full\n" +
 			"card (←/→ move, same decision keys, tab/esc back). w finishes and\n" +
 			"applies; undecided captures are skipped. q quits without applying\n" +
 			"anything.\n\n" +
@@ -300,7 +370,16 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 			"min_date_confidence (default 0.5), or when the date is incomplete or\n" +
 			"impossible, no date is proposed. The list shows it in a date column\n" +
 			"(due/sched MM-DD; red if already past), the card in full, --dry-run as\n" +
-			"[due Tue 2026-11-10]; c clears (or restores) it.",
+			"[due Tue 2026-11-10]; c clears (or restores) it.\n\n" +
+			"Each capture the classifier sees that ends up proposed as a task is also\n" +
+			"checked against your open tasks (captures with explicit task markers or\n" +
+			"over classify_limit are not): code shortlists up to 5 open tasks sharing\n" +
+			"the most words with it, and those task texts are SENT along with the\n" +
+			"capture (one more request per 25 captures; none when no capture has a\n" +
+			"candidate). [inbox] duplicate_check = false turns this off. A capture at\n" +
+			"or above [inbox] min_duplicate_probability (default 0.85) is marked\n" +
+			"\"dup!\" and shows the task it may repeat; --dry-run prints it on the\n" +
+			"next line. The warning never changes the proposal.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
@@ -338,6 +417,9 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 				total := 0
 				for _, it := range items {
 					fmt.Fprintf(out, "%-7s %s%s%s%s  (%s)\n", it.Action, repeatPrefix(it), it.Summary, destinationSuffix(it), dateSuffix(it.Date), it.Reason)
+					if it.DuplicateOf != "" {
+						fmt.Fprintf(out, "        ! %s\n", duplicateNote(it))
+					}
 					total += 1 + len(it.Repeats)
 				}
 				fmt.Fprintf(out, "\n%s; run without --dry-run to triage.\n", captureCount(len(items), total))
@@ -346,7 +428,10 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 
 			cards := make([]tui.InboxCard, len(items))
 			for i, it := range items {
-				cards[i] = tui.InboxCard{Summary: it.Summary, Body: it.Body, Proposed: it.Action, Reason: it.Reason, Count: 1 + len(it.Repeats), Destination: destinationTag(it)}
+				cards[i] = tui.InboxCard{
+					Summary: it.Summary, Body: it.Body, Proposed: it.Action, Reason: it.Reason, Count: 1 + len(it.Repeats), Destination: destinationTag(it),
+					DuplicateOf: it.DuplicateOf, DuplicateProbability: it.DuplicateProbability,
+				}
 				if it.Date != nil {
 					cards[i].Date, cards[i].DateRole = it.Date.Date, it.Date.Role
 				}
@@ -394,7 +479,11 @@ func newInboxCommand(cfg config.Config) *cobra.Command {
 					if action == service.InboxActionTask {
 						date = dateSuffix(it.Date)
 					}
-					fmt.Fprintf(out, "%-7s %s%s%s%s\n", action, repeatPrefix(it), it.Summary, dest, date)
+					note := ""
+					if action == service.InboxActionArchive && it.DuplicateOf != "" {
+						note = "  (" + duplicateNote(it) + ")"
+					}
+					fmt.Fprintf(out, "%-7s %s%s%s%s%s\n", action, repeatPrefix(it), it.Summary, dest, date, note)
 					continue
 				}
 				skipped += 1 + len(items[i].Repeats)
